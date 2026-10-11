@@ -12,10 +12,11 @@ from acceso.store.errors import Conflict, Invalid, NotFound
 from acceso.web import auth
 from acceso.web.auth import SESSION_COOKIE, read_session
 from acceso.web.clock import ClockStatus, read_clock
-from acceso.web.routes import holders, outputs, permissions, system
+from acceso.web.routes import cards, controls, holders, outputs, permissions, system
 
 # Los routers de las tareas 8-10 se agregan a esta lista, antes del catch-all /api.
-API_ROUTERS = [auth.router, system.router, holders.router, permissions.router, outputs.router]
+API_ROUTERS = [auth.router, system.router, holders.router, permissions.router, outputs.router,
+               cards.router, controls.router]
 
 
 def _is_public_page(path: str) -> bool:

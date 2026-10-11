@@ -1,9 +1,9 @@
 """Modelos pydantic de la API."""
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from acceso.constants import HOLDER_KINDS
+from acceso.constants import CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE, OUTPUT_COUNT
 
 
 class HolderIn(BaseModel):
@@ -55,3 +55,53 @@ class OutputIn(BaseModel):
     duration_ms: int = Field(ge=0, le=65535)
     reader_mask: int = Field(ge=0, le=15)
     enabled: bool
+
+
+def _check_code(v: Optional[int]) -> Optional[int]:
+    if v is not None and not 0 <= v <= MAX_CODE:
+        raise ValueError("El código debe estar entre 0 y %d." % MAX_CODE)
+    return v
+
+
+class CardIn(BaseModel):
+    holder_id: int
+    description: str = ""
+
+
+class CardCreate(CardIn):
+    card_code: int
+
+    @field_validator("card_code")
+    @classmethod
+    def _code(cls, v: int) -> int:
+        return _check_code(v)
+
+
+class ButtonIn(BaseModel):
+    rf_code: Optional[int] = None
+    output_id: Optional[int] = None
+
+    @field_validator("rf_code")
+    @classmethod
+    def _rf(cls, v: Optional[int]) -> Optional[int]:
+        return _check_code(v)
+
+    @field_validator("output_id")
+    @classmethod
+    def _output(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not 0 <= v < OUTPUT_COUNT:
+            raise ValueError("La salida debe estar entre 0 y %d." % (OUTPUT_COUNT - 1))
+        return v
+
+
+class ControlIn(BaseModel):
+    holder_id: int
+    description: str = ""
+    buttons: List[ButtonIn]
+
+    @field_validator("buttons")
+    @classmethod
+    def _buttons(cls, v: List[ButtonIn]) -> List[ButtonIn]:
+        if len(v) != CONTROL_BUTTONS:
+            raise ValueError("El control debe tener exactamente %d botones." % CONTROL_BUTTONS)
+        return v

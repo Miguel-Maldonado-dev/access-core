@@ -42,3 +42,9 @@ def test_build_relay_command_matches_doc_and_validates():
     for bad in [(4, 1000), (-1, 1000), (0, 65536)]:
         with pytest.raises(ValueError):
             build_relay_command(*bad)
+
+
+def test_truncated_frame_does_not_swallow_next_valid_frame():   # riesgo 1
+    out = FrameParser().feed(bytes.fromhex("AA100000") + frame(0x11, [0, 0, 0, 1]))
+    assert len(out) == 2
+    assert out[0].reason == "eof" and out[1] == RfRead(1)

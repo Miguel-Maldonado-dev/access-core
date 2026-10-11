@@ -74,7 +74,9 @@ class FrameParser:
 
     def feed(self, data: bytes) -> List[Union[Event, InvalidFrame]]:
         out: List[Union[Event, InvalidFrame]] = []
-        for byte in data:
+        pending = bytearray(data)
+        while pending:
+            byte = pending.pop(0)
             if not self._buf:
                 if byte == SOF:
                     self._buf.append(byte)
@@ -88,8 +90,15 @@ class FrameParser:
                 continue
             self._buf.append(byte)
             if len(self._buf) == self._length:
-                out.append(_decode(bytes(self._buf)))
+                raw = bytes(self._buf)
                 self._buf.clear()
+                result = _decode(raw)
+                out.append(result)
+                if isinstance(result, InvalidFrame) and result.reason in ("eof", "checksum"):
+                    # Trama truncada: re-escanear tras el SOF original por el siguiente inicio.
+                    start = raw.find(SOF, 1)
+                    if start != -1:
+                        pending[0:0] = raw[start:]
         return out
 
 

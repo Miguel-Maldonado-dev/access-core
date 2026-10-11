@@ -1,9 +1,11 @@
 """Migración de la base v2 (Tkinter) al esquema v3 del panel web."""
 import fcntl
+import os
 import re
 import sqlite3
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -99,14 +101,21 @@ def _detect_version(conn: sqlite3.Connection) -> int:
 
 
 def _backup(conn: sqlite3.Connection, db_path: Path) -> Path:
+    """Respalda a un .tmp y lo publica con os.replace; un respaldo previo se conserva con fecha."""
     backup_path = db_path.with_name("%s_backup_v2.sqlite" % db_path.stem)
-    if backup_path.exists():
-        raise MigrationError("Ya existe el respaldo %s; muévelo antes de migrar" % backup_path)
-    target = sqlite3.connect(str(backup_path))
+    tmp_path = backup_path.with_name(backup_path.name + ".tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    target = sqlite3.connect(str(tmp_path))
     try:
         conn.backup(target)
     finally:
         target.close()
+    if backup_path.exists():
+        stamp = datetime.fromtimestamp(backup_path.stat().st_mtime).strftime("%Y%m%d-%H%M%S")
+        os.replace(str(backup_path), str(backup_path.with_name(
+            "%s_backup_v2.%s.sqlite" % (db_path.stem, stamp))))
+    os.replace(str(tmp_path), str(backup_path))
     return backup_path
 
 
@@ -145,8 +154,12 @@ def migrate(db_path: Path) -> MigrationResult:
             if version == 0:
                 create_schema(conn)
                 return MigrationResult(0, SCHEMA_VERSION, None)
-            backup_path = _backup(conn, db_path)
-            _convert(conn)
+            try:
+                backup_path = _backup(conn, db_path)
+                _convert(conn)
+            except (sqlite3.Error, OSError) as exc:
+                raise MigrationError(
+                    "No se pudo migrar la base (sigue en v2): %s" % exc) from exc
             return MigrationResult(version, SCHEMA_VERSION, backup_path)
         finally:
             conn.close()

@@ -109,3 +109,36 @@ def test_concurrent_migrations_run_once(tmp_path):
 
     assert set(versions) == {2, 3}
     assert len(list(tmp_path.glob("*_backup_v2.sqlite"))) == 1
+
+
+def test_failed_conversion_can_be_retried(tmp_path):
+    db = tmp_path / "access_control.sqlite"
+    make_legacy(db)
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE users SET name='  '")  # v3 exige nombre no vacío
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(MigrationError) as exc:
+        migrate(db)
+    assert str(exc.value).startswith("No se pudo migrar la base")
+    assert isinstance(exc.value.__cause__, sqlite3.Error)
+    assert rows(db, "PRAGMA user_version") == [(0,)]
+    assert rows(db, "SELECT COUNT(*) FROM users") == [(1,)]
+    first_backup = tmp_path / "access_control_backup_v2.sqlite"
+    assert rows(first_backup, "SELECT COUNT(*) FROM users") == [(1,)]
+
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE users SET name='Miguel Maldonado'")
+    conn.commit()
+    conn.close()
+    result = migrate(db)
+
+    assert result.from_version == 2 and result.to_version == 3
+    assert result.backup_path == first_backup
+    assert rows(db, "PRAGMA user_version") == [(3,)]
+    kept = [p for p in tmp_path.glob("access_control_backup_v2.*.sqlite")]
+    assert len(kept) == 1
+    assert rows(kept[0], "SELECT name FROM users") == [("  ",)]
+    assert rows(first_backup, "SELECT name FROM users") == [("Miguel Maldonado",)]
+    assert not list(tmp_path.glob("*.tmp"))

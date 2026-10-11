@@ -12,4 +12,9 @@ tmp="$(mktemp)"; printf 'A=1' > "$tmp"; asegura_salto_final "$tmp"; printf 'B=2\
 if [ "$(cat "$tmp")" = "$(printf 'A=1\nB=2')" ]; then echo "ok      salto final agregado"; else echo "FALLO   salto final"; fail=1; fi
 printf 'A=1\n' > "$tmp"; asegura_salto_final "$tmp"; [ "$(wc -l < "$tmp")" -eq 1 ] && echo "ok      sin línea extra" || { echo "FALLO   línea extra"; fail=1; }
 rm -f "$tmp"
+inst="$(dirname "${BASH_SOURCE[0]}")/install.sh"
+tz_line="$(grep -n 'set-timezone' "$inst" | head -n1 | cut -d: -f1)"
+en_line="$(grep -n 'enable --now' "$inst" | head -n1 | cut -d: -f1)"
+rs_line="$(grep -n 'systemctl restart acceso-daemon' "$inst" | head -n1 | cut -d: -f1)"
+if [ -n "$tz_line" ] && [ "$tz_line" -lt "$en_line" ] && [ "$tz_line" -lt "$rs_line" ]; then echo "ok      zona horaria antes de arrancar servicios"; else echo "FALLO   zona horaria debe fijarse antes de enable/restart"; fail=1; fi
 [ "$fail" -eq 0 ] && echo "TODO OK" || { echo "HAY FALLOS"; exit 1; }

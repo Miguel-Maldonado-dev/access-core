@@ -46,7 +46,9 @@ describe("format", () => {
     expect(mediumLabel(log({ source: 0, credential_label: null, device_id: 0 }))).toBe("Tarjeta · Reader1");
     expect(mediumLabel(log({ source: 1, credential_label: "Control del coche rojo", control_id: 1, device_id: 0 }))).toBe("Control del coche rojo · Botón 1");
     expect(mediumLabel(log({ source: 1, credential_label: null, control_id: 4, device_id: 2 }))).toBe("Control 4 · Botón 3");
-    expect(mediumLabel(log({ source: 1, control_id: null, device_id: null }))).toBe("Control no registrado");
+    expect(mediumLabel(log({ source: 1, reason: 5, control_id: null, device_id: null }))).toBe("Control no registrado");
+    expect(mediumLabel(log({ source: 1, reason: 0, control_id: null, credential_label: "Control 1", device_id: 1 }))).toBe("Control 1 · Botón 2");
+    expect(mediumLabel(log({ source: 1, reason: 0, control_id: null, credential_label: null, device_id: 0 }))).toBe("Control borrado · Botón 1");
     expect(mediumLabel(log({ source: 2, device_id: 1 }))).toBe("Botón de salida 2");
   });
 

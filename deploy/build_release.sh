@@ -28,6 +28,7 @@ OUT="dist/acceso-panel-$(date +%Y%m%d).tar.gz"
 # COPYFILE_DISABLE evita los archivos ._* de macOS dentro del tar.
 COPYFILE_DISABLE=1 tar czf "$OUT" \
   --exclude='.venv' \
+  --exclude='backend/.env' \
   --exclude='data' \
   --exclude='__pycache__' \
   --exclude='.pytest_cache' \

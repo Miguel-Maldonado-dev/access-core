@@ -40,8 +40,8 @@ export function mediumLabel(log: LogItem): string {
     return `${log.credential_label ?? "Tarjeta"}${reader}`;
   }
   if (log.source === 1) {
-    if (log.control_id === null) return "Control no registrado";
-    const name = log.credential_label ?? `Control ${log.control_id}`;
+    if (log.reason === 5) return "Control no registrado";
+    const name = log.credential_label ?? (log.control_id !== null ? `Control ${log.control_id}` : "Control borrado");
     return device === null ? name : `${name} · Botón ${device + 1}`;
   }
   return device === null ? "Botón de salida" : `Botón de salida ${device + 1}`;

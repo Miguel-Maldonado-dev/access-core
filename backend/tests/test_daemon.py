@@ -6,7 +6,7 @@ import threading
 import time
 
 import pytest
-from helpers import add_card, add_control, add_holder
+from helpers import add_card, add_control, add_holder, set_permission
 
 from acceso.config import load_settings
 from acceso.daemon import open_serial_port, run_daemon
@@ -135,6 +135,19 @@ def test_pty_card_frame_gets_relay_command(settings, db, pty_pair):
     settings, stop, thread = pty_daemon(settings, uart_port)
     os.write(master, card_frame(2, 111))
     assert read_master(master, 8) == build_relay_command(1, 3000)
+    stop.set()
+    thread.join(2)
+    assert not thread.is_alive()
+
+
+def test_pty_denied_card_frame_sends_no_command(settings, db, pty_pair):
+    add_card(db, 111, add_holder(db), "Llavero")
+    set_permission(db, 0, output_mask=15, reader_mask=0b0001)
+    master, uart_port = pty_pair
+    settings, stop, thread = pty_daemon(settings, uart_port)
+    os.write(master, card_frame(2, 111))
+    assert wait_for(lambda: log_count(settings) == 1)
+    assert read_master(master, 7, timeout=0.3) == b""
     stop.set()
     thread.join(2)
     assert not thread.is_alive()

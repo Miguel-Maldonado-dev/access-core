@@ -51,7 +51,10 @@ def test_card_without_enabled_output_for_reader(conn):
 def test_card_reader_not_in_permission(conn):
     add_card(conn, 111, add_holder(conn))
     set_permission(conn, 0, output_mask=15, reader_mask=0b0001)
-    assert run(conn, CardRead(2, 111)).reason == 3
+    sender = Sender()
+    outcome = run(conn, CardRead(2, 111), send=sender)
+    assert outcome.reason == 3
+    assert outcome.command is None and sender.sent == []
 
 
 def test_rf_ignores_reader_mask(conn):
@@ -86,7 +89,10 @@ def test_rf_disabled_output(conn):
 def test_rf_no_permission_keeps_requested_output(conn):
     add_control(conn, add_holder(conn), [(500, 2)])
     set_permission(conn, 0, output_mask=0b0011)
-    assert run(conn, RfRead(500)).reason == 3
+    sender = Sender()
+    outcome = run(conn, RfRead(500), send=sender)
+    assert outcome.reason == 3
+    assert outcome.command is None and sender.sent == []
     assert last_log(conn)["output_id"] == 2
 
 

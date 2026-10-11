@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import ClockBadge from "./ClockBadge";
 
-function mockClock(ntp: boolean | null) {
+function mockClock(ntp: boolean | null, timezone = "America/Mexico_City") {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
     new Response(
-      JSON.stringify({ now: "2026-10-10T18:42:10-06:00", timezone: "America/Mexico_City", ntp_synchronized: ntp }),
+      JSON.stringify({ now: "2026-10-10T18:42:10-06:00", timezone, ntp_synchronized: ntp }),
       { status: 200 },
     ),
   );
@@ -34,5 +34,20 @@ describe("ClockBadge", () => {
     expect(await screen.findByText(/18:42:10/)).toBeInTheDocument();
     expect(screen.queryByText(/no está sincronizada/)).toBeNull();
     expect(screen.queryByText("Sincronización desconocida")).toBeNull();
+  });
+
+  it("avisa cuando la placa no está en America/Mexico_City", async () => {
+    mockClock(true, "UTC");
+    render(<ClockBadge />);
+    expect(
+      await screen.findByText("La placa está en la zona horaria UTC; los horarios de los permisos se aplican en esa zona."),
+    ).toBeInTheDocument();
+  });
+
+  it("no avisa de zona horaria cuando es America/Mexico_City", async () => {
+    mockClock(true);
+    render(<ClockBadge />);
+    expect(await screen.findByText("America/Mexico_City")).toBeInTheDocument();
+    expect(screen.queryByText(/zona horaria/)).toBeNull();
   });
 });

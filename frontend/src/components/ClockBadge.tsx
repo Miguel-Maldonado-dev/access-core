@@ -37,6 +37,12 @@ export default function ClockBadge() {
   return (
     <div className="text-right text-sm leading-snug">
       <p className="font-medium tabular-nums">{formatDateTime(clock.now)}</p>
+      <p className="text-muted">{clock.timezone}</p>
+      {clock.timezone !== "America/Mexico_City" && (
+        <p role="status" className="max-w-sm text-warn">
+          La placa está en la zona horaria {clock.timezone}; los horarios de los permisos se aplican en esa zona.
+        </p>
+      )}
       {clock.ntp_synchronized === false && (
         <p role="status" className="max-w-sm text-warn">
           La hora de la placa no está sincronizada; los horarios de los permisos pueden aplicarse mal.

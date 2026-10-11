@@ -157,7 +157,8 @@ def test_unknown_api_path_is_json_404(client):
     assert r.json() == {"detail": "No encontrado."}
 
 
-def test_get_conn_works_across_threads(app, client):
+def test_get_conn_works_across_threads(app, client, db):
+    # `db` crea el esquema antes: el archivo ya está en WAL (como en producción tras migrar).
     async def probe_async(conn=Depends(get_conn)):
         return {"n": conn.execute("SELECT 1").fetchone()[0]}
 

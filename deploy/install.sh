@@ -123,16 +123,16 @@ if [ -n "$DB_SRC" ]; then
   fi
 fi
 
+echo "==> Zona horaria y reloj"
+if ! { timedatectl set-timezone America/Mexico_City && timedatectl set-ntp true; }; then
+  echo "AVISO: no se pudo configurar la zona horaria o el NTP. Revisa con 'timedatectl' (el reloj del panel mostrará si está sincronizado)." >&2
+fi
+
 echo "==> Servicios"
 install -m 644 "$PKG/deploy/acceso-daemon.service" /etc/systemd/system/acceso-daemon.service
 install -m 644 "$PKG/deploy/acceso-web.service" /etc/systemd/system/acceso-web.service
 systemctl daemon-reload && systemctl enable --now acceso-daemon acceso-web
 systemctl restart acceso-daemon acceso-web
-
-echo "==> Zona horaria y reloj"
-if ! { timedatectl set-timezone America/Mexico_City && timedatectl set-ntp true; }; then
-  echo "AVISO: no se pudo configurar la zona horaria o el NTP. Los servicios ya están activos; revisa con 'timedatectl' (el reloj del panel mostrará si está sincronizado)." >&2
-fi
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 PORT="$(sed -n 's/^WEB_PORT=//p' "$ENV_FILE" | tail -n1)"

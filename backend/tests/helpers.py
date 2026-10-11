@@ -1,0 +1,46 @@
+from datetime import datetime
+
+NOW = datetime(2026, 9, 29, 10, 0)  # martes
+
+
+def add_holder(conn, name="Amadeo 1260", kind="domicilio", permission_ids=(0,)):
+    cur = conn.execute("INSERT INTO holders(kind, name) VALUES (?, ?)", (kind, name))
+    holder_id = cur.lastrowid
+    for permission_id in permission_ids:
+        conn.execute(
+            "INSERT INTO holder_permissions(holder_id, permission_id) VALUES (?, ?)",
+            (holder_id, permission_id),
+        )
+    return holder_id
+
+
+def add_card(conn, code, holder_id, description=""):
+    conn.execute(
+        "INSERT INTO cards(card_code, holder_id, description) VALUES (?, ?, ?)",
+        (code, holder_id, description),
+    )
+
+
+def add_control(conn, holder_id, buttons, description="Control 1"):
+    cur = conn.execute(
+        "INSERT INTO controls(holder_id, description) VALUES (?, ?)",
+        (holder_id, description),
+    )
+    control_id = cur.lastrowid
+    for button, (rf_code, output_id) in enumerate(buttons):
+        if rf_code is None:
+            continue
+        conn.execute(
+            "INSERT INTO control_buttons(control_id, button, rf_code, output_id) VALUES (?, ?, ?, ?)",
+            (control_id, button, rf_code, output_id),
+        )
+    return control_id
+
+
+def set_permission(conn, permission_id, output_mask, reader_mask=15, weekday_mask=127,
+                   start_minute=0, end_minute=0, name="p"):
+    conn.execute(
+        "INSERT OR REPLACE INTO permissions(permission_id, name, output_mask, reader_mask,"
+        " weekday_mask, start_minute, end_minute) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (permission_id, name, output_mask, reader_mask, weekday_mask, start_minute, end_minute),
+    )

@@ -19,7 +19,7 @@ API_ROUTERS = [auth.router, system.router]
 
 
 def _is_public_page(path: str) -> bool:
-    if any(seg in (".", "..") for seg in path.split("/")):
+    if "?" in path or "#" in path or any(seg in (".", "..") for seg in path.split("/")):
         return False
     return (
         path == "/login"
@@ -63,7 +63,8 @@ def create_app(
 
     @app.middleware("http")
     async def require_session(request: Request, call_next):
-        path = request.url.path
+        # Mismo path que sirve StaticFiles (request.url.path trunca en ? y #).
+        path = request.scope["path"]
         is_api = path == "/api" or path.startswith("/api/")
         if is_api and path != "/api/login":
             user = read_session(settings, request.cookies.get(SESSION_COOKIE))

@@ -90,7 +90,14 @@ def test_cors_only_when_configured(settings):
 
 
 def test_dot_segments_do_not_bypass_login(anon_client):
-    for path in ("/login/../titulares/", "/_next/../titulares/index.html"):
+    # Formas codificadas: httpx no las normaliza y llegan decodificadas a la app.
+    for path in (
+        "/login/%2e%2e/titulares/",
+        "/login/%3F/%2e%2e/%2e%2e/titulares/",
+        "/login/%23/%2e%2e/%2e%2e/titulares/",
+        "/_next/%3F/%2e%2e/%2e%2e/titulares/index.html",
+        "/favicon.ico%3F/%2e%2e/titulares/",
+    ):
         r = anon_client.get(path)
         assert r.status_code == 302, path
         assert r.headers["location"] == "/login/"

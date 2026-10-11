@@ -63,3 +63,12 @@ def client(app):
     r = c.post("/api/login", json={"username": "admin", "password": "secreto"})
     assert r.status_code == 204
     return c
+
+
+@pytest.fixture
+def db(settings):
+    """Conexión a la base de la app (esquema creado), para preparar datos."""
+    connection = connect(settings.db_path)
+    create_schema(connection)
+    yield connection
+    connection.close()

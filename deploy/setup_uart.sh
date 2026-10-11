@@ -16,6 +16,11 @@ if [[ "$MODEL" == *"Raspberry Pi"* ]]; then
   CONFIG=/boot/firmware/config.txt
   [ -f "$CONFIG" ] || CONFIG=/boot/config.txt
   if ! grep -qx 'dtoverlay=disable-bt' "$CONFIG"; then
+    [ -s "$CONFIG" ] && [ -n "$(tail -c1 "$CONFIG")" ] && printf '\n' >> "$CONFIG"
+    LAST_SECTION="$(grep -E '^\[.*\]' "$CONFIG" | tail -n1 || true)"
+    if [ -n "$LAST_SECTION" ] && [ "$LAST_SECTION" != "[all]" ]; then
+      echo '[all]' >> "$CONFIG"
+    fi
     echo 'dtoverlay=disable-bt' >> "$CONFIG"
   fi
   systemctl disable --now hciuart || true
@@ -23,6 +28,7 @@ elif [[ "$MODEL" == *"Orange Pi PC"* || "$MODEL" == *"Xunlong"* ]]; then
   echo "Placa: $MODEL"
   ENVFILE=/boot/armbianEnv.txt
   touch "$ENVFILE"
+  [ -s "$ENVFILE" ] && [ -n "$(tail -c1 "$ENVFILE")" ] && printf '\n' >> "$ENVFILE"
   if grep -q '^overlays=' "$ENVFILE"; then
     if ! grep '^overlays=' "$ENVFILE" | head -n1 | cut -d= -f2- | tr ' ' '\n' | grep -qx 'uart3'; then
       sed -i '/^overlays=/ s/$/ uart3/' "$ENVFILE"

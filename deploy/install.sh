@@ -20,6 +20,8 @@ while [ $# -gt 0 ]; do
 done
 
 PKG="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib_validate.sh
+source "$PKG/deploy/lib_validate.sh"
 ENV_FILE=/etc/acceso/acceso.env
 DB_DEFAULT=/var/lib/acceso/access_control.sqlite
 STATIC_LINE="STATIC_DIR=/opt/acceso/backend/acceso/web/static"
@@ -46,7 +48,9 @@ cp -R "$PKG/backend" /opt/acceso/backend
 rm -rf /opt/acceso/backend/build /opt/acceso/backend/*.egg-info
 [ -d /opt/acceso/venv ] || python3 -m venv /opt/acceso/venv
 /opt/acceso/venv/bin/pip install --upgrade pip
-/opt/acceso/venv/bin/pip install --upgrade --force-reinstall /opt/acceso/backend
+# constraints.txt fija las versiones probadas; si alguna no tiene paquete para la
+# placa, ver el README (instalar sin -c).
+/opt/acceso/venv/bin/pip install --upgrade -c /opt/acceso/backend/constraints.txt /opt/acceso/backend
 
 echo "==> Datos en /var/lib/acceso"
 mkdir -p /var/lib/acceso
@@ -55,13 +59,25 @@ chown acceso:acceso /var/lib/acceso
 echo "==> Configuración"
 mkdir -p /etc/acceso
 if [ ! -f "$ENV_FILE" ]; then
-  read -r -p "Usuario administrador [admin]: " ADMIN_USER
-  ADMIN_USER="${ADMIN_USER:-admin}"
-  ADMIN_PASSWORD=""
-  while [ -z "$ADMIN_PASSWORD" ]; do
+  while :; do
+    read -r -p "Usuario administrador [admin]: " ADMIN_USER
+    ADMIN_USER="${ADMIN_USER:-admin}"
+    valor_valido "$ADMIN_USER" && break
+    echo "$MSG_VALOR_INVALIDO" >&2
+  done
+  while :; do
     read -r -s -p "Contraseña del administrador: " ADMIN_PASSWORD
     echo
+    if ! valor_valido "$ADMIN_PASSWORD"; then
+      echo "$MSG_VALOR_INVALIDO" >&2
+      continue
+    fi
+    read -r -s -p "Repite la contraseña: " ADMIN_PASSWORD2
+    echo
+    [ "$ADMIN_PASSWORD" = "$ADMIN_PASSWORD2" ] && break
+    echo "Las contraseñas no coinciden." >&2
   done
+  unset ADMIN_PASSWORD2
   MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
   if [[ "$MODEL" == *"Raspberry Pi"* ]]; then
     UART_PORT=/dev/serial0
@@ -74,7 +90,6 @@ if [ ! -f "$ENV_FILE" ]; then
   SESSION_SECRET="$(/opt/acceso/venv/bin/python -c 'import secrets; print(secrets.token_hex(32))')"
   umask 077
   export ADMIN_USER ADMIN_PASSWORD UART_PORT SESSION_SECRET
-  # Los valores se pasan por entorno para no interpretar caracteres especiales.
   /opt/acceso/venv/bin/python - "$PKG/deploy/env.example" "$ENV_FILE" <<'PY'
 import os, sys
 src, dst = sys.argv[1], sys.argv[2]
@@ -90,6 +105,7 @@ PY
   unset ADMIN_PASSWORD SESSION_SECRET
 fi
 if ! grep -q '^STATIC_DIR=' "$ENV_FILE"; then
+  asegura_salto_final "$ENV_FILE"
   printf '%s\n' "$STATIC_LINE" >> "$ENV_FILE"
 fi
 chmod 600 "$ENV_FILE"
@@ -107,14 +123,16 @@ if [ -n "$DB_SRC" ]; then
   fi
 fi
 
-echo "==> Zona horaria y reloj"
-timedatectl set-timezone America/Mexico_City && timedatectl set-ntp true
-
 echo "==> Servicios"
 install -m 644 "$PKG/deploy/acceso-daemon.service" /etc/systemd/system/acceso-daemon.service
 install -m 644 "$PKG/deploy/acceso-web.service" /etc/systemd/system/acceso-web.service
 systemctl daemon-reload && systemctl enable --now acceso-daemon acceso-web
 systemctl restart acceso-daemon acceso-web
+
+echo "==> Zona horaria y reloj"
+if ! { timedatectl set-timezone America/Mexico_City && timedatectl set-ntp true; }; then
+  echo "AVISO: no se pudo configurar la zona horaria o el NTP. Los servicios ya están activos; revisa con 'timedatectl' (el reloj del panel mostrará si está sincronizado)." >&2
+fi
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 PORT="$(sed -n 's/^WEB_PORT=//p' "$ENV_FILE" | tail -n1)"

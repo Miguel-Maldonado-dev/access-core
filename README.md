@@ -53,7 +53,7 @@ Desde `panel_web/`:
 deploy/build_release.sh
 ```
 
-Corre `pytest` y `npm test` (si algo falla se detiene), compila la interfaz, la copia a `backend/acceso/web/static` y crea `dist/acceso-panel-AAAAMMDD.tar.gz`.
+Corre `pytest` y `npm test` (si algo falla se detiene), compila la interfaz, la copia a `backend/acceso/web/static` y crea `backend/constraints.txt` con las versiones del entorno de desarrollo y crea `dist/acceso-panel-AAAAMMDD.tar.gz`. La interfaz se compila sin `NEXT_PUBLIC_API_BASE`, aunque lo tengas exportado.
 
 ## Instalación en la placa
 
@@ -85,7 +85,16 @@ El ATmega queda en UART3, `/dev/ttyS3`.
 
 ### Qué hace `install.sh`
 
-Es idempotente. Instala `python3-venv` y `sqlite3`, crea el usuario `acceso` (grupo `dialout`), copia el backend a `/opt/acceso/backend`, crea el venv `/opt/acceso/venv`, prepara `/var/lib/acceso`, configura zona horaria `America/Mexico_City` con NTP, instala los servicios systemd y los arranca. Si no existe `/etc/acceso/acceso.env`, lo crea: te pide usuario (por defecto `admin`) y contraseña, elige el `UART_PORT` según la placa, genera `SESSION_SECRET` y lo deja con modo 600 y dueño `acceso`. Al final imprime `Panel listo en http://<ip>:8080`.
+Es idempotente. Pide la contraseña dos veces y rechaza los caracteres que systemd no lee bien. Instala `python3-venv` y `sqlite3`, crea el usuario `acceso` (grupo `dialout`), copia el backend a `/opt/acceso/backend`, crea el venv `/opt/acceso/venv`, prepara `/var/lib/acceso`, configura zona horaria `America/Mexico_City` con NTP, instala los servicios systemd y los arranca. Si no existe `/etc/acceso/acceso.env`, lo crea: te pide usuario (por defecto `admin`) y contraseña, elige el `UART_PORT` según la placa, genera `SESSION_SECRET` y lo deja con modo 600 y dueño `acceso`. Al final imprime `Panel listo en http://<ip>:8080`.
+
+### Si `pip` no encuentra un paquete para la placa
+
+`install.sh` instala con las versiones probadas de `backend/constraints.txt` (`pip install -c`). Si alguna no tiene paquete para tu placa, pip lo indicará. Como alternativa, instala sin restricciones (versiones más nuevas, sin probar):
+
+```bash
+sudo /opt/acceso/venv/bin/pip install --upgrade /opt/acceso/backend
+sudo systemctl restart acceso-daemon acceso-web
+```
 
 ## Copiar la base actual
 
@@ -110,6 +119,8 @@ Descomprime el paquete nuevo y vuelve a correr `sudo ./deploy/install.sh`. Conse
 sudo nano /etc/acceso/acceso.env      # cambia ADMIN_PASSWORD
 sudo systemctl restart acceso-web
 ```
+
+Importante: systemd interpreta el `.env` con reglas propias. En `ADMIN_USER` y `ADMIN_PASSWORD` **no uses** los caracteres `\`, `"`, `'`, `$` ni el acento grave (`` ` ``), ni espacios al inicio o al final, ni comillas alrededor del valor. `install.sh` ya los rechaza al preguntar; al editar a mano debes evitarlos tú, o el servicio no arrancará o no podrás entrar.
 
 ## Respaldar
 

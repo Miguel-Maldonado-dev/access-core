@@ -12,12 +12,15 @@ echo "==> npm test"
 (cd frontend && npm test)
 
 echo "==> npm run build"
-(cd frontend && npm run build)
+(cd frontend && env -u NEXT_PUBLIC_API_BASE npm run build)
 
 echo "==> copiando la interfaz a backend/acceso/web/static"
 rm -rf backend/acceso/web/static
 mkdir -p backend/acceso/web/static
 cp -R frontend/out/. backend/acceso/web/static/
+
+echo "==> fijando versiones en backend/constraints.txt"
+backend/.venv/bin/pip freeze --exclude-editable | grep -vi '^acceso-panel' > backend/constraints.txt
 
 echo "==> empaquetando"
 mkdir -p dist

@@ -59,6 +59,13 @@ def _serve(settings: Settings, conn, port: SerialPort, stop: threading.Event) ->
             handle_event(conn, item, send, max_entries=settings.log_max_entries)
 
 
+def _close_quietly(port: SerialPort) -> None:
+    try:
+        port.close()
+    except _SERIAL_ERRORS:
+        pass
+
+
 def run_daemon(settings: Settings, stop: threading.Event, *,
                open_serial: Callable[[str, int], SerialPort] = open_serial_port,
                sleep: Callable[[float], None] = time.sleep) -> None:
@@ -76,14 +83,12 @@ def run_daemon(settings: Settings, stop: threading.Event, *,
             try:
                 _serve(settings, conn, port, stop)
             except _SERIAL_ERRORS as exc:
+                _close_quietly(port)
                 log.warning("Error en el puerto serie: %s. Reconectando en %.0f s",
                             exc, RECONNECT_SECONDS)
                 sleep(RECONNECT_SECONDS)
             finally:
-                try:
-                    port.close()
-                except _SERIAL_ERRORS:
-                    pass
+                _close_quietly(port)
     finally:
         conn.close()
 

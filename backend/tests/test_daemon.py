@@ -185,11 +185,15 @@ def test_reconnects_every_3_seconds_when_port_unavailable(settings, db):
 def test_flush_termios_error_logs_uart_error_and_reconnects(settings, db):
     add_card(db, 111, add_holder(db), "Llavero")
     sleeps = []
+    closed_at_sleep = []
     stop = threading.Event()
     ports = []
+    opens = []
 
     def open_serial(port, baud):
+        opens.append(port)
         if ports:
+            stop.set()
             return FakeSerial()
         err = termios.error(5, "Input/output error")
         ports.append(FakeSerial([card_frame(2, 111)], then=err, flush_error=err))
@@ -197,11 +201,13 @@ def test_flush_termios_error_logs_uart_error_and_reconnects(settings, db):
 
     def sleep(seconds):
         sleeps.append(seconds)
-        stop.set()
+        closed_at_sleep.append(ports[0].closed)
 
     run_daemon(settings, stop, open_serial=open_serial, sleep=sleep)
     assert sleeps == [3.0]
-    assert ports[0].closed
+    assert closed_at_sleep == [True]
+    assert ports[0].written == [build_relay_command(1, 3000)]
+    assert len(opens) == 2
     rows = db.execute("SELECT reason FROM access_logs").fetchall()
     assert [r[0] for r in rows] == [4]
 

@@ -40,7 +40,11 @@ def add_control(conn, holder_id, buttons, description="Control 1"):
 def set_permission(conn, permission_id, output_mask, reader_mask=15, weekday_mask=127,
                    start_minute=0, end_minute=0, name="p"):
     conn.execute(
-        "INSERT OR REPLACE INTO permissions(permission_id, name, output_mask, reader_mask,"
-        " weekday_mask, start_minute, end_minute) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO permissions(permission_id, name, output_mask, reader_mask,"
+        " weekday_mask, start_minute, end_minute) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        " ON CONFLICT(permission_id) DO UPDATE SET name=excluded.name,"
+        " output_mask=excluded.output_mask, reader_mask=excluded.reader_mask,"
+        " weekday_mask=excluded.weekday_mask, start_minute=excluded.start_minute,"
+        " end_minute=excluded.end_minute",
         (permission_id, name, output_mask, reader_mask, weekday_mask, start_minute, end_minute),
     )

@@ -37,7 +37,8 @@ export default function CardsPage() {
   }, []);
 
   useEffect(() => {
-    void load(filter);
+    const t = setTimeout(() => void load(filter), 0);
+    return () => clearTimeout(t);
   }, [filter, load]);
 
   function open(next: Editing) {

@@ -50,3 +50,39 @@ body {
     animation: none !important;
   }
 }
+
+/* Piezas de formulario compartidas por las páginas de gestión. */
+@layer components {
+  .field {
+    margin-top: 0.25rem;
+    display: block;
+    width: 100%;
+    border-radius: 0.25rem;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 0.5rem 0.75rem;
+    color: var(--text);
+  }
+  .btn {
+    border-radius: 0.25rem;
+    background: var(--signal);
+    padding: 0.5rem 1rem;
+    font-weight: 500;
+    color: #fff;
+  }
+  .btn:hover { background: var(--signal-strong); }
+  .btn:disabled { opacity: 0.6; }
+  .btn-quiet {
+    border-radius: 0.25rem;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 0.5rem 1rem;
+  }
+  .btn-quiet:hover { background: var(--paper); }
+  .panel {
+    border-radius: 0.5rem;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 1.25rem;
+  }
+}

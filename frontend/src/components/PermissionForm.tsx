@@ -1,0 +1,142 @@
+"use client";
+
+import { useState, type FormEvent } from "react";
+import { fromMask, toMask } from "@/lib/masks";
+import { hhmmToMinutes, minutesToHHMM } from "@/lib/time";
+import type { Permission } from "@/lib/types";
+
+export type PermissionPayload = Permission;
+
+const OUTPUTS = ["Relay1", "Relay2", "Relay3", "Relay4"];
+const READERS = ["Reader1", "Reader2", "Reader3", "Reader4"];
+const DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+
+interface Props {
+  permission?: Permission;
+  onSubmit: (payload: PermissionPayload) => void | Promise<void>;
+  onCancel?: () => void;
+}
+
+function Checks({ legend, labels, value, onChange }: {
+  legend: string;
+  labels: string[];
+  value: boolean[];
+  onChange: (next: boolean[]) => void;
+}) {
+  return (
+    <fieldset>
+      <legend className="text-sm font-medium">{legend}</legend>
+      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2">
+        {labels.map((label, i) => (
+          <label key={label} className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={value[i]}
+              onChange={() => onChange(value.map((v, j) => (j === i ? !v : v)))}
+            />
+            {label}
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+export default function PermissionForm({ permission, onSubmit, onCancel }: Props) {
+  const [id, setId] = useState(String(permission?.permission_id ?? 0));
+  const [name, setName] = useState(permission?.name ?? "");
+  const [outputs, setOutputs] = useState(fromMask(permission?.output_mask ?? 0, 4));
+  const [readers, setReaders] = useState(fromMask(permission?.reader_mask ?? 0, 4));
+  const [days, setDays] = useState(fromMask(permission?.weekday_mask ?? 0, 7));
+  const [start, setStart] = useState(minutesToHHMM(permission?.start_minute ?? 0));
+  const [end, setEnd] = useState(minutesToHHMM(permission?.end_minute ?? 0));
+  const [error, setError] = useState("");
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    const permissionId = Number(id);
+    if (id.trim() === "" || !Number.isInteger(permissionId) || permissionId < 0 || permissionId > 31) {
+      setError("El número de permiso debe estar entre 0 y 31.");
+      return;
+    }
+    if (name.trim() === "") {
+      setError("El nombre es obligatorio.");
+      return;
+    }
+    let startMinute: number;
+    let endMinute: number;
+    try {
+      startMinute = hhmmToMinutes(start);
+      endMinute = hhmmToMinutes(end);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Horario inválido: usa HH:MM");
+      return;
+    }
+    setError("");
+    await onSubmit({
+      permission_id: permissionId,
+      name: name.trim(),
+      output_mask: toMask(outputs),
+      reader_mask: toMask(readers),
+      weekday_mask: toMask(days),
+      start_minute: startMinute,
+      end_minute: endMinute,
+    });
+  }
+
+  return (
+    <form onSubmit={submit} noValidate className="grid gap-4 sm:grid-cols-2">
+      {error !== "" && (
+        <p role="alert" className="text-sm font-medium text-danger sm:col-span-2">
+          {error}
+        </p>
+      )}
+      <label className="text-sm font-medium">
+        Número
+        <input
+          className="field"
+          type="number"
+          min={0}
+          max={31}
+          value={id}
+          disabled={permission !== undefined}
+          onChange={(e) => setId(e.target.value)}
+        />
+      </label>
+      <label className="text-sm font-medium">
+        Nombre
+        <input className="field" value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <Checks legend="Salidas" labels={OUTPUTS} value={outputs} onChange={setOutputs} />
+      <div>
+        <Checks legend="Lectores" labels={READERS} value={readers} onChange={setReaders} />
+        <p className="mt-2 text-sm text-muted">Los controles RF ignoran los lectores.</p>
+      </div>
+      <div className="sm:col-span-2">
+        <Checks legend="Días" labels={DAYS} value={days} onChange={setDays} />
+      </div>
+      <label className="text-sm font-medium">
+        Desde
+        <input className="field" type="time" value={start} onChange={(e) => setStart(e.target.value)} />
+      </label>
+      <label className="text-sm font-medium">
+        Hasta
+        <input className="field" type="time" value={end} onChange={(e) => setEnd(e.target.value)} />
+      </label>
+      <p className="text-sm text-muted sm:col-span-2">
+        Si Desde y Hasta son iguales, el permiso vale todo el día. Si Desde es mayor que Hasta, el horario cruza la
+        medianoche.
+      </p>
+      <div className="flex gap-3 sm:col-span-2">
+        <button type="submit" className="btn">
+          Guardar
+        </button>
+        {onCancel && (
+          <button type="button" className="btn-quiet" onClick={onCancel}>
+            Cancelar
+          </button>
+        )}
+      </div>
+    </form>
+  );
+}

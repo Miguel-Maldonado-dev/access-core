@@ -9,7 +9,7 @@ echo "==> pytest"
 (cd backend && .venv/bin/pytest -q)
 
 echo "==> npm test"
-(cd frontend && npm test)
+(cd frontend && env -u NEXT_PUBLIC_API_BASE npm test)
 
 echo "==> npm run build"
 (cd frontend && env -u NEXT_PUBLIC_API_BASE npm run build)

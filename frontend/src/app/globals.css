@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+/* Paleta: tinta azul-verdosa para la estructura, papel gris frío para el trabajo,
+   verde señal para la acción y ámbar para lo que requiere atención. */
+:root {
+  --ink: #12222b;
+  --ink-soft: #1c3340;
+  --paper: #eef2f4;
+  --surface: #ffffff;
+  --line: #d3dce1;
+  --text: #15232b;
+  --muted: #55676f;
+  --signal: #0a6f5c;
+  --signal-strong: #07584a;
+  --warn: #9a5b00;
+  --danger: #b42318;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-line: var(--line);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-signal: var(--signal);
+  --color-signal-strong: var(--signal-strong);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --font-sans: "Avenir Next", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+body {
+  background: var(--paper);
+  color: var(--text);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+}
+
+:focus-visible {
+  outline: 3px solid #f0b429;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

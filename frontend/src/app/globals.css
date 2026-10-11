@@ -79,6 +79,7 @@ body {
     padding: 0.5rem 1rem;
   }
   .btn-quiet:hover { background: var(--paper); }
+  .btn-quiet:disabled { opacity: 0.5; cursor: not-allowed; background: var(--surface); }
   .panel {
     border-radius: 0.5rem;
     border: 1px solid var(--line);

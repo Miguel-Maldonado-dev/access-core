@@ -7,19 +7,19 @@ export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : "Ocurrió un error inesperado.";
 }
 
-/** Carga una lista; solo la petición más reciente escribe el estado. */
-export function useApiList<T>(path: string) {
-  const [items, setItems] = useState<T[]>([]);
+/** Carga un recurso; solo la petición más reciente escribe el estado. `initial` debe ser estable. */
+export function useApiResource<R>(path: string, initial: R) {
+  const [data, setData] = useState<R>(initial);
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [version, setVersion] = useState(0);
 
   useEffect(() => {
     let ignore = false;
-    apiFetch<T[]>(path).then(
-      (data) => {
+    apiFetch<R>(path).then(
+      (result) => {
         if (ignore) return;
-        setItems(data);
+        setData(result);
         setError("");
         setLoaded(true);
       },
@@ -35,5 +35,13 @@ export function useApiList<T>(path: string) {
   }, [path, version]);
 
   const reload = useCallback(() => setVersion((v) => v + 1), []);
-  return { items, error, setError, loaded, reload };
+  return { data, error, setError, loaded, reload };
+}
+
+const NO_ITEMS: never[] = [];
+
+/** Carga una lista; solo la petición más reciente escribe el estado. */
+export function useApiList<T>(path: string) {
+  const { data, ...rest } = useApiResource<T[]>(path, NO_ITEMS);
+  return { items: data, ...rest };
 }

@@ -1,0 +1,141 @@
+# Panel web del control de acceso
+
+Reemplaza los programas Tkinter por un servicio en la placa (Raspberry Pi 3B u Orange Pi PC) que:
+
+- **daemon** (`acceso-daemon`): lee el UART del ATmega, decide si abre y registra los eventos. Sigue funcionando aunque la web esté apagada.
+- **web** (`acceso-web`): panel en español, en `http://<ip>:8080`, para titulares, tarjetas, controles, permisos, salidas y logs.
+
+En la placa solo corre Python; Node.js se usa únicamente en la Mac para compilar la interfaz.
+
+## Desarrollo en la Mac
+
+Backend (desde `panel_web/backend`):
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/pytest
+```
+
+Crea un `.env` en `panel_web/backend` (usa `deploy/env.example` como base) con valores locales, por ejemplo:
+
+```
+UART_PORT=/dev/cu.usbmodem11401
+ADMIN_USER=admin
+ADMIN_PASSWORD=cambia-esto
+SESSION_SECRET=una-cadena-larga-y-aleatoria
+DB_PATH=data/access_control.sqlite
+CORS_ORIGINS=http://localhost:3000
+```
+
+Procesos (cada uno en su terminal, desde `panel_web/backend`):
+
+```bash
+.venv/bin/python -m acceso.daemon   # lee el UART (/dev/cu.usbmodem11401)
+.venv/bin/python -m acceso.web      # API en http://localhost:8080
+```
+
+Interfaz (desde `panel_web/frontend`), apuntando a la API con `NEXT_PUBLIC_API_BASE`:
+
+```bash
+npm install
+NEXT_PUBLIC_API_BASE=http://localhost:8080 npm run dev   # http://localhost:3000
+npm test
+```
+
+`CORS_ORIGINS` debe incluir el origen de la interfaz (`http://localhost:3000`); en la placa se deja vacía.
+
+## Generar el paquete (en la Mac)
+
+Desde `panel_web/`:
+
+```bash
+deploy/build_release.sh
+```
+
+Corre `pytest` y `npm test` (si algo falla se detiene), compila la interfaz, la copia a `backend/acceso/web/static` y crea `dist/acceso-panel-AAAAMMDD.tar.gz`.
+
+## Instalación en la placa
+
+Copia el paquete y descomprímelo:
+
+```bash
+scp dist/acceso-panel-AAAAMMDD.tar.gz usuario@IP_DE_LA_PLACA:~
+ssh usuario@IP_DE_LA_PLACA
+tar xzf acceso-panel-AAAAMMDD.tar.gz
+```
+
+La PCB conecta el ATmega al UART del GPIO. `setup_uart.sh` lo habilita según la placa.
+
+### Raspberry Pi 3B (Raspberry Pi OS Bookworm)
+
+El ATmega queda en `/dev/serial0`.
+
+1. `sudo ./deploy/setup_uart.sh` (desactiva la consola serie, agrega `dtoverlay=disable-bt` y apaga `hciuart`, para que el UART bueno quede en el GPIO).
+2. `sudo reboot`
+3. `sudo ./deploy/install.sh` (o con `--db`, ver más abajo).
+
+### Orange Pi PC (Armbian)
+
+El ATmega queda en UART3, `/dev/ttyS3`.
+
+1. `sudo ./deploy/setup_uart.sh` (agrega `uart3` a `overlays=` en `/boot/armbianEnv.txt`).
+2. `sudo reboot`
+3. `sudo ./deploy/install.sh`
+
+### Qué hace `install.sh`
+
+Es idempotente. Instala `python3-venv` y `sqlite3`, crea el usuario `acceso` (grupo `dialout`), copia el backend a `/opt/acceso/backend`, crea el venv `/opt/acceso/venv`, prepara `/var/lib/acceso`, configura zona horaria `America/Mexico_City` con NTP, instala los servicios systemd y los arranca. Si no existe `/etc/acceso/acceso.env`, lo crea: te pide usuario (por defecto `admin`) y contraseña, elige el `UART_PORT` según la placa, genera `SESSION_SECRET` y lo deja con modo 600 y dueño `acceso`. Al final imprime `Panel listo en http://<ip>:8080`.
+
+## Copiar la base actual
+
+La base de la Mac está en `../sqlite_access_control/access_control.sqlite`. Cópiala a la placa y pásala a `install.sh`:
+
+```bash
+scp ../sqlite_access_control/access_control.sqlite usuario@IP_DE_LA_PLACA:~
+ssh usuario@IP_DE_LA_PLACA
+sudo ./deploy/install.sh --db ~/access_control.sqlite
+```
+
+- Solo se copia si todavía no hay base en `/var/lib/acceso/access_control.sqlite`; si ya existe, `install.sh` se niega a sobrescribirla y avisa.
+- **No migres el archivo de la Mac**: si aún necesitas los programas Tkinter, déjalo como está. La copia de la placa se migra sola al arrancar los servicios y conserva un respaldo de la base original.
+
+## Actualizar
+
+Descomprime el paquete nuevo y vuelve a correr `sudo ./deploy/install.sh`. Conserva `/etc/acceso/acceso.env` y la base; solo asegura que `STATIC_DIR` esté en el `.env` y reinicia los servicios.
+
+## Cambiar la contraseña
+
+```bash
+sudo nano /etc/acceso/acceso.env      # cambia ADMIN_PASSWORD
+sudo systemctl restart acceso-web
+```
+
+## Respaldar
+
+```bash
+sudo -u acceso sqlite3 /var/lib/acceso/access_control.sqlite ".backup '/var/lib/acceso/respaldo.sqlite'"
+```
+
+`.backup` es seguro con los servicios en marcha. Luego copia el archivo con `scp`.
+
+## Diagnóstico
+
+```bash
+journalctl -u acceso-daemon -f     # eventos del UART y reconexiones
+journalctl -u acceso-web -f
+systemctl status acceso-daemon acceso-web
+timedatectl                        # zona America/Mexico_City y reloj sincronizado
+```
+
+## Lista de verificación en cada placa
+
+- [ ] 1. Ejecutar `setup_uart.sh` y reiniciar.
+- [ ] 2. Ejecutar `install.sh --db access_control.sqlite`.
+- [ ] 3. Abrir `http://<ip>:8080`: debe pedir usuario y contraseña, y el reloj debe salir sincronizado.
+- [ ] 4. Pasar una tarjeta: el relevador abre y el log aparece.
+- [ ] 5. Presionar un botón del control: el relevador abre y el log aparece.
+- [ ] 6. Presionar el botón de salida: el log aparece sin ningún comando.
+- [ ] 7. Ejecutar `systemctl stop acceso-web`: las tarjetas siguen abriendo.
+- [ ] 8. Desconectar y reconectar la PCB: el daemon se recupera solo.
+- [ ] 9. Reiniciar la placa: los dos servicios arrancan solos.

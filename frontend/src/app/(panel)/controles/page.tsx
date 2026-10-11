@@ -1,46 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import ControlForm, { type ControlPayload } from "@/components/ControlForm";
 import { apiFetch } from "@/lib/api";
+import { errorMessage, useApiList } from "@/lib/useApiList";
 import { outputLabel } from "@/lib/format";
 import type { Control, Holder } from "@/lib/types";
 
 type Editing = { control?: Control } | null;
 
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : "Ocurrió un error inesperado.";
-}
-
 export default function ControlsPage() {
-  const [controls, setControls] = useState<Control[]>([]);
   const [holders, setHolders] = useState<Holder[]>([]);
   const [filter, setFilter] = useState("");
   const [editing, setEditing] = useState<Editing>(null);
-  const [error, setError] = useState("");
   const [formError, setFormError] = useState("");
-  const [loaded, setLoaded] = useState(false);
-
-  const load = useCallback(async (holderId: string) => {
-    try {
-      const qs = holderId === "" ? "" : `?holder_id=${encodeURIComponent(holderId)}`;
-      setControls(await apiFetch<Control[]>(`/api/controls${qs}`));
-      setError("");
-    } catch (err) {
-      setError(message(err));
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
+  const { items: controls, error, setError, loaded, reload } = useApiList<Control>(
+    `/api/controls${filter === "" ? "" : `?holder_id=${encodeURIComponent(filter)}`}`,
+  );
 
   useEffect(() => {
-    apiFetch<Holder[]>("/api/holders").then(setHolders, (err) => setError(message(err)));
-  }, []);
-
-  useEffect(() => {
-    const t = setTimeout(() => void load(filter), 0);
-    return () => clearTimeout(t);
-  }, [filter, load]);
+    apiFetch<Holder[]>("/api/holders").then(setHolders, (err) => setError(errorMessage(err)));
+  }, [setError]);
 
   function open(next: Editing) {
     setFormError("");
@@ -55,9 +35,9 @@ export default function ControlsPage() {
         body: JSON.stringify(payload),
       });
       setEditing(null);
-      await load(filter);
+      reload();
     } catch (err) {
-      setFormError(message(err));
+      setFormError(errorMessage(err));
     }
   }
 
@@ -66,9 +46,9 @@ export default function ControlsPage() {
     try {
       await apiFetch(`/api/controls/${c.control_id}`, { method: "DELETE" });
       setError("");
-      await load(filter);
+      reload();
     } catch (err) {
-      setError(message(err));
+      setError(errorMessage(err));
     }
   }
 

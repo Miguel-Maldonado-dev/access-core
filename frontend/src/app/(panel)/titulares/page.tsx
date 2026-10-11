@@ -1,45 +1,32 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import HolderForm, { type HolderPayload } from "@/components/HolderForm";
 import { apiFetch } from "@/lib/api";
+import { errorMessage, useApiList } from "@/lib/useApiList";
 import { holderKindLabel } from "@/lib/format";
 import { deleteHolderMessage } from "@/lib/messages";
 import type { Holder, Permission } from "@/lib/types";
 
 type Editing = { holder?: Holder } | null;
 
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : "Ocurrió un error inesperado.";
-}
-
 export default function HoldersPage() {
-  const [holders, setHolders] = useState<Holder[]>([]);
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
   const [editing, setEditing] = useState<Editing>(null);
-  const [error, setError] = useState("");
-  const [loaded, setLoaded] = useState(false);
-
-  const load = useCallback(async (q: string) => {
-    try {
-      setHolders(await apiFetch<Holder[]>(`/api/holders?q=${encodeURIComponent(q)}`));
-      setError("");
-    } catch (err) {
-      setError(message(err));
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
+  const { items: holders, error, setError, loaded, reload } = useApiList<Holder>(
+    `/api/holders?q=${encodeURIComponent(search)}`,
+  );
 
   useEffect(() => {
-    apiFetch<Permission[]>("/api/permissions").then(setPermissions, (err) => setError(message(err)));
-  }, []);
+    apiFetch<Permission[]>("/api/permissions").then(setPermissions, (err) => setError(errorMessage(err)));
+  }, [setError]);
 
   useEffect(() => {
-    const t = setTimeout(() => void load(query), 250);
+    const t = setTimeout(() => setSearch(query), 250);
     return () => clearTimeout(t);
-  }, [query, load]);
+  }, [query]);
 
   async function save(payload: HolderPayload) {
     const holder = editing?.holder;
@@ -49,9 +36,9 @@ export default function HoldersPage() {
         body: JSON.stringify(payload),
       });
       setEditing(null);
-      await load(query);
+      reload();
     } catch (err) {
-      setError(message(err));
+      setError(errorMessage(err));
     }
   }
 
@@ -60,9 +47,9 @@ export default function HoldersPage() {
     try {
       await apiFetch(`/api/holders/${h.holder_id}`, { method: "DELETE" });
       setError("");
-      await load(query);
+      reload();
     } catch (err) {
-      setError(message(err));
+      setError(errorMessage(err));
     }
   }
 

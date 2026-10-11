@@ -1,45 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import CardForm, { type CardPayload } from "@/components/CardForm";
 import { apiFetch } from "@/lib/api";
+import { errorMessage, useApiList } from "@/lib/useApiList";
 import type { Card, Holder } from "@/lib/types";
 
 type Editing = { card?: Card } | null;
 
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : "Ocurrió un error inesperado.";
-}
-
 export default function CardsPage() {
-  const [cards, setCards] = useState<Card[]>([]);
   const [holders, setHolders] = useState<Holder[]>([]);
   const [filter, setFilter] = useState("");
   const [editing, setEditing] = useState<Editing>(null);
-  const [error, setError] = useState("");
   const [formError, setFormError] = useState("");
-  const [loaded, setLoaded] = useState(false);
-
-  const load = useCallback(async (holderId: string) => {
-    try {
-      const qs = holderId === "" ? "" : `?holder_id=${encodeURIComponent(holderId)}`;
-      setCards(await apiFetch<Card[]>(`/api/cards${qs}`));
-      setError("");
-    } catch (err) {
-      setError(message(err));
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
+  const { items: cards, error, setError, loaded, reload } = useApiList<Card>(
+    `/api/cards${filter === "" ? "" : `?holder_id=${encodeURIComponent(filter)}`}`,
+  );
 
   useEffect(() => {
-    apiFetch<Holder[]>("/api/holders").then(setHolders, (err) => setError(message(err)));
-  }, []);
-
-  useEffect(() => {
-    const t = setTimeout(() => void load(filter), 0);
-    return () => clearTimeout(t);
-  }, [filter, load]);
+    apiFetch<Holder[]>("/api/holders").then(setHolders, (err) => setError(errorMessage(err)));
+  }, [setError]);
 
   function open(next: Editing) {
     setFormError("");
@@ -54,9 +34,9 @@ export default function CardsPage() {
         body: JSON.stringify(card ? { holder_id: payload.holder_id, description: payload.description } : payload),
       });
       setEditing(null);
-      await load(filter);
+      reload();
     } catch (err) {
-      setFormError(message(err));
+      setFormError(errorMessage(err));
     }
   }
 
@@ -65,9 +45,9 @@ export default function CardsPage() {
     try {
       await apiFetch(`/api/cards/${c.card_code}`, { method: "DELETE" });
       setError("");
-      await load(filter);
+      reload();
     } catch (err) {
-      setError(message(err));
+      setError(errorMessage(err));
     }
   }
 

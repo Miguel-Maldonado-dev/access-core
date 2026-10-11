@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acceso-panel"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = ["fastapi", "uvicorn", "pyserial", "itsdangerous", "python-dotenv"]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+
+[tool.setuptools.packages.find]
+include = ["acceso*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

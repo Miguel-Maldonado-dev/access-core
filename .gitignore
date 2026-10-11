@@ -1,0 +1,11 @@
+backend/.venv/
+__pycache__/
+*.sqlite*
+backend/data/
+backend/acceso/web/static/
+frontend/node_modules/
+frontend/out/
+frontend/.next/
+dist/
+.env
+*.egg-info/

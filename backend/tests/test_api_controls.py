@@ -111,3 +111,23 @@ def test_requires_session(anon_client):
     assert anon_client.get("/api/controls").status_code == 401
     assert anon_client.post("/api/controls", json={}).status_code == 401
     assert anon_client.delete("/api/controls/1").status_code == 401
+
+
+def test_codeless_button_ignores_output(client, db):
+    h = add_holder(db)
+    b = [{"rf_code": 5, "output_id": 0}, {"rf_code": None, "output_id": 7}, EMPTY, EMPTY]
+    r = _post(client, h, b)
+    assert r.status_code == 201
+    assert r.json()["buttons"] == [b[0], EMPTY, EMPTY, EMPTY]
+    cid = r.json()["control_id"]
+    r = client.put(f"/api/controls/{cid}", json={"holder_id": h, "description": "", "buttons": b})
+    assert r.status_code == 200 and r.json()["buttons"][1] == EMPTY
+
+
+def test_coded_button_output_4_422_and_count_message(client, db):
+    h = add_holder(db)
+    r = _post(client, h, [{"rf_code": 1, "output_id": 4}, EMPTY, EMPTY, EMPTY])
+    assert r.status_code == 422
+    assert r.json()["detail"] == "La salida debe estar entre 0 y 3."
+    r = _post(client, h, BUTTONS[:3])
+    assert r.json()["detail"] == "El control debe tener exactamente 4 botones."

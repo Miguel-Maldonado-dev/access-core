@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from acceso.constants import CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE, OUTPUT_COUNT
+from acceso.constants import CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE
 
 
 class HolderIn(BaseModel):
@@ -85,13 +85,6 @@ class ButtonIn(BaseModel):
     @classmethod
     def _rf(cls, v: Optional[int]) -> Optional[int]:
         return _check_code(v)
-
-    @field_validator("output_id")
-    @classmethod
-    def _output(cls, v: Optional[int]) -> Optional[int]:
-        if v is not None and not 0 <= v < OUTPUT_COUNT:
-            raise ValueError("La salida debe estar entre 0 y %d." % (OUTPUT_COUNT - 1))
-        return v
 
 
 class ControlIn(BaseModel):

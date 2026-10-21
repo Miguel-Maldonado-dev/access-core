@@ -115,17 +115,18 @@ Descomprime el paquete nuevo y vuelve a correr `sudo ./deploy/install.sh`. Conse
 
 Notas de la versión con PIN (esquema v4):
 
-- Al arrancar, los servicios migran la base a v4 y dejan un respaldo `<base>_backup_v3.sqlite` (con copias con fecha, máximo 3). **El código anterior no puede leer una base v4.** Para volver atrás: detén los servicios (`sudo systemctl stop acceso-daemon acceso-web`), restaura `<base>_backup_v3.sqlite` sobre la base y reinstala el paquete anterior.
-- Un PIN solo abre la puerta si activas **"Permitir PIN"** en un permiso del titular; los permisos existentes quedan sin esa casilla.
+- Al arrancar, los servicios migran la base a v4 y dejan un respaldo `<base>_backup_v3.sqlite` (con copias con fecha, máximo 3). **El código anterior no puede leer una base v4.** Para volver atrás: detén los servicios (`sudo systemctl stop acceso-daemon acceso-web`), borra `<base>-wal` y `<base>-shm` (junto a la base), restaura `<base>_backup_v3.sqlite` sobre la base y reinstala el paquete anterior.
+- Un PIN solo abre la puerta en los lectores marcados en la columna **PIN** del permiso del titular (ver las notas de v5 abajo).
 - Tras 5 PIN incorrectos en un lector, ese lector rechaza PIN durante 5 minutos (motivo "PIN bloqueado"); las tarjetas y controles siguen funcionando.
 - Los PIN se guardan en texto plano; `/var/lib/acceso` queda en modo 700 y los servicios usan `UMask=0077`.
 - Recarga el navegador (Ctrl+F5) en las pestañas abiertas antes de la actualización, o un formulario viejo podría no mostrar el PIN.
 
 Notas de la versión con permisos por método (esquema v5):
 
-- La base pasa a v5 y el código anterior ya no la lee. Al arrancar, los servicios dejan un respaldo `<base>_backup_v4.sqlite` (con copias con fecha, máximo 3). Para volver atrás: detén los servicios (`sudo systemctl stop acceso-daemon acceso-web`), restaura `<base>_backup_v4.sqlite` sobre la base y reinstala el paquete anterior.
+- La base pasa a v5 y el código anterior ya no la lee. Al arrancar, los servicios dejan un respaldo `<base>_backup_v4.sqlite` (con copias con fecha, máximo 3). Para volver atrás: detén los servicios (`sudo systemctl stop acceso-daemon acceso-web`), borra `<base>-wal` y `<base>-shm` (junto a la base), restaura `<base>_backup_v4.sqlite` sobre la base y reinstala el paquete anterior.
 - Cada permiso define por separado los lectores donde vale la **Tarjeta** y donde vale el **PIN**, y una casilla global **"Permitir control RF"**. La migración conserva lo que hoy funciona: Tarjeta = los lectores que tenía el permiso, PIN = esos mismos lectores solo si tenía "Permitir PIN", RF activado.
 - Después de actualizar, revisa en cada permiso las columnas Tarjeta, PIN y RF.
+- Recarga las pestañas del panel abiertas antes de actualizar (Ctrl+F5): una pestaña vieja envía el formato anterior y el servidor la rechaza con el aviso "El panel está desactualizado".
 
 ## Cambiar la contraseña
 

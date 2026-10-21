@@ -2,11 +2,14 @@
 import re
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, StrictBool, field_validator
+from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator, model_validator
 
 from acceso.constants import (
     CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE, PIN_MAX_DIGITS, PIN_MIN_DIGITS,
 )
+
+
+STALE_PANEL_MESSAGE = "El panel está desactualizado: recarga la página (Ctrl+F5) y vuelve a intentar."
 
 
 class HolderIn(BaseModel):
@@ -57,15 +60,25 @@ class HolderIn(BaseModel):
 class PermissionBody(BaseModel):
     name: str = ""
     output_mask: int = Field(ge=0, le=15)
-    card_reader_mask: int = Field(default=0, ge=0, le=15)
-    pin_reader_mask: int = Field(default=0, ge=0, le=15)
+    card_reader_mask: StrictInt = Field(default=0, ge=0, le=15)
+    pin_reader_mask: StrictInt = Field(default=0, ge=0, le=15)
     weekday_mask: int = Field(ge=0, le=127)
     start_minute: int = Field(ge=0, le=1439)
     end_minute: int = Field(ge=0, le=1439)
     allow_rf: StrictBool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_v4_fields(cls, data):
+        if isinstance(data, dict) and ("reader_mask" in data or "allow_pin" in data):
+            raise ValueError(STALE_PANEL_MESSAGE)
+        return data
+
 
 class PermissionCreate(PermissionBody):
+    card_reader_mask: StrictInt = Field(ge=0, le=15)
+    pin_reader_mask: StrictInt = Field(ge=0, le=15)
+    allow_rf: StrictBool
     permission_id: int = Field(ge=0, le=31)
 
 

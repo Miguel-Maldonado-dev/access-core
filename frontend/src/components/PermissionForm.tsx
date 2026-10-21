@@ -150,6 +150,15 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
         </table>
       </fieldset>
       <div className="sm:col-span-2">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <input type="checkbox" checked={allowRf} onChange={(e) => setAllowRf(e.target.checked)} />
+          Permitir control RF
+        </label>
+        <p className="mt-1 text-sm text-muted">
+          El control RF no depende del lector: usa las salidas, días y horario de este permiso.
+        </p>
+      </div>
+      <div className="sm:col-span-2">
         <Checks legend="Días" labels={DAYS} value={days} onChange={setDays} />
       </div>
       <label className="text-sm font-medium">
@@ -160,15 +169,6 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
         Hasta
         <input className="field" type="time" value={end} onChange={(e) => setEnd(e.target.value)} />
       </label>
-      <div className="sm:col-span-2">
-        <label className="flex items-center gap-2 text-sm font-medium">
-          <input type="checkbox" checked={allowRf} onChange={(e) => setAllowRf(e.target.checked)} />
-          Permitir control RF
-        </label>
-        <p className="mt-1 text-sm text-muted">
-          El control RF no depende del lector: usa las salidas, días y horario de este permiso.
-        </p>
-      </div>
       <p className="text-sm text-muted sm:col-span-2">
         Si Desde y Hasta son iguales, el permiso vale todo el día. Si Desde es mayor que Hasta, el horario cruza la
         medianoche.

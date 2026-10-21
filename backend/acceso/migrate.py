@@ -1,4 +1,4 @@
-"""Migración de la base v2 (Tkinter) y v3 al esquema v5 del panel web."""
+"""Migración de la base v2 (Tkinter), v3 y v4 al esquema v5 del panel web."""
 import fcntl
 import os
 import re
@@ -203,6 +203,10 @@ def _rebuild_permissions(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE permissions_v5 RENAME TO permissions")
 
 
+def _holder_permission_orphans(conn: sqlite3.Connection) -> set:
+    return {(r[1], r[2], r[3]) for r in conn.execute("PRAGMA foreign_key_check(holder_permissions)")}
+
+
 def _convert_v3_or_v4(conn: sqlite3.Connection, version: int) -> None:
     conn.execute("PRAGMA foreign_keys=OFF")
     try:
@@ -212,11 +216,11 @@ def _convert_v3_or_v4(conn: sqlite3.Connection, version: int) -> None:
                     conn.execute(statement)
                 for statement in _unique_index_statements():
                     conn.execute(statement)
+            # Huérfanos previos (p. ej. de una importación con FK apagadas) se conservan;
+            # solo aborta lo que la reconstrucción introduzca.
+            orphans_before = _holder_permission_orphans(conn)
             _rebuild_permissions(conn)
-            # solo lo que este paso pudo romper: referencias a permissions
-            violations = [r for r in conn.execute("PRAGMA foreign_key_check")
-                          if r["table"] == "holder_permissions"]
-            if violations:
+            if _holder_permission_orphans(conn) - orphans_before:
                 raise sqlite3.IntegrityError("foreign_key_check falló tras reconstruir permissions")
             conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
     finally:

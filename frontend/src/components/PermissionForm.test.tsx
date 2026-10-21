@@ -17,6 +17,11 @@ describe("PermissionForm", () => {
       screen.getByText("El control RF no depende del lector: usa las salidas, días y horario de este permiso."),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Permitir PIN")).not.toBeInTheDocument();
+    const grid = screen.getByLabelText("PIN Reader4");
+    const rf = screen.getByLabelText("Permitir control RF");
+    const days = screen.getByLabelText("Lunes");
+    expect(grid.compareDocumentPosition(rf) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rf.compareDocumentPosition(days) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("envía las máscaras por método, el RF y el horario", async () => {

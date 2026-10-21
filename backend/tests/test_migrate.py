@@ -169,7 +169,7 @@ def _dump(path):
         conn.close()
 
 
-def test_migrates_v3_to_v4_preserving_rows(tmp_path):
+def test_migrates_v3_to_v5_preserving_rows(tmp_path):
     db = tmp_path / "access_control.sqlite"
     make_v3(db)
     before = _dump(db)
@@ -194,6 +194,11 @@ def test_migrates_v3_to_v4_preserving_rows(tmp_path):
     assert len(list(tmp_path.glob("*_backup_v3*.sqlite"))) == 1
 
 
+def _norm_sql(sql):
+    sql = sql.replace('"', "").replace("IF NOT EXISTS ", "")
+    return " ".join(sql.split()).replace("( ", "(").replace(" )", ")")
+
+
 def _schema_shape(path):
     conn = sqlite3.connect(str(path))
     try:
@@ -205,6 +210,10 @@ def _schema_shape(path):
                 sorted(tuple(r[1:]) for r in conn.execute("PRAGMA index_list(%s)" % table)),
                 sorted(tuple(r[2:]) for r in conn.execute("PRAGMA foreign_key_list(%s)" % table)),
             )
+        shape["_sql"] = sorted(
+            (name, _norm_sql(sql)) for name, sql in conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL"
+                " AND name NOT LIKE 'sqlite_%'"))
         return shape
     finally:
         conn.close()
@@ -395,3 +404,46 @@ def test_v4_backup_rotates_and_prunes(tmp_path):
     result = migrate(db)
     assert rows(result.backup_path, "PRAGMA user_version") == [(4,)]
     assert len(list(tmp_path.glob("access_control_backup_v4.*.sqlite"))) == 3
+
+
+def _v4_with_orphans(path, *extra):
+    make_v4(path)
+    conn = sqlite3.connect(str(path))
+    conn.execute("PRAGMA foreign_keys=OFF")
+    for sql in extra:
+        conn.execute(sql)
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize("orphan", [(99, 0), (1, 7)])
+def test_v4_pre_existing_orphans_do_not_block_and_are_kept(tmp_path, orphan):
+    db = tmp_path / "access_control.sqlite"
+    _v4_with_orphans(db, "INSERT INTO holder_permissions VALUES (%d, %d)" % orphan)
+    before = _dump(db)
+
+    result = migrate(db)
+
+    assert result.to_version == 5
+    assert rows(db, "PRAGMA user_version") == [(5,)]
+    assert _dump(db)["holder_permissions"] == before["holder_permissions"]
+    assert orphan in _dump(db)["holder_permissions"]
+
+
+def test_rebuild_that_loses_a_permission_aborts_and_keeps_v4(tmp_path, monkeypatch):
+    from acceso import migrate as m
+    db = tmp_path / "access_control.sqlite"
+    make_v4(db)
+    before = _dump(db)
+    real = m._rebuild_permissions
+
+    def lossy(conn):
+        real(conn)
+        conn.execute("DELETE FROM permissions WHERE permission_id = 1")
+
+    monkeypatch.setattr(m, "_rebuild_permissions", lossy)
+    with pytest.raises(MigrationError) as exc:
+        migrate(db)
+    assert "sigue en v4" in str(exc.value)
+    assert rows(db, "PRAGMA user_version") == [(4,)]
+    assert _dump(db) == before

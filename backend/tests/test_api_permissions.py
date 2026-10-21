@@ -74,3 +74,43 @@ def test_put_without_method_fields_keeps_them(client, db):
                                          ("card_reader_mask", 16), ("pin_reader_mask", -1)])
 def test_method_fields_validated(client, db, field, value):
     assert client.post("/api/permissions", json={**PERM, field: value}).status_code == 422
+
+
+STALE = "El panel está desactualizado: recarga la página (Ctrl+F5) y vuelve a intentar."
+
+
+def _old_body():
+    body = {k: v for k, v in PERM.items()
+            if k not in ("permission_id", "card_reader_mask", "pin_reader_mask", "allow_rf")}
+    return {**body, "reader_mask": 0, "allow_pin": False}
+
+
+def test_post_with_v4_fields_is_rejected(client, db):
+    r = client.post("/api/permissions", json={**PERM, "reader_mask": 1})
+    assert r.status_code == 422 and r.json() == {"detail": STALE}
+    r = client.post("/api/permissions", json={**PERM, "allow_pin": True})
+    assert r.status_code == 422 and r.json()["detail"] == STALE
+    assert [p["permission_id"] for p in client.get("/api/permissions").json()] == [0]
+
+
+def test_put_with_v4_fields_is_rejected_and_row_unchanged(client, db):
+    before = client.get("/api/permissions").json()[0]
+    r = client.put("/api/permissions/0", json={**_old_body(), "name": "Cambiado"})
+    assert r.status_code == 422 and r.json() == {"detail": STALE}
+    assert client.get("/api/permissions").json()[0] == before
+
+
+@pytest.mark.parametrize("field", ["card_reader_mask", "pin_reader_mask", "allow_rf"])
+def test_post_requires_method_fields(client, db, field):
+    body = {k: v for k, v in PERM.items() if k != field}
+    r = client.post("/api/permissions", json=body)
+    assert r.status_code == 422 and r.json()["detail"] == "Valor inválido en '%s'." % field
+
+
+@pytest.mark.parametrize("field", ["card_reader_mask", "pin_reader_mask"])
+@pytest.mark.parametrize("value", [True, "5", 5.0])
+def test_masks_are_strict_ints(client, db, field, value):
+    assert client.post("/api/permissions", json={**PERM, field: value}).status_code == 422
+    client.post("/api/permissions", json=PERM)
+    body = {k: v for k, v in PERM.items() if k != "permission_id"}
+    assert client.put("/api/permissions/3", json={**body, field: value}).status_code == 422

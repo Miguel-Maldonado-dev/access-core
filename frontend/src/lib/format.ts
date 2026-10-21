@@ -9,12 +9,15 @@ const REASONS: Record<number, string> = {
   5: "Control desconocido",
   6: "Botón sin salida",
   7: "Botón de salida",
+  8: "PIN desconocido",
+  9: "PIN no permitido",
 };
 
 const SOURCES: Record<number, string> = {
   0: "Tarjeta",
   1: "Control RF",
   2: "Botón de salida",
+  3: "PIN",
 };
 
 export function reasonLabel(reason: number): string {
@@ -43,6 +46,9 @@ export function mediumLabel(log: LogItem): string {
     if (log.reason === 5) return "Control no registrado";
     const name = log.credential_label ?? (log.control_id !== null ? `Control ${log.control_id}` : "Control borrado");
     return device === null ? name : `${name} · Botón ${device + 1}`;
+  }
+  if (log.source === 3) {
+    return device === null ? "PIN" : `PIN · Reader${device + 1}`;
   }
   return device === null ? "Botón de salida" : `Botón de salida ${device + 1}`;
 }

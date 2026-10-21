@@ -35,6 +35,9 @@ describe("format", () => {
     expect(sourceLabel(2)).toBe("Botón de salida");
     expect(sourceLabel(0)).toBe("Tarjeta");
     expect(sourceLabel(1)).toBe("Control RF");
+    expect(sourceLabel(3)).toBe("PIN");
+    expect(reasonLabel(8)).toBe("PIN desconocido");
+    expect(reasonLabel(9)).toBe("PIN no permitido");
     expect(outputLabel(3)).toBe("Relay4");
     expect(outputLabel(null)).toBe("-");
     expect(holderKindLabel("persona")).toBe("Persona");
@@ -49,6 +52,8 @@ describe("format", () => {
     expect(mediumLabel(log({ source: 1, reason: 5, control_id: null, device_id: null }))).toBe("Control no registrado");
     expect(mediumLabel(log({ source: 1, reason: 0, control_id: null, credential_label: "Control 1", device_id: 1 }))).toBe("Control 1 · Botón 2");
     expect(mediumLabel(log({ source: 1, reason: 0, control_id: null, credential_label: null, device_id: 0 }))).toBe("Control borrado · Botón 1");
+    expect(mediumLabel(log({ source: 3, credential_label: "PIN", device_id: 1 }))).toBe("PIN · Reader2");
+    expect(mediumLabel(log({ source: 3, credential_label: null, device_id: null }))).toBe("PIN");
     expect(mediumLabel(log({ source: 2, device_id: 1 }))).toBe("Botón de salida 2");
   });
 

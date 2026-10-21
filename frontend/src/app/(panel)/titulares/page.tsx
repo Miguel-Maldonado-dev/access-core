@@ -101,6 +101,7 @@ export default function HoldersPage() {
               <th className="px-4 py-2 text-right font-medium">Tarjetas</th>
               <th className="px-4 py-2 text-right font-medium">Controles</th>
               <th className="px-4 py-2 font-medium">Permisos</th>
+              <th className="px-4 py-2 font-medium">PIN</th>
               <th className="px-4 py-2" />
             </tr>
           </thead>
@@ -112,6 +113,7 @@ export default function HoldersPage() {
                 <td className="px-4 py-2 text-right tabular-nums">{h.card_count}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{h.control_count}</td>
                 <td className="px-4 py-2">{h.permission_ids.length > 0 ? h.permission_ids.join(", ") : "-"}</td>
+                <td className="px-4 py-2">{h.pin !== null ? "Sí" : "—"}</td>
                 <td className="whitespace-nowrap px-4 py-2 text-right">
                   <button type="button" className="mr-3 font-medium text-signal underline" onClick={() => setEditing({ holder: h })}>
                     Editar
@@ -124,7 +126,7 @@ export default function HoldersPage() {
             ))}
             {loaded && holders.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-muted">
+                <td colSpan={7} className="px-4 py-6 text-center text-muted">
                   {query === "" ? "Aún no hay titulares. Crea el primero con Nuevo titular." : "Ningún titular coincide con la búsqueda."}
                 </td>
               </tr>

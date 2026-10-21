@@ -7,6 +7,7 @@ export interface Holder {
   department: string;
   address: string;
   notes: string;
+  pin: string | null;
   permission_ids: number[];
   card_count: number;
   control_count: number;
@@ -20,6 +21,7 @@ export interface Permission {
   weekday_mask: number;
   start_minute: number;
   end_minute: number;
+  allow_pin: boolean;
 }
 
 export interface Output {

@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import ControlForm from "./ControlForm";
 
 const holders = [
-  { holder_id: 1, kind: "domicilio" as const, name: "Amadeo 1260", department: "", address: "", notes: "", permission_ids: [], card_count: 0, control_count: 0 },
+  { holder_id: 1, kind: "domicilio" as const, name: "Amadeo 1260", department: "", address: "", notes: "", pin: null, permission_ids: [], card_count: 0, control_count: 0 },
 ];
 
 describe("ControlForm", () => {

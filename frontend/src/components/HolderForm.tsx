@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { apiFetch } from "@/lib/api";
 import type { Holder, HolderKind, Permission } from "@/lib/types";
 
 export interface HolderPayload {
@@ -9,6 +10,7 @@ export interface HolderPayload {
   department: string;
   address: string;
   notes: string;
+  pin: string | null;
   permission_ids: number[];
 }
 
@@ -26,16 +28,32 @@ export default function HolderForm({ holder, permissions, onSubmit, onCancel }: 
   const [address, setAddress] = useState(holder?.address ?? "");
   const [notes, setNotes] = useState(holder?.notes ?? "");
   const [selected, setSelected] = useState<number[]>(holder?.permission_ids ?? []);
+  const [pin, setPin] = useState(holder?.pin ?? "");
+  const [showPin, setShowPin] = useState(false);
   const [error, setError] = useState("");
 
   function toggle(id: number) {
     setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
   }
 
+  async function generatePin() {
+    try {
+      const res = await apiFetch<{ pin: string }>("/api/holders/generate-pin", { method: "POST" });
+      setPin(res.pin);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo generar el PIN.");
+    }
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (name.trim() === "") {
       setError("El nombre es obligatorio.");
+      return;
+    }
+    if (pin !== "" && pin.length < 4) {
+      setError("El PIN debe tener de 4 a 6 dígitos.");
       return;
     }
     setError("");
@@ -45,6 +63,7 @@ export default function HolderForm({ holder, permissions, onSubmit, onCancel }: 
       department: department.trim(),
       address: address.trim(),
       notes: notes.trim(),
+      pin: pin === "" ? null : pin,
       permission_ids: [...selected].sort((a, b) => a - b),
     });
   }
@@ -79,6 +98,30 @@ export default function HolderForm({ holder, permissions, onSubmit, onCancel }: 
         Notas
         <textarea className="field" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
       </label>
+      <div className="sm:col-span-2">
+        <label htmlFor="holder-pin" className="text-sm font-medium">
+          PIN
+        </label>
+        <div className="flex flex-wrap items-center gap-3">
+          <input
+            id="holder-pin"
+            className="field max-w-40"
+            type={showPin ? "text" : "password"}
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={6}
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+          />
+          <button type="button" className="btn-quiet" onClick={() => void generatePin()}>
+            Generar
+          </button>
+          <button type="button" className="btn-quiet" onClick={() => setShowPin((s) => !s)}>
+            {showPin ? "Ocultar PIN" : "Mostrar PIN"}
+          </button>
+        </div>
+        <p className="mt-1 text-sm text-muted">De 4 a 6 dígitos, único por titular. Déjalo vacío para no usar PIN.</p>
+      </div>
       <fieldset className="sm:col-span-2">
         <legend className="text-sm font-medium">Permisos</legend>
         {permissions.length === 0 ? (

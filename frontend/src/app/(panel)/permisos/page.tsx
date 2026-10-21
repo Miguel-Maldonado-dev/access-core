@@ -123,6 +123,7 @@ export default function PermissionsPage() {
               <th className="px-4 py-2 font-medium">Lectores</th>
               <th className="px-4 py-2 font-medium">Días</th>
               <th className="px-4 py-2 font-medium">Horario</th>
+              <th className="px-4 py-2 font-medium">PIN</th>
               <th className="px-4 py-2" />
             </tr>
           </thead>
@@ -135,6 +136,7 @@ export default function PermissionsPage() {
                 <td className="px-4 py-2">{readersText(p.reader_mask)}</td>
                 <td className="px-4 py-2">{daysText(p.weekday_mask)}</td>
                 <td className="px-4 py-2">{scheduleText(p)}</td>
+                <td className="px-4 py-2">{p.allow_pin ? "Sí" : "—"}</td>
                 <td className="whitespace-nowrap px-4 py-2 text-right">
                   <button type="button" className="mr-3 font-medium text-signal underline" onClick={() => setEditing({ permission: p })}>
                     Editar
@@ -147,7 +149,7 @@ export default function PermissionsPage() {
             ))}
             {loaded && permissions.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-muted">
+                <td colSpan={8} className="px-4 py-6 text-center text-muted">
                   Aún no hay permisos. Crea el primero con Nuevo permiso.
                 </td>
               </tr>

@@ -50,6 +50,7 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
   const [days, setDays] = useState(fromMask(permission?.weekday_mask ?? 0, 7));
   const [start, setStart] = useState(minutesToHHMM(permission?.start_minute ?? 0));
   const [end, setEnd] = useState(minutesToHHMM(permission?.end_minute ?? 0));
+  const [allowPin, setAllowPin] = useState(permission?.allow_pin ?? false);
   const [error, setError] = useState("");
 
   async function submit(e: FormEvent) {
@@ -81,6 +82,7 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
       weekday_mask: toMask(days),
       start_minute: startMinute,
       end_minute: endMinute,
+      allow_pin: allowPin,
     });
   }
 
@@ -122,6 +124,10 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
       <label className="text-sm font-medium">
         Hasta
         <input className="field" type="time" value={end} onChange={(e) => setEnd(e.target.value)} />
+      </label>
+      <label className="flex items-center gap-2 text-sm font-medium sm:col-span-2">
+        <input type="checkbox" checked={allowPin} onChange={(e) => setAllowPin(e.target.checked)} />
+        Permitir PIN
       </label>
       <p className="text-sm text-muted sm:col-span-2">
         Si Desde y Hasta son iguales, el permiso vale todo el día. Si Desde es mayor que Hasta, el horario cruza la

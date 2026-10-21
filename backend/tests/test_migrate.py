@@ -1,5 +1,6 @@
 import multiprocessing
 import os
+import stat
 import sqlite3
 from pathlib import Path
 
@@ -264,3 +265,33 @@ def test_existing_v3_backup_is_rotated(tmp_path):
     assert rows(tmp_path / "access_control_backup_v3.sqlite", "PRAGMA user_version") == [(3,)]
     kept = list(tmp_path.glob("access_control_backup_v3.*.sqlite"))
     assert len(kept) == 1 and kept[0].read_bytes() == b"viejo"
+
+
+def test_backup_is_private_and_failed_attempts_keep_at_most_three_dated_copies(tmp_path):
+    db = tmp_path / "access_control.sqlite"
+    make_legacy(db)
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE users SET name='  '")
+    conn.commit()
+    conn.close()
+    for i in range(6):
+        with pytest.raises(MigrationError):
+            migrate(db)
+        os.utime(str(tmp_path / "access_control_backup_v2.sqlite"), (1_700_000_000 + i, 1_700_000_000 + i))
+    current = tmp_path / "access_control_backup_v2.sqlite"
+    assert stat.S_IMODE(current.stat().st_mode) == 0o600
+    dated = list(tmp_path.glob("access_control_backup_v2.*.sqlite"))
+    assert 1 <= len(dated) <= 3
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_v3_backup_mode_is_0600_and_pruned(tmp_path):
+    db = tmp_path / "access_control.sqlite"
+    make_v3(db)
+    for i in range(5):
+        (tmp_path / ("access_control_backup_v3.2026010%d-000000.sqlite" % i)).write_bytes(b"x")
+        os.utime(str(tmp_path / ("access_control_backup_v3.2026010%d-000000.sqlite" % i)),
+                 (1_700_000_000 + i, 1_700_000_000 + i))
+    result = migrate(db)
+    assert stat.S_IMODE(result.backup_path.stat().st_mode) == 0o600
+    assert len(list(tmp_path.glob("access_control_backup_v3.*.sqlite"))) == 3

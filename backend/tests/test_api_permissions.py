@@ -1,3 +1,4 @@
+import pytest
 PERM = {"permission_id": 3, "name": "Noches", "output_mask": 3, "reader_mask": 15,
         "weekday_mask": 127, "start_minute": 0, "end_minute": 1439, "allow_pin": False}
 
@@ -52,3 +53,15 @@ def test_allow_pin_roundtrip_and_default(client, db):
     assert client.put("/api/permissions/3", json=no_flag).json()["allow_pin"] is False
     assert client.put("/api/permissions/3", json={**body, "allow_pin": True}).json()["allow_pin"] is True
     assert [p["allow_pin"] for p in client.get("/api/permissions").json()] == [False, True]
+
+
+def test_put_without_allow_pin_keeps_it(client, db):
+    client.post("/api/permissions", json={**PERM, "allow_pin": True})
+    body = {k: v for k, v in PERM.items() if k not in ("permission_id", "allow_pin")}
+    r = client.put("/api/permissions/3", json={**body, "name": "Otro"})
+    assert r.status_code == 200 and r.json()["allow_pin"] is True and r.json()["name"] == "Otro"
+
+
+@pytest.mark.parametrize("value", ["yes", "on", 1, "true"])
+def test_allow_pin_is_strict_bool(client, db, value):
+    assert client.post("/api/permissions", json={**PERM, "allow_pin": value}).status_code == 422

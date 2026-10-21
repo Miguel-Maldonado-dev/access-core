@@ -4,7 +4,7 @@ import type { Holder } from "./types";
 
 const base: Holder = {
   holder_id: 1, kind: "persona", name: "Amadeo 1260", department: "", address: "",
-  notes: "", pin: null, permission_ids: [], card_count: 2, control_count: 1,
+  notes: "", has_pin: false, permission_ids: [], card_count: 2, control_count: 1,
 };
 
 describe("deleteHolderMessage", () => {

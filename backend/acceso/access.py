@@ -1,12 +1,13 @@
 """Autorización de tarjetas, controles RF y botones de salida."""
 import sqlite3
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Callable, Dict, List, Optional
 
 from .constants import (
-    EXIT_BUTTON_OUTPUTS, REASON_ALLOWED, REASON_BUTTON_NO_OUTPUT, REASON_EXIT_BUTTON,
-    REASON_NO_OUTPUT, REASON_NO_PERMISSION, REASON_PIN_NOT_ALLOWED, REASON_UART_ERROR,
+    EXIT_BUTTON_OUTPUTS, PIN_FAILURE_WINDOW_S, PIN_LOCKOUT_S, PIN_MAX_FAILURES, REASON_ALLOWED, REASON_BUTTON_NO_OUTPUT, REASON_EXIT_BUTTON,
+    REASON_NO_OUTPUT, REASON_NO_PERMISSION, REASON_PIN_LOCKED, REASON_PIN_NOT_ALLOWED, REASON_UART_ERROR,
     REASON_UNKNOWN_CARD, REASON_UNKNOWN_CONTROL, REASON_UNKNOWN_PIN, SOURCE_CARD,
     SOURCE_EXIT_BUTTON, SOURCE_PIN, SOURCE_RF,
 )
@@ -16,6 +17,29 @@ from .protocol import CardRead, Event, ExitButton, PinRead, RfRead, build_relay_
 
 # Etiqueta fija del log: los dígitos del PIN nunca se guardan.
 PIN_LABEL = "PIN"
+
+
+class PinLockout:
+    """Bloqueo en memoria por lector tras demasiados PIN fallidos (motivos 8 y 9)."""
+
+    def __init__(self) -> None:
+        self._failures: Dict[int, List[float]] = defaultdict(list)
+        self._blocked_until: Dict[int, float] = {}
+
+    def is_blocked(self, reader: int, now: datetime) -> bool:
+        return self._blocked_until.get(reader, 0.0) > now.timestamp()
+
+    def record(self, reader: int, reason: int, now: datetime) -> None:
+        ts = now.timestamp()
+        if reason == REASON_ALLOWED:
+            self._failures.pop(reader, None)
+        elif reason in (REASON_UNKNOWN_PIN, REASON_PIN_NOT_ALLOWED):
+            recent = [t for t in self._failures[reader] if ts - t < PIN_FAILURE_WINDOW_S]
+            recent.append(ts)
+            if len(recent) >= PIN_MAX_FAILURES:
+                self._blocked_until[reader] = ts + PIN_LOCKOUT_S
+                recent = []
+            self._failures[reader] = recent
 
 
 @dataclass(frozen=True)
@@ -152,7 +176,8 @@ def authorize_rf(conn: sqlite3.Connection, code: int, now: datetime) -> Decision
 
 
 def handle_event(conn: sqlite3.Connection, event: Event, send: Callable[[bytes], None], *,
-                 now: Optional[datetime] = None, max_entries: int) -> AccessOutcome:
+                 now: Optional[datetime] = None, max_entries: int,
+                 pin_lockout: Optional[PinLockout] = None) -> AccessOutcome:
     now = now or datetime.now()
     timestamp = int(now.timestamp())
     if isinstance(event, ExitButton):
@@ -167,7 +192,12 @@ def handle_event(conn: sqlite3.Connection, event: Event, send: Callable[[bytes],
         decision = authorize_card(conn, event.code, event.reader, now)
         source, device_id, code = SOURCE_CARD, event.reader, event.code
     elif isinstance(event, PinRead):
-        decision = authorize_pin(conn, event.pin, event.reader, now)
+        if pin_lockout is not None and pin_lockout.is_blocked(event.reader, now):
+            decision = Decision(REASON_PIN_LOCKED, credential_label=PIN_LABEL)
+        else:
+            decision = authorize_pin(conn, event.pin, event.reader, now)
+            if pin_lockout is not None:
+                pin_lockout.record(event.reader, decision.reason, now)
         source, device_id = SOURCE_PIN, event.reader
     else:
         decision = authorize_rf(conn, event.code, now)

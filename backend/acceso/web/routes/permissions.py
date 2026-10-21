@@ -24,7 +24,10 @@ def create(body: PermissionCreate, conn=Depends(get_conn)):
 
 @router.put("/{permission_id}")
 def update(permission_id: int, body: PermissionBody, conn=Depends(get_conn)):
-    permissions.update_permission(conn, permission_id, body.model_dump())
+    data = body.model_dump()
+    if "allow_pin" not in body.model_fields_set:
+        data["allow_pin"] = None  # PUT sin allow_pin: conservar el actual
+    permissions.update_permission(conn, permission_id, data)
     return _get(conn, permission_id)
 
 

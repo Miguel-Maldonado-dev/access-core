@@ -113,6 +113,14 @@ sudo ./deploy/install.sh --db ~/access_control.sqlite
 
 Descomprime el paquete nuevo y vuelve a correr `sudo ./deploy/install.sh`. Conserva `/etc/acceso/acceso.env` y la base; solo asegura que `STATIC_DIR` esté en el `.env` y reinicia los servicios.
 
+Notas de la versión con PIN (esquema v4):
+
+- Al arrancar, los servicios migran la base a v4 y dejan un respaldo `<base>_backup_v3.sqlite` (con copias con fecha, máximo 3). **El código anterior no puede leer una base v4.** Para volver atrás: detén los servicios (`sudo systemctl stop acceso-daemon acceso-web`), restaura `<base>_backup_v3.sqlite` sobre la base y reinstala el paquete anterior.
+- Un PIN solo abre la puerta si activas **"Permitir PIN"** en un permiso del titular; los permisos existentes quedan sin esa casilla.
+- Tras 5 PIN incorrectos en un lector, ese lector rechaza PIN durante 5 minutos (motivo "PIN bloqueado"); las tarjetas y controles siguen funcionando.
+- Los PIN se guardan en texto plano; `/var/lib/acceso` queda en modo 700 y los servicios usan `UMask=0077`.
+- Recarga el navegador (Ctrl+F5) en las pestañas abiertas antes de la actualización, o un formulario viejo podría no mostrar el PIN.
+
 ## Cambiar la contraseña
 
 ```bash

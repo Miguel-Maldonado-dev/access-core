@@ -63,6 +63,10 @@ body {
     padding: 0.5rem 0.75rem;
     color: var(--text);
   }
+  /* Oculta el PIN sin type="password", para que el navegador no ofrezca guardarlo. */
+  .pin-masked {
+    -webkit-text-security: disc;
+  }
   .btn {
     border-radius: 0.25rem;
     background: var(--signal);

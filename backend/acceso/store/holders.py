@@ -16,18 +16,19 @@ class HolderData:
     address: str = ""
     notes: str = ""
     pin: Optional[str] = None
+    keep_pin: bool = False  # PUT sin "pin": conservar el actual
     permission_ids: Tuple[int, ...] = ()
 
 
 _SELECT = (
-    "SELECT h.holder_id, h.kind, h.name, h.department, h.address, h.notes, h.pin,"
+    "SELECT h.holder_id, h.kind, h.name, h.department, h.address, h.notes, h.pin, (h.pin IS NOT NULL) AS has_pin,"
     " (SELECT COUNT(*) FROM cards c WHERE c.holder_id = h.holder_id) AS card_count,"
     " (SELECT COUNT(*) FROM controls k WHERE k.holder_id = h.holder_id) AS control_count"
     " FROM holders h"
 )
 
 
-def _rows_to_dicts(conn: sqlite3.Connection, rows) -> List[dict]:
+def _rows_to_dicts(conn: sqlite3.Connection, rows, with_pin: bool) -> List[dict]:
     perms = {}
     for r in conn.execute(
         "SELECT holder_id, permission_id FROM holder_permissions ORDER BY permission_id"
@@ -37,6 +38,9 @@ def _rows_to_dicts(conn: sqlite3.Connection, rows) -> List[dict]:
     for r in rows:
         d = dict(r)
         d["permission_ids"] = perms.get(d["holder_id"], [])
+        d["has_pin"] = bool(d["has_pin"])
+        if not with_pin:
+            del d["pin"]
         result.append(d)
     return result
 
@@ -51,14 +55,14 @@ def list_holders(conn: sqlite3.Connection, q: Optional[str] = None) -> List[dict
         )
         params = [like] * 4
     sql += " ORDER BY LOWER(h.name), h.holder_id"
-    return _rows_to_dicts(conn, conn.execute(sql, params).fetchall())
+    return _rows_to_dicts(conn, conn.execute(sql, params).fetchall(), with_pin=False)
 
 
 def get_holder(conn: sqlite3.Connection, holder_id: int) -> dict:
     rows = conn.execute(_SELECT + " WHERE h.holder_id = ?", (holder_id,)).fetchall()
     if not rows:
         raise NotFound("El titular %s no existe." % holder_id)
-    return _rows_to_dicts(conn, rows)[0]
+    return _rows_to_dicts(conn, rows, with_pin=True)[0]
 
 
 def _check_permissions(conn: sqlite3.Connection, permission_ids) -> List[int]:
@@ -112,11 +116,15 @@ def update_holder(conn: sqlite3.Connection, holder_id: int, data: HolderData) ->
         if conn.execute("SELECT 1 FROM holders WHERE holder_id = ?", (holder_id,)).fetchone() is None:
             raise NotFound("El titular %s no existe." % holder_id)
         ids = _check_permissions(conn, data.permission_ids)
-        _check_pin(conn, data.pin, holder_id)
+        pin = data.pin
+        if data.keep_pin:
+            pin = conn.execute("SELECT pin FROM holders WHERE holder_id = ?",
+                               (holder_id,)).fetchone()["pin"]
+        _check_pin(conn, pin, holder_id)
         conn.execute(
             "UPDATE holders SET kind=?, name=?, department=?, address=?, notes=?, pin=?"
             " WHERE holder_id=?",
-            (data.kind, data.name, data.department, data.address, data.notes, data.pin,
+            (data.kind, data.name, data.department, data.address, data.notes, pin,
              holder_id),
         )
         _set_permissions(conn, holder_id, ids)

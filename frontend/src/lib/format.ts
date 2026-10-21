@@ -11,6 +11,7 @@ const REASONS: Record<number, string> = {
   7: "Botón de salida",
   8: "PIN desconocido",
   9: "PIN no permitido",
+  10: "PIN bloqueado",
 };
 
 const SOURCES: Record<number, string> = {

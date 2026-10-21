@@ -9,10 +9,11 @@ from acceso.web.schemas import HolderIn
 router = APIRouter(prefix="/api/holders")
 
 
-def _data(body: HolderIn) -> holders.HolderData:
+def _data(body: HolderIn, *, keep_missing_pin: bool = False) -> holders.HolderData:
     return holders.HolderData(
         kind=body.kind, name=body.name, department=body.department,
         address=body.address, notes=body.notes, pin=body.pin,
+        keep_pin=keep_missing_pin and "pin" not in body.model_fields_set,
         permission_ids=tuple(body.permission_ids),
     )
 
@@ -40,7 +41,7 @@ def get(holder_id: int, conn=Depends(get_conn)):
 
 @router.put("/{holder_id}")
 def update(holder_id: int, body: HolderIn, conn=Depends(get_conn)):
-    holders.update_holder(conn, holder_id, _data(body))
+    holders.update_holder(conn, holder_id, _data(body, keep_missing_pin=True))
     return holders.get_holder(conn, holder_id)
 
 

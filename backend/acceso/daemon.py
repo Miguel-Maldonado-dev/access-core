@@ -5,9 +5,9 @@ import sys
 import termios
 import threading
 import time
-from typing import Callable, Protocol
+from typing import Callable, Optional, Protocol
 
-from .access import handle_event
+from .access import PinLockout, handle_event
 from .config import ConfigError, Settings, load_settings
 from .constants import RECONNECT_SECONDS
 from .db import connect
@@ -44,7 +44,8 @@ def _make_send(port: SerialPort) -> Callable[[bytes], None]:
     return send
 
 
-def _serve(settings: Settings, conn, port: SerialPort, stop: threading.Event) -> None:
+def _serve(settings: Settings, conn, port: SerialPort, stop: threading.Event,
+           pin_lockout: Optional[PinLockout] = None) -> None:
     """Procesa tramas hasta `stop` o hasta que el puerto falle (lanza OSError/termios.error)."""
     parser = FrameParser()
     send = _make_send(port)
@@ -54,9 +55,12 @@ def _serve(settings: Settings, conn, port: SerialPort, stop: threading.Event) ->
             continue
         for item in parser.feed(data):
             if isinstance(item, InvalidFrame):
-                log.warning("Trama inválida descartada (%s): %s", item.reason, item.raw.hex())
+                # Nunca se registra el contenido: una trama de PIN lleva los dígitos.
+                log.warning("Trama inválida descartada (%s): cmd=%02X, %d bytes", item.reason,
+                            item.raw[1] if len(item.raw) > 1 else 0, len(item.raw))
                 continue
-            handle_event(conn, item, send, max_entries=settings.log_max_entries)
+            handle_event(conn, item, send, max_entries=settings.log_max_entries,
+                         pin_lockout=pin_lockout)
 
 
 def _close_quietly(port: SerialPort) -> None:
@@ -70,6 +74,7 @@ def run_daemon(settings: Settings, stop: threading.Event, *,
                open_serial: Callable[[str, int], SerialPort] = open_serial_port,
                sleep: Callable[[float], None] = time.sleep) -> None:
     conn = connect(settings.db_path)
+    pin_lockout = PinLockout()
     try:
         while not stop.is_set():
             try:
@@ -81,7 +86,7 @@ def run_daemon(settings: Settings, stop: threading.Event, *,
                 continue
             log.info("Puerto %s abierto", settings.uart_port)
             try:
-                _serve(settings, conn, port, stop)
+                _serve(settings, conn, port, stop, pin_lockout)
             except _SERIAL_ERRORS as exc:
                 _close_quietly(port)
                 log.warning("Error en el puerto serie: %s. Reconectando en %.0f s",

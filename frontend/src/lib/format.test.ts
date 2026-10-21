@@ -38,6 +38,7 @@ describe("format", () => {
     expect(sourceLabel(3)).toBe("PIN");
     expect(reasonLabel(8)).toBe("PIN desconocido");
     expect(reasonLabel(9)).toBe("PIN no permitido");
+    expect(reasonLabel(10)).toBe("PIN bloqueado");
     expect(outputLabel(3)).toBe("Relay4");
     expect(outputLabel(null)).toBe("-");
     expect(holderKindLabel("persona")).toBe("Persona");

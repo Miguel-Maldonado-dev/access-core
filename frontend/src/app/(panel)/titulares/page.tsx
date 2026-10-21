@@ -42,6 +42,16 @@ export default function HoldersPage() {
     }
   }
 
+  // La lista no trae el PIN: se pide el titular completo al editar.
+  async function edit(h: Holder) {
+    try {
+      setEditing({ holder: await apiFetch<Holder>(`/api/holders/${h.holder_id}`) });
+      setError("");
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
   async function remove(h: Holder) {
     if (!confirm(deleteHolderMessage(h))) return;
     try {
@@ -113,9 +123,9 @@ export default function HoldersPage() {
                 <td className="px-4 py-2 text-right tabular-nums">{h.card_count}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{h.control_count}</td>
                 <td className="px-4 py-2">{h.permission_ids.length > 0 ? h.permission_ids.join(", ") : "-"}</td>
-                <td className="px-4 py-2">{h.pin !== null ? "Sí" : "—"}</td>
+                <td className="px-4 py-2">{h.has_pin ? "Sí" : "—"}</td>
                 <td className="whitespace-nowrap px-4 py-2 text-right">
-                  <button type="button" className="mr-3 font-medium text-signal underline" onClick={() => setEditing({ holder: h })}>
+                  <button type="button" className="mr-3 font-medium text-signal underline" onClick={() => void edit(h)}>
                     Editar
                   </button>
                   <button type="button" className="font-medium text-danger underline" onClick={() => void remove(h)}>

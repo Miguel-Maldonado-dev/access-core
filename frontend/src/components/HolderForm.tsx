@@ -40,6 +40,7 @@ export default function HolderForm({ holder, permissions, onSubmit, onCancel }: 
     try {
       const res = await apiFetch<{ pin: string }>("/api/holders/generate-pin", { method: "POST" });
       setPin(res.pin);
+      setShowPin(true);
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo generar el PIN.");
@@ -105,8 +106,8 @@ export default function HolderForm({ holder, permissions, onSubmit, onCancel }: 
         <div className="flex flex-wrap items-center gap-3">
           <input
             id="holder-pin"
-            className="field max-w-40"
-            type={showPin ? "text" : "password"}
+            className={`field max-w-40${showPin ? "" : " pin-masked"}`}
+            type="text"
             inputMode="numeric"
             autoComplete="off"
             maxLength={6}

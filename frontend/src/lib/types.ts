@@ -7,7 +7,9 @@ export interface Holder {
   department: string;
   address: string;
   notes: string;
-  pin: string | null;
+  has_pin: boolean;
+  /** Solo viene en GET/POST/PUT de un titular, no en la lista. */
+  pin?: string | null;
   permission_ids: number[];
   card_count: number;
   control_count: number;

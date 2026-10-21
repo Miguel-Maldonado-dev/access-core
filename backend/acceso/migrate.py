@@ -61,6 +61,9 @@ _V4_ALTERS = (
 )
 
 
+MAX_DATED_BACKUPS = 3
+
+
 class MigrationError(Exception):
     """La base no se puede migrar."""
 
@@ -130,12 +133,24 @@ def _backup(conn: sqlite3.Connection, db_path: Path, version: int) -> Path:
         conn.backup(target)
     finally:
         target.close()
+    os.chmod(str(tmp_path), 0o600)  # la base guarda PIN en texto plano
     if backup_path.exists():
         stamp = datetime.fromtimestamp(backup_path.stat().st_mtime).strftime("%Y%m%d-%H%M%S")
         os.replace(str(backup_path), str(backup_path.with_name(
             "%s_backup_v%d.%s.sqlite" % (db_path.stem, version, stamp))))
     os.replace(str(tmp_path), str(backup_path))
+    _prune_backups(db_path, version)
     return backup_path
+
+
+def _prune_backups(db_path: Path, version: int) -> None:
+    """Conserva solo las MAX_DATED_BACKUPS copias con fecha más recientes de esa versión."""
+    dated = sorted(
+        db_path.parent.glob("%s_backup_v%d.*.sqlite" % (db_path.stem, version)),
+        key=lambda p: (p.stat().st_mtime, p.name),
+    )
+    for old in dated[:-MAX_DATED_BACKUPS]:
+        old.unlink()
 
 
 def _convert_v2(conn: sqlite3.Connection) -> None:

@@ -2,7 +2,7 @@
 import re
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictBool, field_validator
 
 from acceso.constants import (
     CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE, PIN_MAX_DIGITS, PIN_MIN_DIGITS,
@@ -61,7 +61,7 @@ class PermissionBody(BaseModel):
     weekday_mask: int = Field(ge=0, le=127)
     start_minute: int = Field(ge=0, le=1439)
     end_minute: int = Field(ge=0, le=1439)
-    allow_pin: bool = False
+    allow_pin: StrictBool = False
 
 
 class PermissionCreate(PermissionBody):

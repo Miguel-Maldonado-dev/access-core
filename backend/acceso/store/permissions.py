@@ -22,7 +22,7 @@ def create_permission(conn: sqlite3.Connection, p: dict) -> None:
             raise Conflict("Ya existe el permiso %s." % p["permission_id"])
         conn.execute(
             "INSERT INTO permissions(%s) VALUES (?, ?, ?, ?, ?, ?, ?, ?)" % ", ".join(_COLS),
-            tuple(int(p[c]) if c == "allow_pin" else p[c] for c in _COLS),
+            tuple(int(bool(p[c])) if c == "allow_pin" else p[c] for c in _COLS),
         )
 
 
@@ -30,9 +30,9 @@ def update_permission(conn: sqlite3.Connection, permission_id: int, p: dict) -> 
     with transaction(conn):
         cur = conn.execute(
             "UPDATE permissions SET name=?, output_mask=?, reader_mask=?, weekday_mask=?,"
-            " start_minute=?, end_minute=?, allow_pin=? WHERE permission_id=?",
+            " start_minute=?, end_minute=?, allow_pin=COALESCE(?, allow_pin) WHERE permission_id=?",
             (p["name"], p["output_mask"], p["reader_mask"], p["weekday_mask"],
-             p["start_minute"], p["end_minute"], int(p["allow_pin"]), permission_id),
+             p["start_minute"], p["end_minute"], None if p["allow_pin"] is None else int(p["allow_pin"]), permission_id),
         )
         if cur.rowcount == 0:
             raise NotFound("El permiso %s no existe." % permission_id)

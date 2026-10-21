@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from helpers import NOW, add_card, add_control, add_holder, set_permission
 
-from acceso.access import authorize_card, authorize_rf, handle_event, permission_allows
+from acceso.access import PinLockout, authorize_card, authorize_rf, handle_event, permission_allows
 from acceso.protocol import CardRead, ExitButton, PinRead, RfRead, build_relay_command
 
 LOG_COLUMNS = ("allowed, source, holder_name, holder_kind, credential_label, device_id,"
@@ -238,3 +238,76 @@ def test_pin_send_failure_logs_uart_error(conn):
     outcome = run(conn, PinRead(0, "123456"), send=broken)
     assert outcome.reason == 4 and outcome.command is None
     assert last_log(conn)["code"] is None
+
+
+def run_pin(conn, reader, pin, lockout, sender=None, now=NOW):
+    return handle_event(conn, PinRead(reader, pin), sender or Sender(), now=now,
+                        max_entries=1000, pin_lockout=lockout)
+
+
+def test_pin_lockout_after_five_failures_per_reader(conn):
+    pin_holder(conn)
+    lockout = PinLockout()
+    for _ in range(5):
+        assert run_pin(conn, 0, "999999", lockout).reason == 8
+    sender = Sender()
+    blocked = run_pin(conn, 0, "123456", lockout, sender)
+    assert blocked.reason == 10 and not blocked.allowed and blocked.command is None
+    assert sender.sent == []
+    row = last_log(conn)
+    assert (row["reason"], row["holder_id"], row["code"], row["device_id"], row["source"]) == (
+        10, None, None, 0, 3)
+    assert run_pin(conn, 1, "123456", lockout).allowed
+    # cartas y RF no se afectan
+    add_card(conn, 111, 1)
+    assert run(conn, CardRead(0, 111)).allowed
+    later = NOW + timedelta(seconds=300)
+    assert run_pin(conn, 0, "123456", lockout, now=later).allowed
+
+
+def test_pin_lockout_not_lifted_before_time(conn):
+    pin_holder(conn)
+    lockout = PinLockout()
+    for _ in range(5):
+        run_pin(conn, 0, "999999", lockout)
+    assert run_pin(conn, 0, "123456", lockout, now=NOW + timedelta(seconds=299)).reason == 10
+
+
+def test_pin_success_resets_failure_counter(conn):
+    pin_holder(conn)
+    lockout = PinLockout()
+    for _ in range(4):
+        run_pin(conn, 0, "999999", lockout)
+    assert run_pin(conn, 0, "123456", lockout).allowed
+    for _ in range(4):
+        assert run_pin(conn, 0, "999999", lockout).reason == 8
+    assert run_pin(conn, 0, "123456", lockout).allowed
+
+
+def test_pin_failures_outside_window_do_not_add_up(conn):
+    pin_holder(conn)
+    lockout = PinLockout()
+    for i in range(4):
+        run_pin(conn, 0, "999999", lockout, now=NOW + timedelta(seconds=i))
+    later = NOW + timedelta(seconds=400)
+    assert run_pin(conn, 0, "999999", lockout, now=later).reason == 8
+    assert run_pin(conn, 0, "123456", lockout, now=later).allowed
+
+
+def test_not_allowed_pin_counts_as_failure_but_no_output_does_not(conn):
+    pin_holder(conn, allow_pin=0)
+    lockout = PinLockout()
+    for _ in range(5):
+        assert run_pin(conn, 0, "123456", lockout).reason == 9
+    assert run_pin(conn, 0, "123456", lockout).reason == 10
+    conn2_lockout = PinLockout()
+    conn.execute("UPDATE outputs SET enabled=0")
+    for _ in range(6):
+        assert run_pin(conn, 2, "123456", conn2_lockout).reason == 2
+
+
+def test_no_lockout_object_means_no_lockout(conn):
+    pin_holder(conn)
+    for _ in range(8):
+        run(conn, PinRead(0, "999999"))
+    assert run(conn, PinRead(0, "123456")).allowed

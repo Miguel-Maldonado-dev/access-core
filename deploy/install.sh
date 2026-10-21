@@ -55,6 +55,7 @@ rm -rf /opt/acceso/backend/build /opt/acceso/backend/*.egg-info
 echo "==> Datos en /var/lib/acceso"
 mkdir -p /var/lib/acceso
 chown acceso:acceso /var/lib/acceso
+chmod 700 /var/lib/acceso
 
 echo "==> Configuración"
 mkdir -p /etc/acceso

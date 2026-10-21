@@ -91,7 +91,9 @@ def test_pin_roundtrip_and_blank_means_none(client, db):
     data = _create(client, pin="0123").json()
     assert data["pin"] == "0123"
     assert client.get(f"/api/holders/{data['holder_id']}").json()["pin"] == "0123"
-    assert [h["pin"] for h in client.get("/api/holders").json()] == ["0123"]
+    listed = client.get("/api/holders").json()
+    assert [h["has_pin"] for h in listed] == [True] and "pin" not in listed[0]
+    assert client.get(f"/api/holders/{data['holder_id']}").json()["has_pin"] is True
     assert _create(client, name="B").json()["pin"] is None
     assert _create(client, name="C", pin="").json()["pin"] is None
     assert _create(client, name="D", pin=None).json()["pin"] is None
@@ -138,3 +140,14 @@ def test_generate_pin_is_unused_6_digits_and_not_saved(client, db, monkeypatch):
 
 def test_generate_pin_requires_session(anon_client):
     assert anon_client.post("/api/holders/generate-pin").status_code == 401
+
+
+def test_put_without_pin_keeps_it_but_explicit_null_clears(client, db):
+    hid = _create(client, pin="4321").json()["holder_id"]
+    body = {"kind": "domicilio", "name": "Renombrado"}
+    r = client.put(f"/api/holders/{hid}", json=body)
+    assert r.status_code == 200 and r.json()["pin"] == "4321" and r.json()["name"] == "Renombrado"
+    assert client.put(f"/api/holders/{hid}", json={**body, "pin": None}).json()["pin"] is None
+    assert client.put(f"/api/holders/{hid}", json={**body, "pin": "1111"}).json()["pin"] == "1111"
+    assert client.put(f"/api/holders/{hid}", json={**body, "pin": ""}).json()["has_pin"] is False
+    assert client.put("/api/holders/999", json=body).status_code == 404

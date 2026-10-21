@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=acceso
+UMask=0077
 SupplementaryGroups=dialout
 EnvironmentFile=/etc/acceso/acceso.env
 WorkingDirectory=/var/lib/acceso

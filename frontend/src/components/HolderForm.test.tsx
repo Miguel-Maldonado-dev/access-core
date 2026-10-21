@@ -81,7 +81,8 @@ describe("HolderForm", () => {
     render(<HolderForm permissions={permissions} onSubmit={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Generar" }));
     expect(api.calls).toEqual([["/api/holders/generate-pin", { method: "POST" }]]);
-    expect(await screen.findByDisplayValue("004217")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("004217")).not.toHaveClass("pin-masked");
+    expect(screen.getByRole("button", { name: "Ocultar PIN" })).toBeInTheDocument();
   });
 
   it("muestra el error si Generar falla", async () => {
@@ -96,18 +97,21 @@ describe("HolderForm", () => {
 
   it("oculta el PIN por defecto y lo muestra con el botón", async () => {
     const user = userEvent.setup();
-    const holder = { holder_id: 1, kind: "persona" as const, name: "Ana", department: "", address: "", notes: "", pin: "1234", permission_ids: [], card_count: 0, control_count: 0 };
+    const holder = { holder_id: 1, kind: "persona" as const, name: "Ana", department: "", address: "", notes: "", has_pin: true, pin: "1234", permission_ids: [], card_count: 0, control_count: 0 };
     render(<HolderForm holder={holder} permissions={permissions} onSubmit={vi.fn()} />);
-    expect(screen.getByLabelText("PIN")).toHaveAttribute("type", "password");
+    const input = screen.getByLabelText("PIN");
+    expect(input).toHaveAttribute("type", "text");
+    expect(input).toHaveAttribute("autocomplete", "off");
+    expect(input).toHaveClass("pin-masked");
     await user.click(screen.getByRole("button", { name: "Mostrar PIN" }));
-    expect(screen.getByLabelText("PIN")).toHaveAttribute("type", "text");
+    expect(screen.getByLabelText("PIN")).not.toHaveClass("pin-masked");
     expect(screen.getByRole("button", { name: "Ocultar PIN" })).toBeInTheDocument();
   });
 
   it("un PIN vacío se envía como null y quitar el PIN de un titular también", async () => {
     const onSubmit = vi.fn();
     const user = userEvent.setup();
-    const holder = { holder_id: 1, kind: "persona" as const, name: "Ana", department: "", address: "", notes: "", pin: "1234", permission_ids: [], card_count: 0, control_count: 0 };
+    const holder = { holder_id: 1, kind: "persona" as const, name: "Ana", department: "", address: "", notes: "", has_pin: true, pin: "1234", permission_ids: [], card_count: 0, control_count: 0 };
     render(<HolderForm holder={holder} permissions={permissions} onSubmit={onSubmit} />);
     await user.clear(screen.getByLabelText("PIN"));
     await user.click(screen.getByRole("button", { name: "Guardar" }));

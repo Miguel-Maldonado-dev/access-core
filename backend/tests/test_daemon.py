@@ -255,3 +255,21 @@ def test_pty_denied_pin_frame_sends_no_command(settings, db, pty_pair):
     stop.set()
     thread.join(2)
     assert not thread.is_alive()
+
+
+def test_invalid_frames_never_log_pin_digits(settings, db, caplog):
+    import logging
+    set_permission(db, 0, output_mask=15, allow_pin=1)
+    add_holder(db, pin="9783")
+    bad = bytearray(frame(0x13, bytes((0, 6, 1, 2, 3, 4, 5, 6))))
+    bad[-2] ^= 0xFF  # checksum inválido
+    good = frame(0x13, bytes((0, 4, 9, 7, 8, 3, 0, 0)))
+    port = FakeSerial([bytes(bad), b"\xaa\x10" + good])
+    caplog.set_level(logging.INFO)
+    stop, thread = start_daemon(settings, open_serial=lambda p, b: port, sleep=lambda s: stop.wait(0.01))
+    assert wait_for(lambda: port.written)
+    stop.set()
+    thread.join(2)
+    assert port.written[0] == build_relay_command(0, 3000)
+    assert "Trama inválida descartada" in caplog.text
+    assert "0102030405" not in caplog.text and "090708" not in caplog.text

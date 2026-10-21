@@ -16,14 +16,21 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : "Ocurrió un error inesperado.";
 }
 
-function outputsText(mask: number): string {
-  const on = fromMask(mask, 4).flatMap((v, i) => (v ? [outputLabel(i)] : []));
-  return on.length > 0 ? on.join(", ") : "-";
-}
+const readerLabel = (i: number) => `Reader${i + 1}`;
 
-function readersText(mask: number): string {
-  const on = fromMask(mask, 4).flatMap((v, i) => (v ? [`Reader${i + 1}`] : []));
-  return on.length > 0 ? on.join(", ") : "—";
+// Short names (S1, L2…) keep the table narrow; the full names stay in the tooltip.
+function MaskCell({ mask, prefix, fullName, empty }: {
+  mask: number;
+  prefix: string;
+  fullName: (i: number) => string;
+  empty: string;
+}) {
+  const on = fromMask(mask, 4).flatMap((v, i) => (v ? [i] : []));
+  return (
+    <td className="px-4 py-2 whitespace-nowrap" title={on.length > 0 ? on.map(fullName).join(", ") : undefined}>
+      {on.length > 0 ? on.map((i) => `${prefix}${i + 1}`).join(", ") : empty}
+    </td>
+  );
 }
 
 function daysText(mask: number): string {
@@ -133,9 +140,9 @@ export default function PermissionsPage() {
               <tr key={p.permission_id} className="border-b border-line last:border-0">
                 <td className="px-4 py-2 text-right tabular-nums">{p.permission_id}</td>
                 <td className="px-4 py-2 font-medium">{p.name}</td>
-                <td className="px-4 py-2">{outputsText(p.output_mask)}</td>
-                <td className="px-4 py-2">{readersText(p.card_reader_mask)}</td>
-                <td className="px-4 py-2">{readersText(p.pin_reader_mask)}</td>
+                <MaskCell mask={p.output_mask} prefix="S" fullName={outputLabel} empty="-" />
+                <MaskCell mask={p.card_reader_mask} prefix="L" fullName={readerLabel} empty="—" />
+                <MaskCell mask={p.pin_reader_mask} prefix="L" fullName={readerLabel} empty="—" />
                 <td className="px-4 py-2">{p.allow_rf ? "Sí" : "—"}</td>
                 <td className="px-4 py-2">{daysText(p.weekday_mask)}</td>
                 <td className="px-4 py-2">{scheduleText(p)}</td>
@@ -159,6 +166,7 @@ export default function PermissionsPage() {
           </tbody>
         </table>
       </div>
+      <p className="-mt-3 text-xs text-muted">S1–S4 = salidas (Relay1–Relay4) · L1–L4 = lectores (Reader1–Reader4)</p>
     </div>
   );
 }

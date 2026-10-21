@@ -3,8 +3,8 @@ from datetime import datetime
 NOW = datetime(2026, 9, 29, 10, 0)  # martes
 
 
-def add_holder(conn, name="Amadeo 1260", kind="domicilio", permission_ids=(0,)):
-    cur = conn.execute("INSERT INTO holders(kind, name) VALUES (?, ?)", (kind, name))
+def add_holder(conn, name="Amadeo 1260", kind="domicilio", permission_ids=(0,), pin=None):
+    cur = conn.execute("INSERT INTO holders(kind, name, pin) VALUES (?, ?, ?)", (kind, name, pin))
     holder_id = cur.lastrowid
     for permission_id in permission_ids:
         conn.execute(
@@ -38,13 +38,14 @@ def add_control(conn, holder_id, buttons, description="Control 1"):
 
 
 def set_permission(conn, permission_id, output_mask, reader_mask=15, weekday_mask=127,
-                   start_minute=0, end_minute=0, name="p"):
+                   start_minute=0, end_minute=0, name="p", allow_pin=0):
     conn.execute(
         "INSERT INTO permissions(permission_id, name, output_mask, reader_mask,"
-        " weekday_mask, start_minute, end_minute) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        " weekday_mask, start_minute, end_minute, allow_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         " ON CONFLICT(permission_id) DO UPDATE SET name=excluded.name,"
         " output_mask=excluded.output_mask, reader_mask=excluded.reader_mask,"
         " weekday_mask=excluded.weekday_mask, start_minute=excluded.start_minute,"
-        " end_minute=excluded.end_minute",
-        (permission_id, name, output_mask, reader_mask, weekday_mask, start_minute, end_minute),
+        " end_minute=excluded.end_minute, allow_pin=excluded.allow_pin",
+        (permission_id, name, output_mask, reader_mask, weekday_mask, start_minute, end_minute,
+         allow_pin),
     )

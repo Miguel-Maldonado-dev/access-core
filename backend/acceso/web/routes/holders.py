@@ -12,7 +12,8 @@ router = APIRouter(prefix="/api/holders")
 def _data(body: HolderIn) -> holders.HolderData:
     return holders.HolderData(
         kind=body.kind, name=body.name, department=body.department,
-        address=body.address, notes=body.notes, permission_ids=tuple(body.permission_ids),
+        address=body.address, notes=body.notes, pin=body.pin,
+        permission_ids=tuple(body.permission_ids),
     )
 
 
@@ -24,6 +25,12 @@ def list_(q: Optional[str] = None, conn=Depends(get_conn)):
 @router.post("", status_code=201)
 def create(body: HolderIn, conn=Depends(get_conn)):
     return holders.get_holder(conn, holders.create_holder(conn, _data(body)))
+
+
+# Antes de las rutas con /{holder_id}, para que "generate-pin" no se interprete como un id.
+@router.post("/generate-pin")
+def generate_pin(conn=Depends(get_conn)):
+    return {"pin": holders.generate_pin(conn)}
 
 
 @router.get("/{holder_id}")

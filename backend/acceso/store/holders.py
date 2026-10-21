@@ -1,10 +1,11 @@
 """Titulares y sus permisos."""
+import secrets
 import sqlite3
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from acceso.db import transaction
-from acceso.store.errors import Invalid, NotFound
+from acceso.store.errors import Conflict, Invalid, NotFound
 
 
 @dataclass(frozen=True)
@@ -14,11 +15,12 @@ class HolderData:
     department: str = ""
     address: str = ""
     notes: str = ""
+    pin: Optional[str] = None
     permission_ids: Tuple[int, ...] = ()
 
 
 _SELECT = (
-    "SELECT h.holder_id, h.kind, h.name, h.department, h.address, h.notes,"
+    "SELECT h.holder_id, h.kind, h.name, h.department, h.address, h.notes, h.pin,"
     " (SELECT COUNT(*) FROM cards c WHERE c.holder_id = h.holder_id) AS card_count,"
     " (SELECT COUNT(*) FROM controls k WHERE k.holder_id = h.holder_id) AS control_count"
     " FROM holders h"
@@ -75,12 +77,31 @@ def _set_permissions(conn: sqlite3.Connection, holder_id: int, ids: List[int]) -
     )
 
 
+def _check_pin(conn: sqlite3.Connection, pin: Optional[str], holder_id: Optional[int]) -> None:
+    if pin is None:
+        return
+    taken = conn.execute(
+        "SELECT 1 FROM holders WHERE pin = ? AND holder_id IS NOT ?", (pin, holder_id)).fetchone()
+    if taken is not None:
+        raise Conflict("El PIN ya está asignado a otro titular.")
+
+
+def generate_pin(conn: sqlite3.Connection) -> str:
+    """6 dígitos aleatorios que ningún titular tiene; no lo guarda."""
+    while True:
+        pin = "%06d" % secrets.randbelow(10 ** 6)
+        if conn.execute("SELECT 1 FROM holders WHERE pin = ?", (pin,)).fetchone() is None:
+            return pin
+
+
 def create_holder(conn: sqlite3.Connection, data: HolderData) -> int:
     with transaction(conn):
         ids = _check_permissions(conn, data.permission_ids)
+        _check_pin(conn, data.pin, None)
         cur = conn.execute(
-            "INSERT INTO holders(kind, name, department, address, notes) VALUES (?, ?, ?, ?, ?)",
-            (data.kind, data.name, data.department, data.address, data.notes),
+            "INSERT INTO holders(kind, name, department, address, notes, pin)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (data.kind, data.name, data.department, data.address, data.notes, data.pin),
         )
         _set_permissions(conn, cur.lastrowid, ids)
         return cur.lastrowid
@@ -91,9 +112,12 @@ def update_holder(conn: sqlite3.Connection, holder_id: int, data: HolderData) ->
         if conn.execute("SELECT 1 FROM holders WHERE holder_id = ?", (holder_id,)).fetchone() is None:
             raise NotFound("El titular %s no existe." % holder_id)
         ids = _check_permissions(conn, data.permission_ids)
+        _check_pin(conn, data.pin, holder_id)
         conn.execute(
-            "UPDATE holders SET kind=?, name=?, department=?, address=?, notes=? WHERE holder_id=?",
-            (data.kind, data.name, data.department, data.address, data.notes, holder_id),
+            "UPDATE holders SET kind=?, name=?, department=?, address=?, notes=?, pin=?"
+            " WHERE holder_id=?",
+            (data.kind, data.name, data.department, data.address, data.notes, data.pin,
+             holder_id),
         )
         _set_permissions(conn, holder_id, ids)
 

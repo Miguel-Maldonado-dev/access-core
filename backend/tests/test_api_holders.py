@@ -1,3 +1,4 @@
+import pytest
 from acceso.logs import HolderRef, append_log
 from helpers import add_card, add_control
 
@@ -84,3 +85,56 @@ def test_requires_session(anon_client):
     assert anon_client.post("/api/holders", json={}).status_code == 401
     assert anon_client.get("/api/holders/1").status_code == 401
     assert anon_client.delete("/api/holders/1").status_code == 401
+
+
+def test_pin_roundtrip_and_blank_means_none(client, db):
+    data = _create(client, pin="0123").json()
+    assert data["pin"] == "0123"
+    assert client.get(f"/api/holders/{data['holder_id']}").json()["pin"] == "0123"
+    assert [h["pin"] for h in client.get("/api/holders").json()] == ["0123"]
+    assert _create(client, name="B").json()["pin"] is None
+    assert _create(client, name="C", pin="").json()["pin"] is None
+    assert _create(client, name="D", pin=None).json()["pin"] is None
+    r = client.put(f"/api/holders/{data['holder_id']}",
+                   json={"kind": "domicilio", "name": "Amadeo 1260", "pin": ""})
+    assert r.json()["pin"] is None
+
+
+@pytest.mark.parametrize("pin", ["123", "1234567", "12a4", "12 4", "١٢٣٤", 1234])
+def test_bad_pin_422_spanish(client, db, pin):
+    r = _create(client, pin=pin)
+    assert r.status_code == 422
+    if isinstance(pin, str):
+        assert r.json()["detail"] == "El PIN debe tener de 4 a 6 dígitos."
+
+
+def test_duplicate_pin_409(client, db):
+    _create(client, pin="1234")
+    r = _create(client, name="Otro", pin="1234")
+    assert r.status_code == 409
+    assert r.json()["detail"] == "El PIN ya está asignado a otro titular."
+    other = _create(client, name="Otro", pin="1235").json()["holder_id"]
+    body = {"kind": "domicilio", "name": "Otro", "pin": "1234"}
+    assert client.put(f"/api/holders/{other}", json=body).status_code == 409
+    # conservar el propio PIN al editar no es conflicto
+    body["pin"] = "1235"
+    assert client.put(f"/api/holders/{other}", json=body).status_code == 200
+    assert db.execute("SELECT COUNT(*) FROM holders").fetchone()[0] == 2
+
+
+def test_generate_pin_is_unused_6_digits_and_not_saved(client, db, monkeypatch):
+    r = client.post("/api/holders/generate-pin")
+    assert r.status_code == 200
+    pin = r.json()["pin"]
+    assert len(pin) == 6 and pin.isdigit()
+    assert db.execute("SELECT COUNT(*) FROM holders").fetchone()[0] == 0
+
+    from acceso.store import holders as store
+    values = iter([5, 5, 7])  # 000005 usado, luego 000007
+    monkeypatch.setattr(store.secrets, "randbelow", lambda n: next(values))
+    _create(client, pin="000005")
+    assert client.post("/api/holders/generate-pin").json() == {"pin": "000007"}
+
+
+def test_generate_pin_requires_session(anon_client):
+    assert anon_client.post("/api/holders/generate-pin").status_code == 401

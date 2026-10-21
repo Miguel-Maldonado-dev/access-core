@@ -5,11 +5,13 @@ from .constants import SCHEMA_VERSION
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS holders (holder_id INTEGER PRIMARY KEY,
   kind TEXT NOT NULL CHECK(kind IN ('persona','domicilio')), name TEXT NOT NULL CHECK(length(trim(name)) > 0),
-  department TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '');
+  department TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+  pin TEXT CHECK(pin IS NULL OR (length(pin) BETWEEN 4 AND 6 AND pin NOT GLOB '*[^0-9]*')));
 CREATE TABLE IF NOT EXISTS permissions (permission_id INTEGER PRIMARY KEY CHECK(permission_id BETWEEN 0 AND 31),
   name TEXT NOT NULL, output_mask INTEGER NOT NULL CHECK(output_mask BETWEEN 0 AND 15),
   reader_mask INTEGER NOT NULL CHECK(reader_mask BETWEEN 0 AND 15), weekday_mask INTEGER NOT NULL CHECK(weekday_mask BETWEEN 0 AND 127),
-  start_minute INTEGER NOT NULL CHECK(start_minute BETWEEN 0 AND 1439), end_minute INTEGER NOT NULL CHECK(end_minute BETWEEN 0 AND 1439));
+  start_minute INTEGER NOT NULL CHECK(start_minute BETWEEN 0 AND 1439), end_minute INTEGER NOT NULL CHECK(end_minute BETWEEN 0 AND 1439),
+  allow_pin INTEGER NOT NULL DEFAULT 0 CHECK(allow_pin IN (0,1)));
 CREATE TABLE IF NOT EXISTS holder_permissions (
   holder_id INTEGER NOT NULL REFERENCES holders(holder_id) ON DELETE CASCADE,
   permission_id INTEGER NOT NULL REFERENCES permissions(permission_id) ON DELETE CASCADE, PRIMARY KEY(holder_id, permission_id));
@@ -32,6 +34,7 @@ CREATE TABLE IF NOT EXISTS access_logs (log_id INTEGER PRIMARY KEY AUTOINCREMENT
   code INTEGER, device_id INTEGER, output_id INTEGER, reason INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS access_logs_timestamp ON access_logs(timestamp);
 CREATE INDEX IF NOT EXISTS access_logs_holder ON access_logs(holder_id);
+CREATE UNIQUE INDEX IF NOT EXISTS holders_pin ON holders(pin);
 """
 
 DEFAULT_OUTPUTS = ((0, 3000, 3, 1), (1, 3000, 12, 1), (2, 3000, 0, 1), (3, 3000, 0, 1))
@@ -39,7 +42,7 @@ DEFAULT_PERMISSION = (0, "Acceso total", 15, 15, 127, 0, 0)
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
-    """Crea el esquema v3 y los valores por defecto; es idempotente."""
+    """Crea el esquema v4 y los valores por defecto; es idempotente."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         for statement in SCHEMA_SQL.split(";\n"):

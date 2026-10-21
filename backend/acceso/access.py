@@ -6,11 +6,16 @@ from typing import Callable, Optional
 
 from .constants import (
     EXIT_BUTTON_OUTPUTS, REASON_ALLOWED, REASON_BUTTON_NO_OUTPUT, REASON_EXIT_BUTTON,
-    REASON_NO_OUTPUT, REASON_NO_PERMISSION, REASON_UART_ERROR, REASON_UNKNOWN_CARD,
-    REASON_UNKNOWN_CONTROL, SOURCE_CARD, SOURCE_EXIT_BUTTON, SOURCE_RF,
+    REASON_NO_OUTPUT, REASON_NO_PERMISSION, REASON_PIN_NOT_ALLOWED, REASON_UART_ERROR,
+    REASON_UNKNOWN_CARD, REASON_UNKNOWN_CONTROL, REASON_UNKNOWN_PIN, SOURCE_CARD,
+    SOURCE_EXIT_BUTTON, SOURCE_PIN, SOURCE_RF,
 )
 from .logs import HolderRef, append_log
-from .protocol import CardRead, Event, ExitButton, RfRead, build_relay_command
+from .protocol import CardRead, Event, ExitButton, PinRead, RfRead, build_relay_command
+
+
+# Etiqueta fija del log: los dígitos del PIN nunca se guardan.
+PIN_LABEL = "PIN"
 
 
 @dataclass(frozen=True)
@@ -42,14 +47,17 @@ class AccessOutcome:
 
 
 def permission_allows(conn: sqlite3.Connection, holder_id: int, output_id: int,
-                      reader: Optional[int], now: datetime) -> bool:
-    """Algún permiso del titular cubre salida, día y horario. reader=None (RF) no filtra lector."""
+                      reader: Optional[int], now: datetime, *, pin_only: bool = False) -> bool:
+    """Algún permiso del titular cubre salida, día y horario. reader=None (RF) no filtra lector.
+
+    pin_only: solo cuentan los permisos con allow_pin (acceso por PIN).
+    """
     minute = now.hour * 60 + now.minute
     day = 1 << now.weekday()
     rows = conn.execute(
         "SELECT p.output_mask, p.reader_mask, p.weekday_mask, p.start_minute, p.end_minute"
         " FROM permissions p JOIN holder_permissions hp ON hp.permission_id = p.permission_id"
-        " WHERE hp.holder_id = ?",
+        " WHERE hp.holder_id = ?" + (" AND p.allow_pin = 1" if pin_only else ""),
         (holder_id,),
     )
     for p in rows:
@@ -96,6 +104,26 @@ def authorize_card(conn: sqlite3.Connection, code: int, reader: int, now: dateti
     return Decision(reason, holder, output, credential_label=label)
 
 
+def authorize_pin(conn: sqlite3.Connection, pin: str, reader: int, now: datetime) -> Decision:
+    row = conn.execute("SELECT holder_id FROM holders WHERE pin = ?", (pin,)).fetchone()
+    if row is None:
+        return Decision(REASON_UNKNOWN_PIN, credential_label=PIN_LABEL)
+    holder = _holder(conn, row["holder_id"])
+    out = conn.execute(
+        "SELECT output_id, duration_ms FROM outputs WHERE enabled = 1"
+        " AND (reader_mask & ?) != 0 ORDER BY output_id LIMIT 1",
+        (1 << reader,),
+    ).fetchone()
+    if out is None:
+        return Decision(REASON_NO_OUTPUT, holder, credential_label=PIN_LABEL)
+    output = OutputRef(out["output_id"], out["duration_ms"])
+    reason = (REASON_ALLOWED
+              if permission_allows(conn, holder.holder_id, output.output_id, reader, now,
+                                   pin_only=True)
+              else REASON_PIN_NOT_ALLOWED)
+    return Decision(reason, holder, output, credential_label=PIN_LABEL)
+
+
 def authorize_rf(conn: sqlite3.Connection, code: int, now: datetime) -> Decision:
     row = conn.execute(
         "SELECT b.control_id, b.button, b.output_id, c.holder_id,"
@@ -134,12 +162,16 @@ def handle_event(conn: sqlite3.Connection, event: Event, send: Callable[[bytes],
                             output_id=output_id, max_entries=max_entries)
         return AccessOutcome(True, REASON_EXIT_BUTTON, None, log_id)
 
+    code: Optional[int] = None
     if isinstance(event, CardRead):
         decision = authorize_card(conn, event.code, event.reader, now)
-        source, device_id = SOURCE_CARD, event.reader
+        source, device_id, code = SOURCE_CARD, event.reader, event.code
+    elif isinstance(event, PinRead):
+        decision = authorize_pin(conn, event.pin, event.reader, now)
+        source, device_id = SOURCE_PIN, event.reader
     else:
         decision = authorize_rf(conn, event.code, now)
-        source, device_id = SOURCE_RF, decision.button
+        source, device_id, code = SOURCE_RF, decision.button, event.code
 
     reason, command = decision.reason, None
     if decision.allowed:
@@ -151,7 +183,7 @@ def handle_event(conn: sqlite3.Connection, event: Event, send: Callable[[bytes],
     log_id = append_log(
         conn, timestamp=timestamp, allowed=reason == REASON_ALLOWED, source=source,
         reason=reason, holder=decision.holder, credential_label=decision.credential_label,
-        control_id=decision.control_id, code=event.code, device_id=device_id,
+        control_id=decision.control_id, code=code, device_id=device_id,
         output_id=decision.output.output_id if decision.output else None,
         max_entries=max_entries)
     return AccessOutcome(reason == REASON_ALLOWED, reason, command, log_id)

@@ -91,3 +91,11 @@ def test_clear_logs(client, db):
 def test_logs_require_session(anon_client):
     assert anon_client.get("/api/logs").status_code == 401
     assert anon_client.delete("/api/logs").status_code == 401
+
+
+def test_source_filter_accepts_pin(client, db):
+    log(db, 1_790_000_000, source=3, reason=8, allowed=False)
+    log(db, 1_790_000_001, source=0)
+    body = client.get("/api/logs?source=3").json()
+    assert body["total"] == 1 and body["items"][0]["source"] == 3
+    assert client.get("/api/logs?source=4").status_code == 422

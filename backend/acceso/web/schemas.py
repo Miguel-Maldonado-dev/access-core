@@ -1,9 +1,12 @@
 """Modelos pydantic de la API."""
+import re
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from acceso.constants import CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE
+from acceso.constants import (
+    CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE, PIN_MAX_DIGITS, PIN_MIN_DIGITS,
+)
 
 
 class HolderIn(BaseModel):
@@ -12,6 +15,7 @@ class HolderIn(BaseModel):
     department: str = ""
     address: str = ""
     notes: str = ""
+    pin: Optional[str] = None
     permission_ids: List[int] = Field(default_factory=list)
 
     @field_validator("kind")
@@ -27,6 +31,18 @@ class HolderIn(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("El nombre es obligatorio.")
+        return v
+
+    @field_validator("pin")
+    @classmethod
+    def _pin(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if not re.fullmatch(r"[0-9]{%d,%d}" % (PIN_MIN_DIGITS, PIN_MAX_DIGITS), v):
+            raise ValueError("El PIN debe tener de %d a %d dígitos." % (PIN_MIN_DIGITS, PIN_MAX_DIGITS))
         return v
 
     @field_validator("permission_ids")
@@ -45,6 +61,7 @@ class PermissionBody(BaseModel):
     weekday_mask: int = Field(ge=0, le=127)
     start_minute: int = Field(ge=0, le=1439)
     end_minute: int = Field(ge=0, le=1439)
+    allow_pin: bool = False
 
 
 class PermissionCreate(PermissionBody):

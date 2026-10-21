@@ -4,7 +4,7 @@ import pytest
 from helpers import NOW, add_card, add_control, add_holder, set_permission
 
 from acceso.access import authorize_card, authorize_rf, handle_event, permission_allows
-from acceso.protocol import CardRead, ExitButton, RfRead, build_relay_command
+from acceso.protocol import CardRead, ExitButton, PinRead, RfRead, build_relay_command
 
 LOG_COLUMNS = ("allowed, source, holder_name, holder_kind, credential_label, device_id,"
                " output_id, reason")
@@ -148,3 +148,93 @@ def test_log_trim_keeps_newest(conn):
         run(conn, RfRead(1), max_entries=3)
     ids = [r[0] for r in conn.execute("SELECT log_id FROM access_logs ORDER BY log_id")]
     assert ids == [3, 4, 5]
+
+
+def pin_holder(conn, pin="123456", allow_pin=1, name="Ana", **kw):
+    set_permission(conn, 0, output_mask=15, allow_pin=allow_pin, **kw)
+    return add_holder(conn, name=name, kind="persona", pin=pin)
+
+
+def test_pin_opens_first_output_for_reader_and_log_has_no_digits(conn):
+    pin_holder(conn)
+    sender = Sender()
+    outcome = run(conn, PinRead(2, "123456"), send=sender)
+    assert outcome.allowed and outcome.reason == 0
+    assert outcome.command == build_relay_command(1, 3000) and sender.sent == [outcome.command]
+    row = conn.execute("SELECT * FROM access_logs WHERE log_id=?", (outcome.log_id,)).fetchone()
+    assert (row["allowed"], row["source"], row["holder_name"], row["holder_kind"],
+            row["credential_label"], row["device_id"], row["output_id"], row["reason"]) == (
+        1, 3, "Ana", "persona", "PIN", 2, 1, 0)
+    assert row["code"] is None
+    assert "123456" not in str(tuple(row))
+
+
+def test_pin_leading_zeros_are_distinct(conn):
+    pin_holder(conn, pin="0123")
+    assert run(conn, PinRead(0, "0123")).allowed
+    assert run(conn, PinRead(0, "123")).reason == 8
+
+
+def test_unknown_pin_logs_without_digits_and_sends_nothing(conn):
+    pin_holder(conn)
+    sender = Sender()
+    outcome = run(conn, PinRead(1, "999999"), send=sender)
+    assert outcome.reason == 8 and not outcome.allowed
+    assert outcome.command is None and sender.sent == []
+    row = last_log(conn)
+    assert (row["source"], row["holder_id"], row["credential_label"], row["device_id"],
+            row["reason"], row["allowed"]) == (3, None, "PIN", 1, 8, 0)
+    assert row["code"] is None and "999999" not in str(tuple(row))
+
+
+def test_pin_without_allow_pin_permission_is_not_allowed(conn):
+    pin_holder(conn, allow_pin=0)
+    sender = Sender()
+    outcome = run(conn, PinRead(0, "123456"), send=sender)
+    assert outcome.reason == 9 and outcome.command is None and sender.sent == []
+    row = last_log(conn)
+    assert row["holder_name"] == "Ana" and row["code"] is None and row["credential_label"] == "PIN"
+    assert row["output_id"] == 0 and "123456" not in str(tuple(row))
+
+
+def test_only_allow_pin_permissions_count_for_pin(conn):
+    set_permission(conn, 0, output_mask=15, allow_pin=0)
+    set_permission(conn, 1, output_mask=0b0001, allow_pin=1)
+    add_holder(conn, pin="4321", permission_ids=(0,))
+    assert run(conn, PinRead(0, "4321")).reason == 9
+    conn.execute("INSERT INTO holder_permissions(holder_id, permission_id) VALUES (1, 1)")
+    assert run(conn, PinRead(0, "4321")).allowed
+
+
+def test_pin_permission_must_cover_reader_and_schedule(conn):
+    pin_holder(conn, reader_mask=0b0001)
+    assert run(conn, PinRead(0, "123456")).allowed
+    assert run(conn, PinRead(2, "123456")).reason == 9
+    set_permission(conn, 0, output_mask=15, allow_pin=1, start_minute=0, end_minute=60)
+    assert run(conn, PinRead(0, "123456")).reason == 9
+
+
+def test_pin_with_card_permission_but_card_still_works_without_allow_pin(conn):
+    pin_holder(conn, allow_pin=0)
+    add_card(conn, 111, 1)
+    assert run(conn, CardRead(0, 111)).allowed
+
+
+def test_pin_without_enabled_output_is_reason_2(conn):
+    pin_holder(conn)
+    conn.execute("UPDATE outputs SET enabled=0 WHERE output_id=0")
+    sender = Sender()
+    outcome = run(conn, PinRead(0, "123456"), send=sender)
+    assert outcome.reason == 2 and sender.sent == []
+    assert last_log(conn)["holder_name"] == "Ana"
+
+
+def test_pin_send_failure_logs_uart_error(conn):
+    pin_holder(conn)
+
+    def broken(data):
+        raise OSError("sin puerto")
+
+    outcome = run(conn, PinRead(0, "123456"), send=broken)
+    assert outcome.reason == 4 and outcome.command is None
+    assert last_log(conn)["code"] is None

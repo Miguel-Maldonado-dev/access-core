@@ -1,5 +1,5 @@
 PERM = {"permission_id": 3, "name": "Noches", "output_mask": 3, "reader_mask": 15,
-        "weekday_mask": 127, "start_minute": 0, "end_minute": 1439}
+        "weekday_mask": 127, "start_minute": 0, "end_minute": 1439, "allow_pin": False}
 
 
 def test_create_and_duplicate(client, db):
@@ -40,3 +40,15 @@ def test_requires_session(anon_client):
     assert anon_client.post("/api/permissions", json=PERM).status_code == 401
     assert anon_client.put("/api/permissions/3", json=PERM).status_code == 401
     assert anon_client.delete("/api/permissions/3").status_code == 401
+
+
+def test_allow_pin_roundtrip_and_default(client, db):
+    assert client.get("/api/permissions").json()[0]["allow_pin"] is False
+    r = client.post("/api/permissions", json={**PERM, "allow_pin": True})
+    assert r.status_code == 201 and r.json()["allow_pin"] is True
+    body = {k: v for k, v in PERM.items() if k != "permission_id"}
+    assert client.put("/api/permissions/3", json={**body, "allow_pin": False}).json()["allow_pin"] is False
+    no_flag = {k: v for k, v in body.items() if k != "allow_pin"}
+    assert client.put("/api/permissions/3", json=no_flag).json()["allow_pin"] is False
+    assert client.put("/api/permissions/3", json={**body, "allow_pin": True}).json()["allow_pin"] is True
+    assert [p["allow_pin"] for p in client.get("/api/permissions").json()] == [False, True]

@@ -231,3 +231,27 @@ def test_stop_event_ends_loop(settings, db):
     stop.set()
     thread.join(1)
     assert not thread.is_alive()
+
+
+def test_pty_pin_frame_gets_relay_command(settings, db, pty_pair):
+    set_permission(db, 0, output_mask=15, allow_pin=1)
+    add_holder(db, pin="123456")
+    master, uart_port = pty_pair
+    settings, stop, thread = pty_daemon(settings, uart_port)
+    os.write(master, frame(0x13, bytes((2, 6, 1, 2, 3, 4, 5, 6))))
+    assert read_master(master, 7) == build_relay_command(1, 3000)
+    stop.set()
+    thread.join(2)
+    assert not thread.is_alive()
+
+
+def test_pty_denied_pin_frame_sends_no_command(settings, db, pty_pair):
+    add_holder(db, pin="123456")  # permiso por defecto sin allow_pin
+    master, uart_port = pty_pair
+    settings, stop, thread = pty_daemon(settings, uart_port)
+    os.write(master, frame(0x13, bytes((2, 6, 1, 2, 3, 4, 5, 6))))
+    assert wait_for(lambda: log_count(settings) == 1)
+    assert read_master(master, 7, timeout=0.3) == b""
+    stop.set()
+    thread.join(2)
+    assert not thread.is_alive()

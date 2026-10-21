@@ -1,4 +1,4 @@
-"""Migración de la base v2 (Tkinter) al esquema v3 del panel web."""
+"""Migración de la base v2 (Tkinter) y v3 al esquema v4 del panel web."""
 import fcntl
 import os
 import re
@@ -24,7 +24,8 @@ _REFERENCES = re.compile(r"REFERENCES (\w+)\(")
 _COPY_SQL = (
     "INSERT INTO holders_v3(holder_id, kind, name, department, address, notes)"
     " SELECT user_id, 'persona', name, department, address, '' FROM users",
-    "INSERT INTO permissions_v3 SELECT permission_id, name, output_mask & 15, reader_mask & 15,"
+    "INSERT INTO permissions_v3(permission_id, name, output_mask, reader_mask, weekday_mask,"
+    " start_minute, end_minute) SELECT permission_id, name, output_mask & 15, reader_mask & 15,"
     " weekday_mask & 127, start_minute, end_minute FROM permissions",
     "INSERT INTO holder_permissions_v3(holder_id, permission_id)"
     " SELECT user_id, permission_id FROM user_permissions",
@@ -47,6 +48,16 @@ _COPY_SQL = (
     " END,"
     " l.control_id, l.code, l.device_id, l.output_id, l.reason"
     " FROM access_logs l LEFT JOIN users u ON u.user_id = l.user_id ORDER BY l.log_id",
+)
+
+
+# v3 -> v4: mismas definiciones de columna que SCHEMA_SQL (el test de esquemas idénticos vigila
+# que no se desvíen); el índice único se toma de SCHEMA_SQL.
+_V4_ALTERS = (
+    "ALTER TABLE holders ADD COLUMN pin TEXT"
+    " CHECK(pin IS NULL OR (length(pin) BETWEEN 4 AND 6 AND pin NOT GLOB '*[^0-9]*'))",
+    "ALTER TABLE permissions ADD COLUMN allow_pin INTEGER NOT NULL DEFAULT 0"
+    " CHECK(allow_pin IN (0,1))",
 )
 
 
@@ -76,8 +87,13 @@ def _v3_table_statements() -> List[str]:
     return result
 
 
-def _v3_index_statements() -> List[str]:
-    return [s for s in _schema_statements() if s.startswith("CREATE INDEX")]
+def _index_statements() -> List[str]:
+    return [s for s in _schema_statements()
+            if s.startswith(("CREATE INDEX", "CREATE UNIQUE INDEX"))]
+
+
+def _unique_index_statements() -> List[str]:
+    return [s for s in _schema_statements() if s.startswith("CREATE UNIQUE INDEX")]
 
 
 def _tables(conn: sqlite3.Connection) -> List[str]:
@@ -89,8 +105,11 @@ def _detect_version(conn: sqlite3.Connection) -> int:
     tables = _tables(conn)
     if not tables:
         return 0
-    if conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION:
+    user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if user_version == SCHEMA_VERSION:
         return SCHEMA_VERSION
+    if user_version == 3 and "holders" in tables:
+        return 3
     if "users" in tables:
         columns = [r[1] for r in conn.execute("PRAGMA table_info(users)")]
         if "card_code" in columns:
@@ -100,9 +119,9 @@ def _detect_version(conn: sqlite3.Connection) -> int:
     raise MigrationError("Base con esquema desconocido; no se migra")
 
 
-def _backup(conn: sqlite3.Connection, db_path: Path) -> Path:
+def _backup(conn: sqlite3.Connection, db_path: Path, version: int) -> Path:
     """Respalda a un .tmp y lo publica con os.replace; un respaldo previo se conserva con fecha."""
-    backup_path = db_path.with_name("%s_backup_v2.sqlite" % db_path.stem)
+    backup_path = db_path.with_name("%s_backup_v%d.sqlite" % (db_path.stem, version))
     tmp_path = backup_path.with_name(backup_path.name + ".tmp")
     if tmp_path.exists():
         tmp_path.unlink()
@@ -114,12 +133,12 @@ def _backup(conn: sqlite3.Connection, db_path: Path) -> Path:
     if backup_path.exists():
         stamp = datetime.fromtimestamp(backup_path.stat().st_mtime).strftime("%Y%m%d-%H%M%S")
         os.replace(str(backup_path), str(backup_path.with_name(
-            "%s_backup_v2.%s.sqlite" % (db_path.stem, stamp))))
+            "%s_backup_v%d.%s.sqlite" % (db_path.stem, version, stamp))))
     os.replace(str(tmp_path), str(backup_path))
     return backup_path
 
 
-def _convert(conn: sqlite3.Connection) -> None:
+def _convert_v2(conn: sqlite3.Connection) -> None:
     # foreign_keys no se puede cambiar dentro de una transaccion.
     conn.execute("PRAGMA foreign_keys=OFF")
     try:
@@ -133,11 +152,20 @@ def _convert(conn: sqlite3.Connection) -> None:
             for statement in _v3_table_statements():
                 name = _CREATE_TABLE_V3.match(statement).group(1)
                 conn.execute("ALTER TABLE %s_v3 RENAME TO %s" % (name, name))
-            for statement in _v3_index_statements():
+            for statement in _index_statements():
                 conn.execute(statement)
             conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _convert_v3(conn: sqlite3.Connection) -> None:
+    with transaction(conn):
+        for statement in _V4_ALTERS:
+            conn.execute(statement)
+        for statement in _unique_index_statements():
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
 
 
 def migrate(db_path: Path) -> MigrationResult:
@@ -154,12 +182,14 @@ def migrate(db_path: Path) -> MigrationResult:
             if version == 0:
                 create_schema(conn)
                 return MigrationResult(0, SCHEMA_VERSION, None)
+            # v2 se convierte directo a las tablas v4 (equivale a v2 -> v3 -> v4) con el
+            # respaldo v2; v3 solo agrega las columnas e índice nuevos, con su respaldo v3.
             try:
-                backup_path = _backup(conn, db_path)
-                _convert(conn)
+                backup_path = _backup(conn, db_path, version)
+                (_convert_v2 if version == 2 else _convert_v3)(conn)
             except (sqlite3.Error, OSError) as exc:
                 raise MigrationError(
-                    "No se pudo migrar la base (sigue en v2): %s" % exc) from exc
+                    "No se pudo migrar la base (sigue en v%d): %s" % (version, exc)) from exc
             return MigrationResult(version, SCHEMA_VERSION, backup_path)
         finally:
             conn.close()

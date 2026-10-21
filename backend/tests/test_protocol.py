@@ -1,7 +1,7 @@
 import pytest
 
 from acceso.protocol import (
-    SOF, EOF_MARKER, CardRead, RfRead, ExitButton, InvalidFrame,
+    SOF, EOF_MARKER, CardRead, RfRead, ExitButton, InvalidFrame, PinRead,
     FrameParser, build_relay_command, checksum,
 )
 
@@ -48,3 +48,34 @@ def test_truncated_frame_does_not_swallow_next_valid_frame():   # riesgo 1
     out = FrameParser().feed(bytes.fromhex("AA100000") + frame(0x11, [0, 0, 0, 1]))
     assert len(out) == 2
     assert out[0].reason == "eof" and out[1] == RfRead(1)
+
+
+def test_pin_frame_from_protocol_doc():
+    assert FrameParser().feed(bytes.fromhex("AA1300060102030405061255")) == [PinRead(reader=0, pin="123456")]
+
+
+def test_pin_with_leading_zero_and_padding():
+    assert FrameParser().feed(frame(0x13, [3, 4, 0, 1, 2, 3, 0, 0])) == [PinRead(3, "0123")]
+
+
+@pytest.mark.parametrize("payload", [
+    [0, 0, 0, 0, 0, 0, 0, 0],      # longitud 0
+    [0, 4, 1, 2, 10, 4, 0, 0],     # dígito 10
+    [4, 4, 1, 2, 3, 4, 0, 0],      # lector 4
+    [0, 4, 1, 2, 3, 4, 0, 5],      # relleno distinto de cero
+])
+def test_invalid_pin_frames(payload):
+    out = FrameParser().feed(frame(0x13, payload) + frame(0x12, [0]))
+    assert isinstance(out[0], InvalidFrame)
+    assert out[-1] == ExitButton(0)
+
+
+def test_invalid_pin_length_7_is_invalid_frame_and_parser_recovers():
+    out = FrameParser().feed(frame(0x13, [0, 7, 1, 2, 3, 4, 5, 6]) + frame(0x12, [1]))
+    assert isinstance(out[0], InvalidFrame) and out[0].reason != "checksum"
+    assert out[1] == ExitButton(1)
+
+
+def test_pin_frame_split_across_reads():
+    p = FrameParser(); data = bytes.fromhex("AA1300060102030405061255")
+    assert p.feed(data[:5]) == [] and p.feed(data[5:]) == [PinRead(0, "123456")]

@@ -1,4 +1,4 @@
-"""Protocolo UART v2.1 con el ATmega: analizador de tramas y constructor de comandos."""
+"""Protocolo UART v2.2 con el ATmega: analizador de tramas y constructor de comandos."""
 from dataclasses import dataclass
 from typing import List, Union
 
@@ -7,13 +7,15 @@ EOF_MARKER = 0x55
 CMD_CARD_READ = 0x10
 CMD_RF_READ = 0x11
 CMD_EXIT_BUTTON = 0x12
+CMD_PIN_READ = 0x13
 CMD_ACTIVATE_RELAY = 0x20
 
 # Longitud total de la trama (SOF .. EOF) por comando.
-FRAME_LENGTHS = {CMD_CARD_READ: 9, CMD_RF_READ: 8, CMD_EXIT_BUTTON: 5}
+FRAME_LENGTHS = {CMD_CARD_READ: 9, CMD_RF_READ: 8, CMD_EXIT_BUTTON: 5, CMD_PIN_READ: 12}
 MAX_READER = 3
 MAX_EXIT_BUTTON = 1
 MAX_RELAY = 3
+MAX_PIN_DIGITS = 6
 
 
 def checksum(data: bytes) -> int:
@@ -40,12 +42,31 @@ class ExitButton:
 
 
 @dataclass(frozen=True)
+class PinRead:
+    reader: int
+    pin: str
+
+
+@dataclass(frozen=True)
 class InvalidFrame:
     raw: bytes
     reason: str
 
 
-Event = Union[CardRead, RfRead, ExitButton]
+Event = Union[CardRead, RfRead, ExitButton, PinRead]
+
+
+def _decode_pin(raw: bytes) -> Union[PinRead, InvalidFrame]:
+    reader, length, digits = raw[2], raw[3], raw[4:10]
+    if reader > MAX_READER:
+        return InvalidFrame(raw, "lector %d fuera de rango" % reader)
+    if not 1 <= length <= MAX_PIN_DIGITS:
+        return InvalidFrame(raw, "longitud de PIN %d fuera de rango" % length)
+    if any(d > 9 for d in digits[:length]):
+        return InvalidFrame(raw, "dígito de PIN fuera de rango")
+    if any(digits[length:]):
+        return InvalidFrame(raw, "relleno de PIN distinto de cero")
+    return PinRead(reader, "".join(str(d) for d in digits[:length]))
 
 
 def _decode(raw: bytes) -> Union[Event, InvalidFrame]:
@@ -61,6 +82,8 @@ def _decode(raw: bytes) -> Union[Event, InvalidFrame]:
         return CardRead(reader, int.from_bytes(raw[3:7], "big"))
     if cmd == CMD_RF_READ:
         return RfRead(int.from_bytes(raw[2:6], "big"))
+    if cmd == CMD_PIN_READ:
+        return _decode_pin(raw)
     button = raw[2]
     if button > MAX_EXIT_BUTTON:
         return InvalidFrame(raw, "botón de salida %d fuera de rango" % button)

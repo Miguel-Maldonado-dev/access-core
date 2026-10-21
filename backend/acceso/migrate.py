@@ -1,4 +1,4 @@
-"""Migración de la base v2 (Tkinter) y v3 al esquema v4 del panel web."""
+"""Migración de la base v2 (Tkinter) y v3 al esquema v5 del panel web."""
 import fcntl
 import os
 import re
@@ -24,9 +24,10 @@ _REFERENCES = re.compile(r"REFERENCES (\w+)\(")
 _COPY_SQL = (
     "INSERT INTO holders_v3(holder_id, kind, name, department, address, notes)"
     " SELECT user_id, 'persona', name, department, address, '' FROM users",
-    "INSERT INTO permissions_v3(permission_id, name, output_mask, reader_mask, weekday_mask,"
-    " start_minute, end_minute) SELECT permission_id, name, output_mask & 15, reader_mask & 15,"
-    " weekday_mask & 127, start_minute, end_minute FROM permissions",
+    "INSERT INTO permissions_v3(permission_id, name, output_mask, card_reader_mask,"
+    " pin_reader_mask, weekday_mask, start_minute, end_minute, allow_rf)"
+    " SELECT permission_id, name, output_mask & 15, reader_mask & 15, 0,"
+    " weekday_mask & 127, start_minute, end_minute, 1 FROM permissions",
     "INSERT INTO holder_permissions_v3(holder_id, permission_id)"
     " SELECT user_id, permission_id FROM user_permissions",
     "INSERT INTO outputs_v3 SELECT output_id, duration_ms, reader_mask & 15, enabled != 0"
@@ -51,8 +52,9 @@ _COPY_SQL = (
 )
 
 
-# v3 -> v4: mismas definiciones de columna que SCHEMA_SQL (el test de esquemas idénticos vigila
-# que no se desvíen); el índice único se toma de SCHEMA_SQL.
+# v3 -> v4: misma definición de columna que SCHEMA_SQL (el test de esquemas idénticos vigila
+# que no se desvíe); el índice único se toma de SCHEMA_SQL. La columna allow_pin de permissions
+# ya no existe en v5: _rebuild_permissions la convierte.
 _V4_ALTERS = (
     "ALTER TABLE holders ADD COLUMN pin TEXT"
     " CHECK(pin IS NULL OR (length(pin) BETWEEN 4 AND 6 AND pin NOT GLOB '*[^0-9]*'))",
@@ -111,8 +113,8 @@ def _detect_version(conn: sqlite3.Connection) -> int:
     user_version = conn.execute("PRAGMA user_version").fetchone()[0]
     if user_version == SCHEMA_VERSION:
         return SCHEMA_VERSION
-    if user_version == 3 and "holders" in tables:
-        return 3
+    if user_version in (3, 4) and "holders" in tables:
+        return user_version
     if "users" in tables:
         columns = [r[1] for r in conn.execute("PRAGMA table_info(users)")]
         if "card_code" in columns:
@@ -174,13 +176,51 @@ def _convert_v2(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys=ON")
 
 
-def _convert_v3(conn: sqlite3.Connection) -> None:
-    with transaction(conn):
-        for statement in _V4_ALTERS:
-            conn.execute(statement)
-        for statement in _unique_index_statements():
-            conn.execute(statement)
-        conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
+def _permissions_v5_statement() -> str:
+    for statement in _schema_statements():
+        if statement.startswith("CREATE TABLE IF NOT EXISTS permissions "):
+            return statement.replace("CREATE TABLE IF NOT EXISTS permissions ",
+                                     "CREATE TABLE permissions_v5 ", 1)
+    raise MigrationError("SCHEMA_SQL sin tabla permissions")
+
+
+def _rebuild_permissions(conn: sqlite3.Connection) -> None:
+    """Reconstruye permissions al formato v5 dentro de la transacción actual.
+
+    Requiere foreign_keys=OFF (si no, el DROP borraría holder_permissions en cascada).
+    reader_mask -> card_reader_mask; pin_reader_mask = reader_mask si allow_pin=1, si no 0;
+    allow_rf = 1 (hoy el control RF pasa con cualquier permiso que cubra la salida).
+    """
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(permissions)")]
+    pin_expr = "CASE WHEN allow_pin = 1 THEN reader_mask ELSE 0 END" if "allow_pin" in columns else "0"
+    conn.execute(_permissions_v5_statement())
+    conn.execute(
+        "INSERT INTO permissions_v5(permission_id, name, output_mask, card_reader_mask,"
+        " pin_reader_mask, weekday_mask, start_minute, end_minute, allow_rf)"
+        " SELECT permission_id, name, output_mask, reader_mask, %s, weekday_mask,"
+        " start_minute, end_minute, 1 FROM permissions" % pin_expr)
+    conn.execute("DROP TABLE permissions")
+    conn.execute("ALTER TABLE permissions_v5 RENAME TO permissions")
+
+
+def _convert_v3_or_v4(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        with transaction(conn):
+            if version == 3:
+                for statement in _V4_ALTERS:
+                    conn.execute(statement)
+                for statement in _unique_index_statements():
+                    conn.execute(statement)
+            _rebuild_permissions(conn)
+            # solo lo que este paso pudo romper: referencias a permissions
+            violations = [r for r in conn.execute("PRAGMA foreign_key_check")
+                          if r["table"] == "holder_permissions"]
+            if violations:
+                raise sqlite3.IntegrityError("foreign_key_check falló tras reconstruir permissions")
+            conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def migrate(db_path: Path) -> MigrationResult:
@@ -197,11 +237,14 @@ def migrate(db_path: Path) -> MigrationResult:
             if version == 0:
                 create_schema(conn)
                 return MigrationResult(0, SCHEMA_VERSION, None)
-            # v2 se convierte directo a las tablas v4 (equivale a v2 -> v3 -> v4) con el
-            # respaldo v2; v3 solo agrega las columnas e índice nuevos, con su respaldo v3.
+            # v2 se convierte directo a las tablas v5 con el respaldo v2; v3 y v4 agregan lo que
+            # falta y reconstruyen permissions, cada una con su respaldo de la versión de origen.
             try:
                 backup_path = _backup(conn, db_path, version)
-                (_convert_v2 if version == 2 else _convert_v3)(conn)
+                if version == 2:
+                    _convert_v2(conn)
+                else:
+                    _convert_v3_or_v4(conn, version)
             except (sqlite3.Error, OSError) as exc:
                 raise MigrationError(
                     "No se pudo migrar la base (sigue en v%d): %s" % (version, exc)) from exc

@@ -19,11 +19,12 @@ export interface Permission {
   permission_id: number;
   name: string;
   output_mask: number;
-  reader_mask: number;
+  card_reader_mask: number;
+  pin_reader_mask: number;
   weekday_mask: number;
   start_minute: number;
   end_minute: number;
-  allow_pin: boolean;
+  allow_rf: boolean;
 }
 
 export interface Output {

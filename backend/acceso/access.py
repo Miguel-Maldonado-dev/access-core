@@ -70,18 +70,23 @@ class AccessOutcome:
     log_id: int
 
 
-def permission_allows(conn: sqlite3.Connection, holder_id: int, output_id: int,
-                      reader: Optional[int], now: datetime, *, pin_only: bool = False) -> bool:
-    """Algún permiso del titular cubre salida, día y horario. reader=None (RF) no filtra lector.
+METHOD_CARD, METHOD_PIN, METHOD_RF = "card", "pin", "rf"
 
-    pin_only: solo cuentan los permisos con allow_pin (acceso por PIN).
+
+def permission_allows(conn: sqlite3.Connection, holder_id: int, output_id: int,
+                      method: str, reader: Optional[int], now: datetime) -> bool:
+    """Algún permiso del titular cubre método, salida, día y horario.
+
+    card: el bit del lector debe estar en card_reader_mask; pin: en pin_reader_mask;
+    rf: el permiso debe tener allow_rf=1 y el lector no aplica (reader=None).
     """
     minute = now.hour * 60 + now.minute
     day = 1 << now.weekday()
     rows = conn.execute(
-        "SELECT p.output_mask, p.reader_mask, p.weekday_mask, p.start_minute, p.end_minute"
+        "SELECT p.output_mask, p.card_reader_mask, p.pin_reader_mask, p.allow_rf, p.weekday_mask,"
+        " p.start_minute, p.end_minute"
         " FROM permissions p JOIN holder_permissions hp ON hp.permission_id = p.permission_id"
-        " WHERE hp.holder_id = ?" + (" AND p.allow_pin = 1" if pin_only else ""),
+        " WHERE hp.holder_id = ?",
         (holder_id,),
     )
     for p in rows:
@@ -92,8 +97,15 @@ def permission_allows(conn: sqlite3.Connection, holder_id: int, output_id: int,
             time_ok = start <= minute < end
         else:
             time_ok = minute >= start or minute < end
-        reader_ok = reader is None or bool(p["reader_mask"] & (1 << reader))
-        if (p["output_mask"] & (1 << output_id) and reader_ok
+        if method == METHOD_RF:
+            method_ok = p["allow_rf"] == 1
+        elif method == METHOD_PIN:
+            method_ok = reader is not None and bool(p["pin_reader_mask"] & (1 << reader))
+        elif method == METHOD_CARD:
+            method_ok = reader is not None and bool(p["card_reader_mask"] & (1 << reader))
+        else:
+            method_ok = False
+        if (method_ok and p["output_mask"] & (1 << output_id)
                 and p["weekday_mask"] & day and time_ok):
             return True
     return False
@@ -123,7 +135,8 @@ def authorize_card(conn: sqlite3.Connection, code: int, reader: int, now: dateti
         return Decision(REASON_NO_OUTPUT, holder, credential_label=label)
     output = OutputRef(out["output_id"], out["duration_ms"])
     reason = (REASON_ALLOWED
-              if permission_allows(conn, holder.holder_id, output.output_id, reader, now)
+              if permission_allows(conn, holder.holder_id, output.output_id, METHOD_CARD,
+                                   reader, now)
               else REASON_NO_PERMISSION)
     return Decision(reason, holder, output, credential_label=label)
 
@@ -142,8 +155,8 @@ def authorize_pin(conn: sqlite3.Connection, pin: str, reader: int, now: datetime
         return Decision(REASON_NO_OUTPUT, holder, credential_label=PIN_LABEL)
     output = OutputRef(out["output_id"], out["duration_ms"])
     reason = (REASON_ALLOWED
-              if permission_allows(conn, holder.holder_id, output.output_id, reader, now,
-                                   pin_only=True)
+              if permission_allows(conn, holder.holder_id, output.output_id, METHOD_PIN,
+                                   reader, now)
               else REASON_PIN_NOT_ALLOWED)
     return Decision(reason, holder, output, credential_label=PIN_LABEL)
 
@@ -170,7 +183,7 @@ def authorize_rf(conn: sqlite3.Connection, code: int, now: datetime) -> Decision
     if out is None:
         return Decision(REASON_NO_OUTPUT, **common)
     output = OutputRef(out["output_id"], out["duration_ms"])
-    if not permission_allows(conn, holder.holder_id, output.output_id, None, now):
+    if not permission_allows(conn, holder.holder_id, output.output_id, METHOD_RF, None, now):
         return Decision(REASON_NO_PERMISSION, output=output, **common)
     return Decision(REASON_ALLOWED, output=output, **common)
 

@@ -46,11 +46,12 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
   const [id, setId] = useState(String(permission?.permission_id ?? 0));
   const [name, setName] = useState(permission?.name ?? "");
   const [outputs, setOutputs] = useState(fromMask(permission?.output_mask ?? 0, 4));
-  const [readers, setReaders] = useState(fromMask(permission?.reader_mask ?? 0, 4));
+  const [cardReaders, setCardReaders] = useState(fromMask(permission?.card_reader_mask ?? 0, 4));
+  const [pinReaders, setPinReaders] = useState(fromMask(permission?.pin_reader_mask ?? 0, 4));
   const [days, setDays] = useState(fromMask(permission?.weekday_mask ?? 0, 7));
   const [start, setStart] = useState(minutesToHHMM(permission?.start_minute ?? 0));
   const [end, setEnd] = useState(minutesToHHMM(permission?.end_minute ?? 0));
-  const [allowPin, setAllowPin] = useState(permission?.allow_pin ?? false);
+  const [allowRf, setAllowRf] = useState(permission?.allow_rf ?? false);
   const [error, setError] = useState("");
 
   async function submit(e: FormEvent) {
@@ -78,11 +79,12 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
       permission_id: permissionId,
       name: name.trim(),
       output_mask: toMask(outputs),
-      reader_mask: toMask(readers),
+      card_reader_mask: toMask(cardReaders),
+      pin_reader_mask: toMask(pinReaders),
       weekday_mask: toMask(days),
       start_minute: startMinute,
       end_minute: endMinute,
-      allow_pin: allowPin,
+      allow_rf: allowRf,
     });
   }
 
@@ -110,10 +112,43 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
         <input className="field" value={name} onChange={(e) => setName(e.target.value)} />
       </label>
       <Checks legend="Salidas" labels={OUTPUTS} value={outputs} onChange={setOutputs} />
-      <div>
-        <Checks legend="Lectores" labels={READERS} value={readers} onChange={setReaders} />
-        <p className="mt-2 text-sm text-muted">Los controles RF ignoran los lectores.</p>
-      </div>
+      <fieldset>
+        <legend className="text-sm font-medium">Lectores</legend>
+        <table className="mt-2 text-sm">
+          <thead>
+            <tr>
+              <th scope="col" className="pr-6 text-left font-medium">
+                <span className="sr-only">Lector</span>
+              </th>
+              <th scope="col" className="px-3 text-center font-medium">Tarjeta</th>
+              <th scope="col" className="px-3 text-center font-medium">PIN</th>
+            </tr>
+          </thead>
+          <tbody>
+            {READERS.map((reader, i) => (
+              <tr key={reader}>
+                <th scope="row" className="pr-6 text-left font-normal">{reader}</th>
+                <td className="px-3 text-center">
+                  <input
+                    type="checkbox"
+                    aria-label={`Tarjeta ${reader}`}
+                    checked={cardReaders[i]}
+                    onChange={() => setCardReaders(cardReaders.map((v, j) => (j === i ? !v : v)))}
+                  />
+                </td>
+                <td className="px-3 text-center">
+                  <input
+                    type="checkbox"
+                    aria-label={`PIN ${reader}`}
+                    checked={pinReaders[i]}
+                    onChange={() => setPinReaders(pinReaders.map((v, j) => (j === i ? !v : v)))}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </fieldset>
       <div className="sm:col-span-2">
         <Checks legend="Días" labels={DAYS} value={days} onChange={setDays} />
       </div>
@@ -125,10 +160,15 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
         Hasta
         <input className="field" type="time" value={end} onChange={(e) => setEnd(e.target.value)} />
       </label>
-      <label className="flex items-center gap-2 text-sm font-medium sm:col-span-2">
-        <input type="checkbox" checked={allowPin} onChange={(e) => setAllowPin(e.target.checked)} />
-        Permitir PIN
-      </label>
+      <div className="sm:col-span-2">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <input type="checkbox" checked={allowRf} onChange={(e) => setAllowRf(e.target.checked)} />
+          Permitir control RF
+        </label>
+        <p className="mt-1 text-sm text-muted">
+          El control RF no depende del lector: usa las salidas, días y horario de este permiso.
+        </p>
+      </div>
       <p className="text-sm text-muted sm:col-span-2">
         Si Desde y Hasta son iguales, el permiso vale todo el día. Si Desde es mayor que Hasta, el horario cruza la
         medianoche.

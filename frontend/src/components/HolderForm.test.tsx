@@ -21,7 +21,7 @@ beforeEach(() => {
 });
 
 const permissions = [
-  { permission_id: 0, name: "Todo el día", output_mask: 15, reader_mask: 15, weekday_mask: 127, start_minute: 0, end_minute: 0, allow_pin: false },
+  { permission_id: 0, name: "Todo el día", output_mask: 15, card_reader_mask: 15, pin_reader_mask: 0, weekday_mask: 127, start_minute: 0, end_minute: 0, allow_rf: true },
 ];
 
 describe("HolderForm", () => {

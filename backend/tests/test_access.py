@@ -50,16 +50,16 @@ def test_card_without_enabled_output_for_reader(conn):
 
 def test_card_reader_not_in_permission(conn):
     add_card(conn, 111, add_holder(conn))
-    set_permission(conn, 0, output_mask=15, reader_mask=0b0001)
+    set_permission(conn, 0, output_mask=15, card_reader_mask=0b0001)
     sender = Sender()
     outcome = run(conn, CardRead(2, 111), send=sender)
     assert outcome.reason == 3
     assert outcome.command is None and sender.sent == []
 
 
-def test_rf_ignores_reader_mask(conn):
+def test_rf_ignores_reader_masks(conn):
     control_id = add_control(conn, add_holder(conn), [(500, 0)])
-    set_permission(conn, 0, output_mask=0b0001, reader_mask=0)
+    set_permission(conn, 0, output_mask=0b0001, card_reader_mask=0, pin_reader_mask=0)
     outcome = run(conn, RfRead(500))
     assert outcome.allowed and outcome.command == build_relay_command(0, 3000)
     row = last_log(conn)
@@ -106,7 +106,7 @@ def test_rf_no_permission_keeps_requested_output(conn):
 def test_schedule_window(conn, start, end, now, expected):
     holder_id = add_holder(conn)
     set_permission(conn, 0, output_mask=15, start_minute=start, end_minute=end)
-    assert permission_allows(conn, holder_id, 0, None, now) is expected
+    assert permission_allows(conn, holder_id, 0, "rf", None, now) is expected
 
 
 def test_weekday_mask(conn):
@@ -150,8 +150,8 @@ def test_log_trim_keeps_newest(conn):
     assert ids == [3, 4, 5]
 
 
-def pin_holder(conn, pin="123456", allow_pin=1, name="Ana", **kw):
-    set_permission(conn, 0, output_mask=15, allow_pin=allow_pin, **kw)
+def pin_holder(conn, pin="123456", pin_reader_mask=15, name="Ana", **kw):
+    set_permission(conn, 0, output_mask=15, pin_reader_mask=pin_reader_mask, **kw)
     return add_holder(conn, name=name, kind="persona", pin=pin)
 
 
@@ -188,7 +188,7 @@ def test_unknown_pin_logs_without_digits_and_sends_nothing(conn):
 
 
 def test_pin_without_allow_pin_permission_is_not_allowed(conn):
-    pin_holder(conn, allow_pin=0)
+    pin_holder(conn, pin_reader_mask=0)
     sender = Sender()
     outcome = run(conn, PinRead(0, "123456"), send=sender)
     assert outcome.reason == 9 and outcome.command is None and sender.sent == []
@@ -198,8 +198,8 @@ def test_pin_without_allow_pin_permission_is_not_allowed(conn):
 
 
 def test_only_allow_pin_permissions_count_for_pin(conn):
-    set_permission(conn, 0, output_mask=15, allow_pin=0)
-    set_permission(conn, 1, output_mask=0b0001, allow_pin=1)
+    set_permission(conn, 0, output_mask=15, pin_reader_mask=0)
+    set_permission(conn, 1, output_mask=0b0001, pin_reader_mask=15)
     add_holder(conn, pin="4321", permission_ids=(0,))
     assert run(conn, PinRead(0, "4321")).reason == 9
     conn.execute("INSERT INTO holder_permissions(holder_id, permission_id) VALUES (1, 1)")
@@ -207,15 +207,15 @@ def test_only_allow_pin_permissions_count_for_pin(conn):
 
 
 def test_pin_permission_must_cover_reader_and_schedule(conn):
-    pin_holder(conn, reader_mask=0b0001)
+    pin_holder(conn, pin_reader_mask=0b0001)
     assert run(conn, PinRead(0, "123456")).allowed
     assert run(conn, PinRead(2, "123456")).reason == 9
-    set_permission(conn, 0, output_mask=15, allow_pin=1, start_minute=0, end_minute=60)
+    set_permission(conn, 0, output_mask=15, pin_reader_mask=15, start_minute=0, end_minute=60)
     assert run(conn, PinRead(0, "123456")).reason == 9
 
 
 def test_pin_with_card_permission_but_card_still_works_without_allow_pin(conn):
-    pin_holder(conn, allow_pin=0)
+    pin_holder(conn, pin_reader_mask=0)
     add_card(conn, 111, 1)
     assert run(conn, CardRead(0, 111)).allowed
 
@@ -295,7 +295,7 @@ def test_pin_failures_outside_window_do_not_add_up(conn):
 
 
 def test_not_allowed_pin_counts_as_failure_but_no_output_does_not(conn):
-    pin_holder(conn, allow_pin=0)
+    pin_holder(conn, pin_reader_mask=0)
     lockout = PinLockout()
     for _ in range(5):
         assert run_pin(conn, 0, "123456", lockout).reason == 9
@@ -311,3 +311,63 @@ def test_no_lockout_object_means_no_lockout(conn):
     for _ in range(8):
         run(conn, PinRead(0, "999999"))
     assert run(conn, PinRead(0, "123456")).allowed
+
+
+def test_card_needs_card_mask_even_if_pin_mask_has_reader(conn):
+    add_card(conn, 111, add_holder(conn))
+    set_permission(conn, 0, output_mask=15, card_reader_mask=0b0001, pin_reader_mask=0b0100)
+    sender = Sender()
+    outcome = run(conn, CardRead(2, 111), send=sender)  # lector 2 solo en pin_reader_mask
+    assert outcome.reason == 3 and outcome.command is None and sender.sent == []
+    assert run(conn, CardRead(0, 111)).allowed
+
+
+def test_pin_needs_pin_mask_even_if_card_mask_has_reader(conn):
+    pin_holder(conn, pin_reader_mask=0b0001, card_reader_mask=0b0100)
+    sender = Sender()
+    outcome = run(conn, PinRead(2, "123456"), send=sender)  # lector 2 solo en card_reader_mask
+    assert outcome.reason == 9 and outcome.command is None and sender.sent == []
+    assert run(conn, PinRead(0, "123456")).allowed
+
+
+def test_card_and_pin_masks_combine_across_permissions(conn):
+    set_permission(conn, 0, output_mask=15, card_reader_mask=0b0001, pin_reader_mask=0)
+    set_permission(conn, 1, output_mask=15, card_reader_mask=0, pin_reader_mask=0b0001)
+    add_card(conn, 111, add_holder(conn, pin="4321", permission_ids=(0, 1)))
+    assert run(conn, CardRead(0, 111)).allowed
+    assert run(conn, PinRead(0, "4321")).allowed
+    set_permission(conn, 1, output_mask=15, card_reader_mask=0, pin_reader_mask=0)
+    assert run(conn, PinRead(0, "4321")).reason == 9
+
+
+def test_rf_without_allow_rf_never_sends(conn):
+    add_control(conn, add_holder(conn), [(500, 0)])
+    set_permission(conn, 0, output_mask=15, allow_rf=0)
+    sender = Sender()
+    outcome = run(conn, RfRead(500), send=sender)
+    assert outcome.reason == 3 and outcome.command is None and sender.sent == []
+
+
+def test_rf_allow_rf_must_be_on_a_permission_covering_output_day_and_time(conn):
+    set_permission(conn, 0, output_mask=0b0001, allow_rf=0)  # cubre, sin RF
+    set_permission(conn, 1, output_mask=0b0010, allow_rf=1)  # RF, otra salida
+    add_control(conn, add_holder(conn, permission_ids=(0, 1)), [(500, 0)])
+    assert run(conn, RfRead(500)).reason == 3
+    set_permission(conn, 1, output_mask=0b0001, allow_rf=1, weekday_mask=0b0000001)  # lunes
+    assert run(conn, RfRead(500)).reason == 3
+    set_permission(conn, 1, output_mask=0b0001, allow_rf=1, start_minute=0, end_minute=60)
+    assert run(conn, RfRead(500)).reason == 3
+    set_permission(conn, 1, output_mask=0b0001, allow_rf=1)
+    assert run(conn, RfRead(500)).allowed
+
+
+def test_rf_allowed_when_one_of_two_permissions_has_allow_rf(conn):
+    set_permission(conn, 0, output_mask=15, allow_rf=0)
+    set_permission(conn, 1, output_mask=15, allow_rf=1, card_reader_mask=0)
+    add_control(conn, add_holder(conn, permission_ids=(0, 1)), [(500, 0)])
+    assert run(conn, RfRead(500)).allowed
+
+
+def test_exit_button_unaffected_by_permissions(conn):
+    set_permission(conn, 0, output_mask=0, card_reader_mask=0, pin_reader_mask=0, allow_rf=0)
+    assert run(conn, ExitButton(0)).reason == 7

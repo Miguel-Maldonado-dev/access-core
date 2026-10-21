@@ -121,6 +121,12 @@ Notas de la versión con PIN (esquema v4):
 - Los PIN se guardan en texto plano; `/var/lib/acceso` queda en modo 700 y los servicios usan `UMask=0077`.
 - Recarga el navegador (Ctrl+F5) en las pestañas abiertas antes de la actualización, o un formulario viejo podría no mostrar el PIN.
 
+Notas de la versión con permisos por método (esquema v5):
+
+- La base pasa a v5 y el código anterior ya no la lee. Al arrancar, los servicios dejan un respaldo `<base>_backup_v4.sqlite` (con copias con fecha, máximo 3). Para volver atrás: detén los servicios (`sudo systemctl stop acceso-daemon acceso-web`), restaura `<base>_backup_v4.sqlite` sobre la base y reinstala el paquete anterior.
+- Cada permiso define por separado los lectores donde vale la **Tarjeta** y donde vale el **PIN**, y una casilla global **"Permitir control RF"**. La migración conserva lo que hoy funciona: Tarjeta = los lectores que tenía el permiso, PIN = esos mismos lectores solo si tenía "Permitir PIN", RF activado.
+- Después de actualizar, revisa en cada permiso las columnas Tarjeta, PIN y RF.
+
 ## Cambiar la contraseña
 
 ```bash

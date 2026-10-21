@@ -57,11 +57,12 @@ class HolderIn(BaseModel):
 class PermissionBody(BaseModel):
     name: str = ""
     output_mask: int = Field(ge=0, le=15)
-    reader_mask: int = Field(ge=0, le=15)
+    card_reader_mask: int = Field(default=0, ge=0, le=15)
+    pin_reader_mask: int = Field(default=0, ge=0, le=15)
     weekday_mask: int = Field(ge=0, le=127)
     start_minute: int = Field(ge=0, le=1439)
     end_minute: int = Field(ge=0, le=1439)
-    allow_pin: StrictBool = False
+    allow_rf: StrictBool = False
 
 
 class PermissionCreate(PermissionBody):

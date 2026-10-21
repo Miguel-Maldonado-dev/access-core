@@ -23,7 +23,7 @@ function outputsText(mask: number): string {
 
 function readersText(mask: number): string {
   const on = fromMask(mask, 4).flatMap((v, i) => (v ? [`Reader${i + 1}`] : []));
-  return on.length > 0 ? on.join(", ") : "-";
+  return on.length > 0 ? on.join(", ") : "—";
 }
 
 function daysText(mask: number): string {
@@ -120,10 +120,11 @@ export default function PermissionsPage() {
               <th className="px-4 py-2 text-right font-medium">Número</th>
               <th className="px-4 py-2 font-medium">Nombre</th>
               <th className="px-4 py-2 font-medium">Salidas</th>
-              <th className="px-4 py-2 font-medium">Lectores</th>
+              <th className="px-4 py-2 font-medium">Tarjeta</th>
+              <th className="px-4 py-2 font-medium">PIN</th>
+              <th className="px-4 py-2 font-medium">RF</th>
               <th className="px-4 py-2 font-medium">Días</th>
               <th className="px-4 py-2 font-medium">Horario</th>
-              <th className="px-4 py-2 font-medium">PIN</th>
               <th className="px-4 py-2" />
             </tr>
           </thead>
@@ -133,10 +134,11 @@ export default function PermissionsPage() {
                 <td className="px-4 py-2 text-right tabular-nums">{p.permission_id}</td>
                 <td className="px-4 py-2 font-medium">{p.name}</td>
                 <td className="px-4 py-2">{outputsText(p.output_mask)}</td>
-                <td className="px-4 py-2">{readersText(p.reader_mask)}</td>
+                <td className="px-4 py-2">{readersText(p.card_reader_mask)}</td>
+                <td className="px-4 py-2">{readersText(p.pin_reader_mask)}</td>
+                <td className="px-4 py-2">{p.allow_rf ? "Sí" : "—"}</td>
                 <td className="px-4 py-2">{daysText(p.weekday_mask)}</td>
                 <td className="px-4 py-2">{scheduleText(p)}</td>
-                <td className="px-4 py-2">{p.allow_pin ? "Sí" : "—"}</td>
                 <td className="whitespace-nowrap px-4 py-2 text-right">
                   <button type="button" className="mr-3 font-medium text-signal underline" onClick={() => setEditing({ permission: p })}>
                     Editar
@@ -149,7 +151,7 @@ export default function PermissionsPage() {
             ))}
             {loaded && permissions.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-muted">
+                <td colSpan={9} className="px-4 py-6 text-center text-muted">
                   Aún no hay permisos. Crea el primero con Nuevo permiso.
                 </td>
               </tr>

@@ -4,12 +4,22 @@ import userEvent from "@testing-library/user-event";
 import PermissionForm from "./PermissionForm";
 
 describe("PermissionForm", () => {
-  it("avisa que los controles RF ignoran los lectores", () => {
+  it("muestra la cuadrícula Tarjeta/PIN por lector y la nota del control RF", () => {
     render(<PermissionForm onSubmit={vi.fn()} />);
-    expect(screen.getByText("Los controles RF ignoran los lectores.")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Tarjeta" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "PIN" })).toBeInTheDocument();
+    for (let i = 1; i <= 4; i++) {
+      expect(screen.getByLabelText(`Tarjeta Reader${i}`)).not.toBeChecked();
+      expect(screen.getByLabelText(`PIN Reader${i}`)).not.toBeChecked();
+    }
+    expect(screen.getByLabelText("Permitir control RF")).not.toBeChecked();
+    expect(
+      screen.getByText("El control RF no depende del lector: usa las salidas, días y horario de este permiso."),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Permitir PIN")).not.toBeInTheDocument();
   });
 
-  it("envía las máscaras y el horario", async () => {
+  it("envía las máscaras por método, el RF y el horario", async () => {
     const onSubmit = vi.fn();
     const user = userEvent.setup();
     render(<PermissionForm onSubmit={onSubmit} />);
@@ -18,8 +28,10 @@ describe("PermissionForm", () => {
     await user.type(screen.getByLabelText("Nombre"), "Oficina");
     await user.click(screen.getByLabelText("Relay1"));
     await user.click(screen.getByLabelText("Relay2"));
-    await user.click(screen.getByLabelText("Reader1"));
-    await user.click(screen.getByLabelText("Permitir PIN"));
+    await user.click(screen.getByLabelText("Tarjeta Reader1"));
+    await user.click(screen.getByLabelText("PIN Reader1"));
+    await user.click(screen.getByLabelText("PIN Reader3"));
+    await user.click(screen.getByLabelText("Permitir control RF"));
     for (const d of ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]) {
       await user.click(screen.getByLabelText(d));
     }
@@ -27,17 +39,21 @@ describe("PermissionForm", () => {
     fireEvent.change(screen.getByLabelText("Hasta"), { target: { value: "18:00" } });
     await user.click(screen.getByRole("button", { name: "Guardar" }));
     expect(onSubmit).toHaveBeenCalledWith({
-      permission_id: 3, name: "Oficina", output_mask: 3, reader_mask: 1,
-      weekday_mask: 31, start_minute: 480, end_minute: 1080, allow_pin: true,
+      permission_id: 3, name: "Oficina", output_mask: 3, card_reader_mask: 1, pin_reader_mask: 5,
+      weekday_mask: 31, start_minute: 480, end_minute: 1080, allow_rf: true,
     });
   });
 
-  it("Permitir PIN empieza desmarcado y refleja el permiso editado", async () => {
-    const { unmount } = render(<PermissionForm onSubmit={vi.fn()} />);
-    expect(screen.getByLabelText("Permitir PIN")).not.toBeChecked();
-    unmount();
-    const p = { permission_id: 1, name: "x", output_mask: 1, reader_mask: 1, weekday_mask: 1, start_minute: 0, end_minute: 0, allow_pin: true };
+  it("refleja el permiso editado", () => {
+    const p = {
+      permission_id: 1, name: "x", output_mask: 1, card_reader_mask: 2, pin_reader_mask: 8,
+      weekday_mask: 1, start_minute: 0, end_minute: 0, allow_rf: true,
+    };
     render(<PermissionForm permission={p} onSubmit={vi.fn()} />);
-    expect(screen.getByLabelText("Permitir PIN")).toBeChecked();
+    expect(screen.getByLabelText("Tarjeta Reader2")).toBeChecked();
+    expect(screen.getByLabelText("Tarjeta Reader1")).not.toBeChecked();
+    expect(screen.getByLabelText("PIN Reader4")).toBeChecked();
+    expect(screen.getByLabelText("PIN Reader2")).not.toBeChecked();
+    expect(screen.getByLabelText("Permitir control RF")).toBeChecked();
   });
 });

@@ -142,7 +142,7 @@ def test_pty_card_frame_gets_relay_command(settings, db, pty_pair):
 
 def test_pty_denied_card_frame_sends_no_command(settings, db, pty_pair):
     add_card(db, 111, add_holder(db), "Llavero")
-    set_permission(db, 0, output_mask=15, reader_mask=0b0001)
+    set_permission(db, 0, output_mask=15, card_reader_mask=0b0001)
     master, uart_port = pty_pair
     settings, stop, thread = pty_daemon(settings, uart_port)
     os.write(master, card_frame(2, 111))
@@ -234,7 +234,7 @@ def test_stop_event_ends_loop(settings, db):
 
 
 def test_pty_pin_frame_gets_relay_command(settings, db, pty_pair):
-    set_permission(db, 0, output_mask=15, allow_pin=1)
+    set_permission(db, 0, output_mask=15, pin_reader_mask=15)
     add_holder(db, pin="123456")
     master, uart_port = pty_pair
     settings, stop, thread = pty_daemon(settings, uart_port)
@@ -259,7 +259,7 @@ def test_pty_denied_pin_frame_sends_no_command(settings, db, pty_pair):
 
 def test_invalid_frames_never_log_pin_digits(settings, db, caplog):
     import logging
-    set_permission(db, 0, output_mask=15, allow_pin=1)
+    set_permission(db, 0, output_mask=15, pin_reader_mask=15)
     add_holder(db, pin="9783")
     bad = bytearray(frame(0x13, bytes((0, 6, 1, 2, 3, 4, 5, 6))))
     bad[-2] ^= 0xFF  # checksum inválido

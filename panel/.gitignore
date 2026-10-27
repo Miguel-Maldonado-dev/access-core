@@ -9,4 +9,3 @@ frontend/.next/
 dist/
 .env
 *.egg-info/
-backend/constraints.txt

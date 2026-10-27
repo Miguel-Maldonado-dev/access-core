@@ -9,7 +9,7 @@ En la placa solo corre Python; Node.js se usa únicamente en la Mac para compila
 
 ## Desarrollo en la Mac
 
-Backend (desde `panel_web/backend`):
+Backend (desde `panel/backend`):
 
 ```bash
 python3 -m venv .venv
@@ -17,7 +17,7 @@ python3 -m venv .venv
 .venv/bin/pytest
 ```
 
-Crea un `.env` en `panel_web/backend` (usa `deploy/env.example` como base) con valores locales, por ejemplo:
+Crea un `.env` en `panel/backend` (usa `deploy/env.example` como base) con valores locales, por ejemplo:
 
 ```
 UART_PORT=/dev/cu.usbmodem11401
@@ -28,14 +28,14 @@ DB_PATH=data/access_control.sqlite
 CORS_ORIGINS=http://localhost:3000
 ```
 
-Procesos (cada uno en su terminal, desde `panel_web/backend`):
+Procesos (cada uno en su terminal, desde `panel/backend`):
 
 ```bash
 .venv/bin/python -m acceso.daemon   # lee el UART (/dev/cu.usbmodem11401)
 .venv/bin/python -m acceso.web      # API en http://localhost:8080
 ```
 
-Interfaz (desde `panel_web/frontend`), apuntando a la API con `NEXT_PUBLIC_API_BASE`:
+Interfaz (desde `panel/frontend`), apuntando a la API con `NEXT_PUBLIC_API_BASE`:
 
 ```bash
 npm install
@@ -47,7 +47,7 @@ npm test
 
 ## Generar el paquete (en la Mac)
 
-Desde `panel_web/`:
+Desde `panel/`:
 
 ```bash
 deploy/build_release.sh

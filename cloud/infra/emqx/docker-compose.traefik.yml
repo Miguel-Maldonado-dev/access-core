@@ -2,7 +2,7 @@
 # sin tocar la configuración de ese Traefik. Ver "Detrás de Traefik" en README.md.
 #
 # - El certificado de EMQX_DOMAIN lo emite y renueva Traefik (resolvedor TRAEFIK_CERT_RESOLVER).
-#   El servicio `certs` lo copia de acme.json a PEM cada 6 horas, con el dueño del usuario emqx.
+#   El servicio `certs` (alpine + jq) lo copia de acme.json a PEM cada 6 horas, con el dueño del usuario emqx.
 # - EMQX publica MQTT con TLS en el 8883 del anfitrión (el certificado lo usa EMQX directamente).
 # - La API REST de EMQX sale por el 443 de Traefik solo en https://EMQX_DOMAIN/api/v5/...
 #   (la usa la aplicación para publicar avisos, con su API key). El resto de ese dominio sigue
@@ -12,19 +12,38 @@
 #
 # Los archivos de esta carpeta deben estar en el servidor en EMQX_DIR (por omisión /opt/acceso-emqx).
 services:
+  # Copia el certificado y la llave de EMQX_DOMAIN desde acme.json de Traefik (base64 de PEM) a
+  # /certs/<dominio>/{fullchain,privkey}.pem, con dueño 1000:1000 (usuario emqx). Solo lee el
+  # certificado de ese dominio: nunca la cuenta de Let's Encrypt. (traefik-certs-dumper v2.8.3
+  # falla con el acme.json de Traefik 3: "unsupported key type".)
   certs:
-    image: ldez/traefik-certs-dumper:v2.8.3
+    image: alpine:3.20
     container_name: ${EMQX_CONTAINER_NAME:-acceso-emqx}-certs
     restart: unless-stopped
+    environment:
+      DOMINIO: ${EMQX_DOMAIN:?define EMQX_DOMAIN}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        set -e
+        apk add --no-cache jq >/dev/null || exit 1
+        umask 077
         while true; do
-          traefik-certs-dumper file --version v2 --source /traefik/acme.json --dest /certs \
-            --domain-subdir --crt-name fullchain --crt-ext .pem --key-name privkey --key-ext .pem
-          chown -R 1000:1000 /certs
-          chmod 0600 /certs/*/privkey.pem
+          dir="/certs/$$DOMINIO"
+          mkdir -p "$$dir"
+          crt=$$(jq -r --arg d "$$DOMINIO" '[.[] | .Certificates[]? | select(.domain.main == $$d)][0].certificate // empty' /traefik/acme.json)
+          key=$$(jq -r --arg d "$$DOMINIO" '[.[] | .Certificates[]? | select(.domain.main == $$d)][0].key // empty' /traefik/acme.json)
+          if [ -n "$$crt" ] && [ -n "$$key" ]; then
+            echo "$$crt" | base64 -d > "$$dir/fullchain.pem.tmp" && mv "$$dir/fullchain.pem.tmp" "$$dir/fullchain.pem"
+            echo "$$key" | base64 -d > "$$dir/privkey.pem.tmp" && mv "$$dir/privkey.pem.tmp" "$$dir/privkey.pem"
+            chown -R 1000:1000 "$$dir"
+            chmod 0644 "$$dir/fullchain.pem"
+            chmod 0600 "$$dir/privkey.pem"
+            echo "certificado de $$DOMINIO copiado"
+          else
+            echo "acme.json no tiene certificado para $$DOMINIO; reintento en 1 minuto" >&2
+            sleep 60
+            continue
+          fi
           sleep 21600
         done
     volumes:

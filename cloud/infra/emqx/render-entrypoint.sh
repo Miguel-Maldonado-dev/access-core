@@ -22,11 +22,17 @@ for nombre in APP_URL EMQX_WEBHOOK_SECRET; do
 done
 # Sin barra final: emqx.conf agrega "/api/mqtt/auth" y "/api/mqtt/events".
 APP_URL="${APP_URL%/}"
-export APP_URL EMQX_WEBHOOK_SECRET
+# EMQX exige TLS explícito en las conexiones https hacia la aplicación.
+case "$APP_URL" in
+  https://*) APP_TLS=true ;;
+  http://*) APP_TLS=false ;;
+  *) echo "render-entrypoint: APP_URL debe empezar con http:// o https://" >&2; exit 1 ;;
+esac
+export APP_URL EMQX_WEBHOOK_SECRET APP_TLS
 
 # El archivo renderizado lleva el secreto: solo lo lee el usuario de EMQX (el mismo que lo escribe).
 umask 077
-perl -pe 's/\$\{(APP_URL|EMQX_WEBHOOK_SECRET)\}/my $v = $ENV{$1}; $v =~ s{(["\\])}{\\$1}g; qq("$v")/ge' \
+perl -pe 's/\$\{(APP_URL|EMQX_WEBHOOK_SECRET)\}/my $v = $ENV{$1}; $v =~ s{(["\\])}{\\$1}g; qq("$v")/ge; s/\$\{APP_TLS\}/$ENV{APP_TLS}/g' \
   "$TEMPLATE" > "$OUT.tmp"
 mv "$OUT.tmp" "$OUT"
 umask 022

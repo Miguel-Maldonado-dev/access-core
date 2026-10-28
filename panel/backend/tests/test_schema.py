@@ -21,11 +21,14 @@ def test_helpers_importable():
 
 
 def test_create_schema_defaults(conn):
-    outputs = [tuple(r) for r in conn.execute("SELECT * FROM outputs ORDER BY output_id")]
+    outputs = [tuple(r) for r in conn.execute(
+        "SELECT output_id, duration_ms, reader_mask, enabled FROM outputs ORDER BY output_id")]
     assert outputs == [(0, 3000, 3, 1), (1, 3000, 12, 1), (2, 3000, 0, 1), (3, 3000, 0, 1)]
-    perms = [tuple(r) for r in conn.execute("SELECT * FROM permissions")]
+    perms = [tuple(r) for r in conn.execute(
+        "SELECT permission_id, name, output_mask, card_reader_mask, pin_reader_mask, weekday_mask,"
+        " start_minute, end_minute, allow_rf FROM permissions")]
     assert perms == [(0, "Acceso total", 15, 15, 0, 127, 0, 0, 1)]
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
 
@@ -37,11 +40,12 @@ def test_create_schema_is_idempotent(conn):
 
 def test_checks_reject_bad_rows(conn):
     with pytest.raises(sqlite3.IntegrityError):
-        conn.execute("INSERT INTO outputs VALUES (4, 3000, 0, 1)")
+        conn.execute("INSERT INTO outputs(output_id, duration_ms, reader_mask, enabled, uuid, updated_at)"
+                     " VALUES (4, 3000, 0, 1, 'u4', 1)")
     with pytest.raises(sqlite3.IntegrityError):
-        conn.execute("INSERT INTO holders(kind, name) VALUES ('otro', 'x')")
+        conn.execute("INSERT INTO holders(kind, name, uuid, updated_at) VALUES ('otro', 'x', 'u1', 1)")
     with pytest.raises(sqlite3.IntegrityError):
-        conn.execute("INSERT INTO holders(kind, name) VALUES ('persona', '  ')")
+        conn.execute("INSERT INTO holders(kind, name, uuid, updated_at) VALUES ('persona', '  ', 'u2', 1)")
 
 
 def test_deleting_holder_cascades_and_keeps_log_snapshot(conn):
@@ -72,7 +76,8 @@ def test_concurrent_write_waits_instead_of_failing(tmp_path):
         try:
             a = connect(path)
             a.execute("BEGIN IMMEDIATE")
-            a.execute("INSERT INTO holders(kind, name) VALUES ('persona', 'A')")
+            a.execute("INSERT INTO holders(kind, name, uuid, updated_at)"
+                      " VALUES ('persona', 'A', 'ua', 1)")
             locked.set()
             time.sleep(0.5)
             a.execute("COMMIT")
@@ -86,7 +91,7 @@ def test_concurrent_write_waits_instead_of_failing(tmp_path):
     assert locked.wait(5)
     b = connect(path)
     with transaction(b):
-        b.execute("INSERT INTO holders(kind, name) VALUES ('persona', 'B')")
+        b.execute("INSERT INTO holders(kind, name, uuid, updated_at) VALUES ('persona', 'B', 'ub', 1)")
     t.join()
     assert not errors
     assert b.execute("SELECT COUNT(*) FROM holders").fetchone()[0] == 2

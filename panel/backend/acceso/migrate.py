@@ -1,17 +1,22 @@
-"""Migración de la base v2 (Tkinter), v3 y v4 al esquema v5 del panel web."""
+"""Migración de la base v2 (Tkinter), v3, v4 y v5 al esquema v6 del panel web.
+
+v2, v3 y v4 se convierten primero a v5 (con el esquema v5 congelado en _SCHEMA_SQL_V5) y después
+v5 pasa a v6, cada paso en su transacción; el respaldo es siempre el de la versión de origen.
+"""
 import fcntl
 import os
 import re
 import sqlite3
 import sys
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from .constants import SCHEMA_VERSION
-from .db import connect, transaction
-from .schema import SCHEMA_SQL, create_schema
+from .constants import REPLICATED_TABLES, SCHEMA_VERSION
+from .db import connect, now_ms, transaction
+from .schema import SCHEMA_SQL, TRIGGER_STATEMENTS, create_schema
 
 V1_MESSAGE = "Base v1 no soportada: ábrela primero con access_control_admin_gui.py"
 LEGACY_TABLES = ("users", "user_permissions", "permissions", "outputs", "cards",
@@ -20,6 +25,45 @@ LEGACY_TABLES = ("users", "user_permissions", "permissions", "outputs", "cards",
 _CREATE_TABLE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)")
 _CREATE_TABLE_V3 = re.compile(r"CREATE TABLE (\w+)_v3")
 _REFERENCES = re.compile(r"REFERENCES (\w+)\(")
+
+# Esquema v5 congelado: v2, v3 y v4 se convierten a estas tablas y de ahí pasan a v6. No se edita.
+_SCHEMA_SQL_V5 = """
+CREATE TABLE IF NOT EXISTS holders (holder_id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL CHECK(kind IN ('persona','domicilio')), name TEXT NOT NULL CHECK(length(trim(name)) > 0),
+  department TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+  pin TEXT CHECK(pin IS NULL OR (length(pin) BETWEEN 4 AND 6 AND pin NOT GLOB '*[^0-9]*')));
+CREATE TABLE IF NOT EXISTS permissions (permission_id INTEGER PRIMARY KEY CHECK(permission_id BETWEEN 0 AND 31),
+  name TEXT NOT NULL, output_mask INTEGER NOT NULL CHECK(output_mask BETWEEN 0 AND 15),
+  card_reader_mask INTEGER NOT NULL CHECK(card_reader_mask BETWEEN 0 AND 15),
+  pin_reader_mask INTEGER NOT NULL CHECK(pin_reader_mask BETWEEN 0 AND 15),
+  weekday_mask INTEGER NOT NULL CHECK(weekday_mask BETWEEN 0 AND 127),
+  start_minute INTEGER NOT NULL CHECK(start_minute BETWEEN 0 AND 1439), end_minute INTEGER NOT NULL CHECK(end_minute BETWEEN 0 AND 1439),
+  allow_rf INTEGER NOT NULL DEFAULT 0 CHECK(allow_rf IN (0,1)));
+CREATE TABLE IF NOT EXISTS holder_permissions (
+  holder_id INTEGER NOT NULL REFERENCES holders(holder_id) ON DELETE CASCADE,
+  permission_id INTEGER NOT NULL REFERENCES permissions(permission_id) ON DELETE CASCADE, PRIMARY KEY(holder_id, permission_id));
+CREATE TABLE IF NOT EXISTS outputs (output_id INTEGER PRIMARY KEY CHECK(output_id BETWEEN 0 AND 3),
+  duration_ms INTEGER NOT NULL CHECK(duration_ms BETWEEN 0 AND 65535),
+  reader_mask INTEGER NOT NULL CHECK(reader_mask BETWEEN 0 AND 15), enabled INTEGER NOT NULL CHECK(enabled IN (0,1)));
+CREATE TABLE IF NOT EXISTS cards (card_code INTEGER PRIMARY KEY CHECK(card_code BETWEEN 0 AND 4294967295),
+  holder_id INTEGER NOT NULL REFERENCES holders(holder_id) ON DELETE CASCADE, description TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS controls (control_id INTEGER PRIMARY KEY,
+  holder_id INTEGER NOT NULL REFERENCES holders(holder_id) ON DELETE CASCADE, description TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS control_buttons (
+  control_id INTEGER NOT NULL REFERENCES controls(control_id) ON DELETE CASCADE,
+  button INTEGER NOT NULL CHECK(button BETWEEN 0 AND 3),
+  rf_code INTEGER NOT NULL UNIQUE CHECK(rf_code BETWEEN 0 AND 4294967295),
+  output_id INTEGER REFERENCES outputs(output_id), PRIMARY KEY(control_id, button));
+CREATE TABLE IF NOT EXISTS access_logs (log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp INTEGER NOT NULL, allowed INTEGER NOT NULL, source INTEGER NOT NULL,
+  holder_id INTEGER REFERENCES holders(holder_id) ON DELETE SET NULL, holder_name TEXT, holder_kind TEXT,
+  credential_label TEXT, control_id INTEGER REFERENCES controls(control_id) ON DELETE SET NULL,
+  code INTEGER, device_id INTEGER, output_id INTEGER, reason INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS access_logs_timestamp ON access_logs(timestamp);
+CREATE INDEX IF NOT EXISTS access_logs_holder ON access_logs(holder_id);
+CREATE UNIQUE INDEX IF NOT EXISTS holders_pin ON holders(pin);
+"""
+LAST_LEGACY_VERSION = 5
 
 _COPY_SQL = (
     "INSERT INTO holders_v3(holder_id, kind, name, department, address, notes)"
@@ -77,23 +121,29 @@ class MigrationResult:
     backup_path: Optional[Path]
 
 
-def _schema_statements() -> List[str]:
-    return [s.strip() for s in SCHEMA_SQL.split(";\n") if s.strip()]
+def _schema_statements(sql: str = _SCHEMA_SQL_V5) -> List[str]:
+    return [s.strip() for s in sql.split(";\n") if s.strip()]
 
 
-def _v3_table_statements() -> List[str]:
-    """Las tablas de SCHEMA_SQL con sufijo _v3 (y sus referencias), para convivir con las viejas."""
+def _suffixed_table_statements(suffix: str, sql: str = _SCHEMA_SQL_V5,
+                               tables: Optional[tuple] = None) -> List[str]:
+    """Las tablas de `sql` (o solo `tables`) con sufijo y sus referencias, para convivir con las viejas."""
     result = []
-    for statement in _schema_statements():
+    for statement in _schema_statements(sql):
         match = _CREATE_TABLE.match(statement)
-        if match:
-            statement = _CREATE_TABLE.sub("CREATE TABLE %s_v3" % match.group(1), statement, count=1)
-            result.append(_REFERENCES.sub(lambda m: "REFERENCES %s_v3(" % m.group(1), statement))
+        if match and (tables is None or match.group(1) in tables):
+            statement = _CREATE_TABLE.sub(
+                "CREATE TABLE %s%s" % (match.group(1), suffix), statement, count=1)
+            result.append(_REFERENCES.sub(lambda m: "REFERENCES %s%s(" % (m.group(1), suffix), statement))
     return result
 
 
-def _index_statements() -> List[str]:
-    return [s for s in _schema_statements()
+def _v3_table_statements() -> List[str]:
+    return _suffixed_table_statements("_v3")
+
+
+def _index_statements(sql: str = _SCHEMA_SQL_V5) -> List[str]:
+    return [s for s in _schema_statements(sql)
             if s.startswith(("CREATE INDEX", "CREATE UNIQUE INDEX"))]
 
 
@@ -113,7 +163,7 @@ def _detect_version(conn: sqlite3.Connection) -> int:
     user_version = conn.execute("PRAGMA user_version").fetchone()[0]
     if user_version == SCHEMA_VERSION:
         return SCHEMA_VERSION
-    if user_version in (3, 4) and "holders" in tables:
+    if user_version in (3, 4, LAST_LEGACY_VERSION) and "holders" in tables:
         return user_version
     if "users" in tables:
         columns = [r[1] for r in conn.execute("PRAGMA table_info(users)")]
@@ -171,7 +221,7 @@ def _convert_v2(conn: sqlite3.Connection) -> None:
                 conn.execute("ALTER TABLE %s_v3 RENAME TO %s" % (name, name))
             for statement in _index_statements():
                 conn.execute(statement)
-            conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
+            conn.execute("PRAGMA user_version=%d" % LAST_LEGACY_VERSION)
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
 
@@ -222,6 +272,45 @@ def _convert_v3_or_v4(conn: sqlite3.Connection, version: int) -> None:
             _rebuild_permissions(conn)
             if _holder_permission_orphans(conn) - orphans_before:
                 raise sqlite3.IntegrityError("foreign_key_check falló tras reconstruir permissions")
+            conn.execute("PRAGMA user_version=%d" % LAST_LEGACY_VERSION)
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _convert_v5(conn: sqlite3.Connection) -> None:
+    """v5 -> v6: uuid, updated_at, origin y alias; bandeja de salida y triggers de sincronización.
+
+    SQLite no agrega columnas NOT NULL UNIQUE con ALTER, así que cada tabla replicada se
+    reconstruye (requiere foreign_keys=OFF, si no el DROP borraría en cascada). Cada fila recibe un
+    uuid4 y updated_at = ahora. Los triggers se crean al final: la migración no llena la bandeja.
+    """
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        with transaction(conn):
+            conn.create_function("uuid4", 0, lambda: str(uuid.uuid4()))
+            stamp = now_ms()
+            counts = {}
+            for statement in _suffixed_table_statements("_v6", SCHEMA_SQL, REPLICATED_TABLES):
+                conn.execute(statement)
+            for table in REPLICATED_TABLES:
+                columns = ", ".join(r[1] for r in conn.execute("PRAGMA table_info(%s)" % table))
+                counts[table] = conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]
+                conn.execute(
+                    "INSERT INTO %(t)s_v6(%(c)s, uuid, updated_at) SELECT %(c)s, uuid4(), ?"
+                    " FROM %(t)s ORDER BY rowid" % {"t": table, "c": columns}, (stamp,))
+            for table in REPLICATED_TABLES:
+                if conn.execute("SELECT COUNT(*) FROM %s_v6" % table).fetchone()[0] != counts[table]:
+                    raise sqlite3.IntegrityError("la copia de %s perdió filas" % table)
+                conn.execute("DROP TABLE %s" % table)
+                conn.execute("ALTER TABLE %s_v6 RENAME TO %s" % (table, table))
+            for statement in _index_statements(SCHEMA_SQL):  # los de las tablas viejas se fueron con ellas
+                conn.execute(statement)
+            for statement in _schema_statements(SCHEMA_SQL):
+                if statement.startswith("CREATE TABLE IF NOT EXISTS sync_"):
+                    conn.execute(statement)
+            conn.execute("INSERT OR IGNORE INTO sync_guard(id, applying) VALUES (1, 0)")
+            for statement in TRIGGER_STATEMENTS:
+                conn.execute(statement)
             conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
@@ -241,17 +330,21 @@ def migrate(db_path: Path) -> MigrationResult:
             if version == 0:
                 create_schema(conn)
                 return MigrationResult(0, SCHEMA_VERSION, None)
-            # v2 se convierte directo a las tablas v5 con el respaldo v2; v3 y v4 agregan lo que
-            # falta y reconstruyen permissions, cada una con su respaldo de la versión de origen.
+            # v2 se convierte directo a las tablas v5 y v3 y v4 agregan lo que falta y reconstruyen
+            # permissions; después, todas pasan de v5 a v6. El respaldo es el de la versión de
+            # origen. Si falla el paso a v6, la base queda en v5 y el siguiente arranque lo reintenta.
+            reached = version
             try:
                 backup_path = _backup(conn, db_path, version)
                 if version == 2:
                     _convert_v2(conn)
-                else:
+                elif version < LAST_LEGACY_VERSION:
                     _convert_v3_or_v4(conn, version)
+                reached = LAST_LEGACY_VERSION
+                _convert_v5(conn)
             except (sqlite3.Error, OSError) as exc:
                 raise MigrationError(
-                    "No se pudo migrar la base (sigue en v%d): %s" % (version, exc)) from exc
+                    "No se pudo migrar la base (sigue en v%d): %s" % (reached, exc)) from exc
             return MigrationResult(version, SCHEMA_VERSION, backup_path)
         finally:
             conn.close()

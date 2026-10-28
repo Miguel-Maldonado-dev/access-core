@@ -128,6 +128,43 @@ Notas de la versión con permisos por método (esquema v5):
 - Después de actualizar, revisa en cada permiso las columnas Tarjeta, PIN y RF.
 - Recarga las pestañas del panel abiertas antes de actualizar (Ctrl+F5): una pestaña vieja envía el formato anterior y el servidor la rechaza con el aviso "El panel está desactualizado".
 
+Notas de la versión con preparación para la nube (esquema v6):
+
+- La base pasa a v6 y el código anterior ya no la lee. Al arrancar, los servicios dejan un respaldo de la **versión de origen** (`<base>_backup_vN.sqlite`, con copias con fecha, máximo 3): `_backup_v5` en una placa que venía de v5, pero `_backup_v4` si venía de v4 (la migración encadenada v4 → v5 → v6 solo respalda la base original), y así con v3 y v2. Para volver atrás:
+  1. **Primero** quita `acceso-cloud`, porque al arrancar migra la base a v6 y el paquete anterior no lo conoce: `sudo systemctl disable --now acceso-cloud && sudo rm /etc/systemd/system/acceso-cloud.service && sudo systemctl daemon-reload`. Si lo dejas, vuelve a migrar la base restaurada (por ejemplo al reiniciar la placa) y el daemon anterior no arranca con una base v6.
+  2. Detén los servicios: `sudo systemctl stop acceso-daemon acceso-web`.
+  3. Borra `<base>-wal` y `<base>-shm` (junto a la base) y restaura el respaldo de tu versión de origen sobre la base.
+  4. Reinstala el paquete anterior.
+
+  Se pierden los cambios hechos en el panel (o bajados de la nube) después de la migración.
+- Cada titular, tarjeta, control, botón, permiso, asignación de permiso y salida recibe un identificador único (`uuid`), la marca de su último cambio (`updated_at`) y su origen (`origin`). Los cambios que se hacen en el panel se anotan en una bandeja de salida (`sync_outbox`) que usará la sincronización con la nube; la migración no la llena.
+- Las salidas tienen un **alias** opcional (hasta 40 caracteres), por ejemplo "Pluma vehicular", que se edita en la página Salidas.
+- Una pestaña del panel abierta antes de actualizar sigue funcionando: si no manda alias, la salida conserva el que tiene.
+
+## Servicio `acceso-cloud` (plataforma en la nube)
+
+`acceso-cloud` es un servicio systemd aparte, que `install.sh` instala y arranca junto con `acceso-daemon` y `acceso-web`. Sincroniza la base del panel con la plataforma en la nube (`cloud/` del repositorio): se registra, se vincula a una instalación, sube los cambios que haces en el panel, baja los que se hacen en la nube y sube los logs de acceso. Escucha avisos por MQTT para sincronizar al instante y, si el broker no responde, sigue sincronizando por HTTPS cada 5 minutos. **El panel nunca depende de la nube para abrir**: el daemon y la autorización local no cambian, y con `acceso-cloud` detenido o sin internet todo funciona igual.
+
+Configuración en `/etc/acceso/cloud.env` (modo 600, dueño `acceso`; el agente guarda ahí su credencial `CLOUD_PANEL_CODE` y `CLOUD_DEVICE_TOKEN`, que no se deben tocar a mano):
+
+```bash
+CLOUD_URL=https://app.ejemplo.com           # la aplicación (HTTPS)
+MQTT_URL=mqtts://mqtt.ejemplo.com:8883      # el broker EMQX (siempre con TLS)
+```
+
+- En la primera instalación se pueden dar por entorno: `sudo CLOUD_URL=https://app.ejemplo.com MQTT_URL=mqtts://mqtt.ejemplo.com:8883 ./deploy/install.sh`. `install.sh` los guarda solo si `/etc/acceso/cloud.env` no existe; después se editan a mano (`sudo nano /etc/acceso/cloud.env`) y se reinicia: `sudo systemctl restart acceso-cloud`.
+- Sin `CLOUD_URL` el agente queda inactivo y la página **Nube** lo indica en "Último error". Sin `MQTT_URL` sincroniza solo por el intervalo.
+- Para pruebas existe la variable opcional `SYNC_INTERVAL_S` (segundos entre sincronizaciones periódicas; 300 por omisión). No hace falta en producción.
+
+Cómo vincular un panel:
+
+1. Abre la página **Nube** del panel (`http://<ip>:8080`, menú de la izquierda). Muestra el **identificador del panel** (`PNL-XXXX-XXXX`) y el **código de vinculación** (8 caracteres).
+2. En la plataforma, un administrador del tenant entra a la instalación → Paneles → **Vincular panel** y captura los dos datos.
+3. El panel pasa a "Importando datos a la plataforma" y sube su base. Si la instalación no tenía datos, queda **Vinculado** de inmediato; si ya tenía, queda "En revisión" hasta que un administrador elija qué importar. **Mientras está en revisión, los cambios que hagas en el panel se perderán al adoptar los datos de la nube.**
+4. Ya vinculado, la página muestra la instalación, la última sincronización, los cambios pendientes y el último error.
+
+Si desvinculan el panel desde la plataforma, el agente borra su credencial, genera un código de vinculación nuevo y vuelve a "Sin vincular" sin tocar los datos locales. Diagnóstico: `journalctl -u acceso-cloud -f` (nunca registra contraseñas, tokens ni PIN).
+
 ## Cambiar la contraseña
 
 ```bash

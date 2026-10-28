@@ -1,0 +1,87 @@
+# EMQX 5 detrás de un Traefik ya instalado en el servidor (p. ej. el de Bluehost con Portainer),
+# sin tocar la configuración de ese Traefik. Ver "Detrás de Traefik" en README.md.
+#
+# - El certificado de EMQX_DOMAIN lo emite y renueva Traefik (resolvedor TRAEFIK_CERT_RESOLVER).
+#   El servicio `certs` lo copia de acme.json a PEM cada 6 horas, con el dueño del usuario emqx.
+# - EMQX publica MQTT con TLS en el 8883 del anfitrión (el certificado lo usa EMQX directamente).
+# - La API REST de EMQX sale por el 443 de Traefik solo en https://EMQX_DOMAIN/api/v5/...
+#   (la usa la aplicación para publicar avisos, con su API key). El resto de ese dominio sigue
+#   yendo a lo que ya tenga Traefik (p. ej. Portainer). El dashboard no se publica: úsalo con un
+#   túnel SSH al 127.0.0.1:18083 del servidor.
+# - El wss (8084) no se publica: el 443 es de Traefik y los paneles usan el 8883.
+#
+# Los archivos de esta carpeta deben estar en el servidor en EMQX_DIR (por omisión /opt/acceso-emqx).
+services:
+  certs:
+    image: ldez/traefik-certs-dumper:v2.8.3
+    container_name: ${EMQX_CONTAINER_NAME:-acceso-emqx}-certs
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        while true; do
+          traefik-certs-dumper file --version v2 --source /traefik/acme.json --dest /certs \
+            --domain-subdir --crt-name fullchain --crt-ext .pem --key-name privkey --key-ext .pem
+          chown -R 1000:1000 /certs
+          chmod 0600 /certs/*/privkey.pem
+          sleep 21600
+        done
+    volumes:
+      - traefik_data:/traefik:ro
+      - ${EMQX_DIR:-/opt/acceso-emqx}/certs:/certs
+    healthcheck:
+      test: ["CMD", "test", "-s", "/certs/${EMQX_DOMAIN:?define EMQX_DOMAIN}/privkey.pem"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  emqx:
+    image: emqx/emqx:5.8.6
+    container_name: ${EMQX_CONTAINER_NAME:-acceso-emqx}
+    restart: unless-stopped
+    depends_on:
+      certs:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/opt/emqx/etc/render-entrypoint.sh"]
+    environment:
+      EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:?define EMQX_NODE_COOKIE}
+      APP_URL: ${APP_URL:?define APP_URL}
+      EMQX_WEBHOOK_SECRET: ${EMQX_WEBHOOK_SECRET:?define EMQX_WEBHOOK_SECRET}
+      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USER:-admin}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:?define EMQX_DASHBOARD_PASSWORD}
+    ports:
+      - "${EMQX_MQTT_PORT:-8883}:8883"              # MQTT sobre TLS (paneles)
+      - "127.0.0.1:${EMQX_API_PORT:-18083}:18083"   # dashboard y API, solo local (túnel SSH)
+    volumes:
+      - ${EMQX_DIR:-/opt/acceso-emqx}/emqx.conf:/opt/emqx/etc/emqx.template.conf:ro
+      - ${EMQX_DIR:-/opt/acceso-emqx}/render-entrypoint.sh:/opt/emqx/etc/render-entrypoint.sh:ro
+      - ${EMQX_DIR:-/opt/acceso-emqx}/acl.conf:/opt/emqx/etc/acl.conf:ro
+      - ${EMQX_DIR:-/opt/acceso-emqx}/certs/${EMQX_DOMAIN}:/opt/emqx/etc/certs:ro
+      - emqx-data:/opt/emqx/data
+    networks:
+      - default
+      - traefik
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK:-hostedapps_default}
+      traefik.http.routers.acceso-emqx-api.rule: Host(`${EMQX_DOMAIN}`) && PathPrefix(`/api/v5`)
+      traefik.http.routers.acceso-emqx-api.entrypoints: ${TRAEFIK_ENTRYPOINT:-websecure}
+      traefik.http.routers.acceso-emqx-api.tls.certresolver: ${TRAEFIK_CERT_RESOLVER:-challenger}
+      traefik.http.services.acceso-emqx-api.loadbalancer.server.port: "18083"
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+networks:
+  traefik:
+    name: ${TRAEFIK_NETWORK:-hostedapps_default}
+    external: true
+
+volumes:
+  emqx-data:
+  traefik_data:
+    name: ${TRAEFIK_DATA_VOLUME:-traefik_data}
+    external: true

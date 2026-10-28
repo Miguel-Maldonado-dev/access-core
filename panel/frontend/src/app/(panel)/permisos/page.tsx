@@ -6,9 +6,12 @@ import { apiFetch } from "@/lib/api";
 import { outputLabel } from "@/lib/format";
 import { fromMask } from "@/lib/masks";
 import { minutesToHHMM } from "@/lib/time";
-import type { Permission } from "@/lib/types";
+import type { CloudStatus, Permission } from "@/lib/types";
 
 type Editing = { permission?: Permission } | null;
+
+const SHARED_PROFILE_WARNING =
+  "Este permiso es un perfil de la instalación: se borrará también en los demás paneles.";
 
 const DAY_SHORT = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 
@@ -50,6 +53,7 @@ export default function PermissionsPage() {
   const [editing, setEditing] = useState<Editing>(null);
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [linked, setLinked] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -65,6 +69,11 @@ export default function PermissionsPage() {
     apiFetch<Permission[]>("/api/permissions")
       .then(setPermissions, (err) => setError(message(err)))
       .finally(() => setLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    // Si no se puede consultar la nube, se trata como sin vincular.
+    apiFetch<CloudStatus>("/api/cloud/status").then((c) => setLinked(c.state === "active"), () => {});
   }, []);
 
   async function save(payload: PermissionPayload) {
@@ -83,7 +92,8 @@ export default function PermissionsPage() {
   }
 
   async function remove(p: Permission) {
-    if (!confirm(`¿Borrar el permiso ${p.permission_id} "${p.name}"? Se quitará de los titulares que lo tengan.`)) return;
+    const shared = linked ? `\n\n${SHARED_PROFILE_WARNING}` : "";
+    if (!confirm(`¿Borrar el permiso ${p.permission_id} "${p.name}"? Se quitará de los titulares que lo tengan.${shared}`)) return;
     try {
       await apiFetch(`/api/permissions/${p.permission_id}`, { method: "DELETE" });
       setError("");

@@ -1,10 +1,11 @@
 """Titulares y sus permisos."""
 import secrets
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from acceso.db import transaction
+from acceso.db import now_ms, transaction
 from acceso.store.errors import Conflict, Invalid, NotFound
 
 
@@ -74,10 +75,19 @@ def _check_permissions(conn: sqlite3.Connection, permission_ids) -> List[int]:
 
 
 def _set_permissions(conn: sqlite3.Connection, holder_id: int, ids: List[int]) -> None:
-    conn.execute("DELETE FROM holder_permissions WHERE holder_id = ?", (holder_id,))
+    """Aplica solo la diferencia: las asignaciones que siguen conservan su uuid y no tocan la bandeja."""
+    current = {r["permission_id"] for r in conn.execute(
+        "SELECT permission_id FROM holder_permissions WHERE holder_id = ?", (holder_id,))}
+    wanted = set(ids)
     conn.executemany(
-        "INSERT INTO holder_permissions(holder_id, permission_id) VALUES (?, ?)",
-        [(holder_id, pid) for pid in ids],
+        "DELETE FROM holder_permissions WHERE holder_id = ? AND permission_id = ?",
+        [(holder_id, pid) for pid in sorted(current - wanted)],
+    )
+    stamp = now_ms()
+    conn.executemany(
+        "INSERT INTO holder_permissions(holder_id, permission_id, uuid, updated_at, origin)"
+        " VALUES (?, ?, ?, ?, 'local')",
+        [(holder_id, pid, str(uuid.uuid4()), stamp) for pid in sorted(wanted - current)],
     )
 
 
@@ -103,9 +113,10 @@ def create_holder(conn: sqlite3.Connection, data: HolderData) -> int:
         ids = _check_permissions(conn, data.permission_ids)
         _check_pin(conn, data.pin, None)
         cur = conn.execute(
-            "INSERT INTO holders(kind, name, department, address, notes, pin)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (data.kind, data.name, data.department, data.address, data.notes, data.pin),
+            "INSERT INTO holders(kind, name, department, address, notes, pin, uuid, updated_at,"
+            " origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'local')",
+            (data.kind, data.name, data.department, data.address, data.notes, data.pin,
+             str(uuid.uuid4()), now_ms()),
         )
         _set_permissions(conn, cur.lastrowid, ids)
         return cur.lastrowid
@@ -122,10 +133,10 @@ def update_holder(conn: sqlite3.Connection, holder_id: int, data: HolderData) ->
                                (holder_id,)).fetchone()["pin"]
         _check_pin(conn, pin, holder_id)
         conn.execute(
-            "UPDATE holders SET kind=?, name=?, department=?, address=?, notes=?, pin=?"
-            " WHERE holder_id=?",
+            "UPDATE holders SET kind=?, name=?, department=?, address=?, notes=?, pin=?,"
+            " updated_at=?, origin='local' WHERE holder_id=?",
             (data.kind, data.name, data.department, data.address, data.notes, pin,
-             holder_id),
+             now_ms(), holder_id),
         )
         _set_permissions(conn, holder_id, ids)
 

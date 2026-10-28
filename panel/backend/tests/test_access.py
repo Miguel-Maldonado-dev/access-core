@@ -202,7 +202,8 @@ def test_only_allow_pin_permissions_count_for_pin(conn):
     set_permission(conn, 1, output_mask=0b0001, pin_reader_mask=15)
     add_holder(conn, pin="4321", permission_ids=(0,))
     assert run(conn, PinRead(0, "4321")).reason == 9
-    conn.execute("INSERT INTO holder_permissions(holder_id, permission_id) VALUES (1, 1)")
+    conn.execute("INSERT INTO holder_permissions(holder_id, permission_id, uuid, updated_at)"
+                 " VALUES (1, 1, 'u-1-1', 1)")
     assert run(conn, PinRead(0, "4321")).allowed
 
 

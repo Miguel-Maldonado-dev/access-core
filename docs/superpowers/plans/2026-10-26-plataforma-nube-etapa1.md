@@ -27,9 +27,17 @@
   - `acceso-cloud` es un proceso aparte;
   - el daemon y `access.py` no cambian;
   - el agente escribe con transacciones cortas `BEGIN IMMEDIATE` y respeta el `busy_timeout` de 5000 ms.
-- **Repositorios:**
+- **Repositorio y Git:**
   - todo vive en el repositorio `access-core`: la nube en `cloud/` y el panel en `panel/`;
-  - cada tarea se hace en una rama `feat/...` que sale de `main`.
+  - se trabaja en la rama `develop`;
+  - **ni el controlador ni los subagentes hacen commits ni merges**: los cambios quedan sin confirmar y el dueño los confirma y fusiona.
+- **Entornos de Supabase [decisión de Claude]:**
+  - las pruebas (pgTAP y Vitest) corren **solo** contra Supabase local (`supabase start`, con Docker) y nunca contra un proyecto remoto;
+  - **Access-Core-DEV** (ref `dnwzvjrdzubvynsmuloh`) es el entorno remoto de desarrollo. El controlador le aplica las migraciones con el MCP de Supabase después de que pasan la revisión, y `cloud/.env.local` apunta a él;
+  - los archivos de migración se crean con `supabase migration new <nombre>`, que les pone fecha y hora. Los nombres `0001_org.sql`, etc., de este plan son lógicos.
+- **Llaves de Supabase [decisión de Claude]:** se usan las llaves nuevas: `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (`sb_publishable_…`) en el navegador y `SUPABASE_SECRET_KEY` (`sb_secret_…`) solo en el servidor. No se usan `anon` ni `service_role` heredadas. En este plan, "`service_role`" significa el cliente con la llave secreta.
+- **Exposición a la Data API [decisión de Claude]:** las tablas nuevas de `public` ya no quedan expuestas por defecto (cambio de Supabase del 2026-04-28). Cada migración da `GRANT` explícitos a `authenticated` solo en las tablas que la interfaz usa, siempre con RLS activa, y nunca a `anon`.
+- **Funciones auxiliares de RLS [decisión de Claude]:** las funciones `security definer` van en un esquema `private`, que no se expone, con `set search_path = ''`. Se revoca `EXECUTE` a `public` y se da solo a `authenticated` (y a `service_role` cuando haga falta).
 - **Constantes de sincronización:**
 
   | Constante | Valor |
@@ -54,6 +62,7 @@
   - `device_token`: 32 bytes en base64url.
 
   La nube guarda solo `sha256` de `claim_code`, `panel_secret` y `device_token`.
+  - **[decisión de Claude]** Cada hash es `sha256` en hexadecimal minúsculo del **texto** en UTF-8, tal como viaja: `claim_code` en mayúsculas, `panel_secret` como sus 64 caracteres hexadecimales en minúsculas y `device_token` en base64url. Nunca se hashean los bytes decodificados.
 - **Tópicos MQTT:**
   - `acc/<panel_code>/cmd` (nube → panel; payload `{"type":"sync","revision":N}`);
   - `acc/<panel_code>/evt` (panel → nube);
@@ -76,7 +85,7 @@ Lo usan las tareas N5–N9 (nube) y P2–P4 (panel). Fechas en ISO-8601 UTC con 
 |---|---|---|---|
 | `POST /register` | ninguna | `{panel_code, claim_code_hash, panel_secret_hash, software_version, schema_version}` | `201 {status:"pending"}` · mismo `panel_secret_hash`: si está `pending` actualiza `claim_code_hash`; si está `revoked` vuelve a `pending` sin instalación; en otro estado no cambia nada; responde `200 {status}` · `409` si otro secreto |
 | `POST /activate` | ninguna | `{panel_code, panel_secret}` | `202 {status:"pending"}` · `200 {device_token, installation_id, installation_name}` (una sola vez; pasa a `staging`) · `410` revocado |
-| `GET /link-state` | Device | — | `{status:"staging"\|"awaiting_review"\|"active"\|"revoked"}` |
+| `GET /link-state` | Device | — | `{status:"staging"\|"awaiting_review"\|"active"}` · un panel revocado ya no tiene credencial y recibe `401`, que el agente trata como revocación **[decisión de Claude]** |
 | `POST /import-snapshot` | Device | `{tables:{<tabla>:[{id,data}]}}` (todas las tablas replicadas) | `202 {status:"awaiting_review"\|"active"}` |
 | `GET /changes?since=R&limit=500` | Device | — | `{revision, has_more, confirm_deletions, changes:[{table, op:"upsert"\|"delete", id, revision, data?}]}` ordenado por `revision` |
 | `POST /changes` | Device | `{changes:[{change_id, table, op, id, updated_at, data?}]}` | `{revision, results:[{change_id, status:"applied"\|"superseded"\|"rejected", revision?, reason?, current?}]}` — `current` viene cuando lo que quedó en la nube difiere de lo enviado: `{data}` con la versión vigente para ese panel, o `null` si el registro no existe |
@@ -127,7 +136,7 @@ cloud/                                   (en el repositorio access-core)
   supabase/migrations/0004_sync.sql           N7–N9
   supabase/migrations/0005_notify.sql         N10
   supabase/tests/*.test.sql                   pgTAP
-  infra/emqx/docker-compose.yml  infra/emqx/acl.conf  infra/emqx/README.md   N10, N16
+  infra/emqx/docker-compose.yml  infra/emqx/acl.conf  infra/emqx/README.md   N10
   src/lib/supabase/{server,admin,client}.ts   N1
   src/lib/crypto.ts                           N4
   src/lib/device/{auth,contract,projection,checksum,changes,apply,imports}.ts   N5–N9
@@ -135,7 +144,10 @@ cloud/                                   (en el repositorio access-core)
   src/app/api/device/v1/<ruta>/route.ts       N5–N9
   src/app/api/mqtt/{auth,events}/route.ts     N10
   src/app/api/internal/revision-changed/route.ts   N10
+  src/lib/auth/guards.ts                      N5 (requireTenantRole), N11 (completa)
+  src/proxy.ts                                N11 (Next 16: antes middleware.ts)
   src/app/(auth)/login/page.tsx  src/app/admin/…  src/app/t/[tenant]/…   N11–N15
+  src/app/t/[tenant]/installations/[id]/paneles/actions.ts   N5 (claim/revoke), N8 (confirmImport), N9 (confirmDeletions)
   tests/**/*.test.ts                          Vitest (integración con `supabase start`)
 
 panel/backend/acceso/
@@ -166,12 +178,13 @@ panel/deploy/acceso-cloud.service, install.sh             P4
   - `createServerSupabase()`: cliente con la sesión del usuario (cookies);
   - `createAdminSupabase()`: `service_role`, solo en el servidor; lanza un error si se importa en el navegador;
   - `GET /api/health` → `{ok:true}`.
-- `.env.example`: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `PIN_ENC_KEY`, `PIN_LOOKUP_KEY`, `EMQX_API_URL`, `EMQX_API_KEY`, `EMQX_API_SECRET`, `EMQX_WEBHOOK_SECRET`, `INTERNAL_WEBHOOK_SECRET` y `APP_URL`.
+- `.env.example`: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `PIN_ENC_KEY`, `PIN_LOOKUP_KEY`, `EMQX_API_URL`, `EMQX_API_KEY`, `EMQX_API_SECRET`, `EMQX_WEBHOOK_SECRET`, `INTERNAL_WEBHOOK_SECRET` y `APP_URL`.
+- **Entorno de pruebas [decisión de Claude]:** las pruebas de integración leen la URL y las llaves de Supabase **local** (de `supabase status`) y no de `.env.local`. Así nunca tocan Access-Core-DEV.
 
-- [ ] **Paso 1:** inicializar git y el proyecto; agregar `vitest`, `@supabase/ssr` y `@supabase/supabase-js`, y los scripts `test`, `test:db` (`supabase test db`) y `db:reset`.
+- [ ] **Paso 1:** crear el proyecto dentro del repositorio, **sin** `git init`, porque `cloud/` vive dentro de `access-core`. Agregar `vitest`, `@supabase/ssr` y `@supabase/supabase-js` con versiones fijas, y los scripts `test`, `test:db` (`supabase test db`) y `db:reset`.
 - [ ] **Paso 2: prueba.** `test_health`: `GET /api/health` responde `200 {ok:true}`. Ejecutarla y verla fallar.
 - [ ] **Paso 3:** implementar. `npm test`, `npm run lint` y `npm run build` pasan sin advertencias. En el README: cómo levantar Supabase local (`supabase start`) y las variables de entorno.
-- [ ] **Paso 4:** commit `chore: proyecto base Next.js + Supabase`.
+- [ ] **Paso 4:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N2: Organización y RLS
 
@@ -183,9 +196,9 @@ panel/deploy/acceso-cloud.service, install.sh             P4
 - `tenants(id uuid pk default gen_random_uuid(), name text not null check(length(trim(name))>0), suspended_at timestamptz, created_at timestamptz default now())`
 - `platform_admins(user_id uuid pk references auth.users on delete cascade)`
 - `tenant_members(tenant_id uuid references tenants on delete cascade, user_id uuid references auth.users on delete cascade, role text not null check(role in ('admin','tecnico')), primary key(tenant_id,user_id))`
-- `installations(id uuid pk, tenant_id uuid not null references tenants on delete cascade, name text not null, revision bigint not null default 0, created_at timestamptz default now())`
+- `installations(id uuid pk default gen_random_uuid(), tenant_id uuid not null references tenants on delete cascade, name text not null, revision bigint not null default 0, created_at timestamptz default now())`
 
-**Interfaces — funciones `security definer stable`:** `is_platform_admin() returns bool`, `is_member(t uuid) returns bool` y `is_tenant_admin(t uuid) returns bool`. `is_member` e `is_tenant_admin` devuelven `false` si el tenant tiene `suspended_at`.
+**Interfaces — funciones `security definer stable`** (en el esquema `private`, según las restricciones globales): `private.is_platform_admin() returns bool`, `private.is_member(t uuid) returns bool` y `private.is_tenant_admin(t uuid) returns bool`. `is_member` e `is_tenant_admin` devuelven `false` si el tenant tiene `suspended_at`.
 
 **Interfaces — RLS:**
 - `tenants`: solo lectura para sus miembros; todo para `platform_admin`.
@@ -201,7 +214,7 @@ panel/deploy/acceso-cloud.service, install.sh             P4
 
   Ejecutar `supabase test db`: falla.
 - [ ] **Paso 2:** implementar la migración. Ejecutar `supabase db reset && supabase test db`: pasa.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N3: Tablas replicadas, revisión y auditoría
 
@@ -227,7 +240,7 @@ panel/deploy/acceso-cloud.service, install.sh             P4
 - `access_profiles`: `name`, `local_permission_id int not null check 0..31`.
 - `holder_profiles`: `holder_id`, `profile_id`.
 - `profile_panel_rules`: `profile_id`, `panel_id uuid` (la FK a `panels` se agrega en N5), `output_mask`, `card_reader_mask`, `pin_reader_mask` (0..15), `allow_rf bool`, `weekday_mask` (0..127), `start_minute` y `end_minute` (0..1439).
-- `outputs`: `panel_id`, `output_index int 0..3`, `alias text not null default ''`, `duration_ms 0..65535`, `reader_mask 0..15`, `enabled bool`.
+- `outputs`: `panel_id` (la FK a `panels` también se agrega en N5), `output_index int 0..3`, `alias text not null default ''`, `duration_ms 0..65535`, `reader_mask 0..15`, `enabled bool`.
 
 **Interfaces — índices únicos parciales (`where deleted_at is null`):**
 - `(installation_id, card_code)`
@@ -266,7 +279,7 @@ panel/deploy/acceso-cloud.service, install.sh             P4
 
   Ejecutarlas: fallan.
 - [ ] **Paso 2:** implementar. `supabase test db` pasa.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N4: Criptografía y códigos
 
@@ -289,12 +302,13 @@ panel/deploy/acceso-cloud.service, install.sh             P4
   - `pinLookup` es estable y difiere entre instalaciones;
   - `randomBase32(8)` tiene 8 caracteres del alfabeto (sin `I`, `L`, `O` ni `U`).
 - [ ] **Paso 2:** implementar con Node `crypto`, con las claves de `PIN_ENC_KEY` y `PIN_LOOKUP_KEY` (base64, 32 bytes; lanzar error si faltan). Las pruebas pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N5: Paneles, registro, vinculación y activación
 
 **Archivos:**
-- Crear: `supabase/migrations/0003_panels.sql`, `src/lib/device/auth.ts`, `src/app/api/device/v1/{register,activate,link-state}/route.ts` y `src/app/t/[tenant]/installations/[id]/panels/actions.ts`.
+- Crear: `supabase/migrations/0003_panels.sql`, `src/lib/device/auth.ts`, `src/lib/auth/guards.ts` (con `requireTenantRole`, que N11 completa), `src/app/api/device/v1/{register,activate,link-state}/route.ts` y `src/app/t/[tenant]/installations/[id]/paneles/actions.ts`.
+- La migración agrega también las FK de `profile_panel_rules.panel_id` y `outputs.panel_id` hacia `panels`.
 - Pruebas: `tests/device/linking.test.ts` y `supabase/tests/panels.test.sql`.
 
 **Interfaces — tabla `panels`:**
@@ -330,7 +344,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - el intento 11 en una hora → `429`;
   - después de `revokePanel`, el token da `401` y un `register` con el mismo secreto y un código nuevo deja el panel `pending`, sin instalación, y reclamable con el código nuevo.
 - [ ] **Paso 2:** implementar. `npm test` pasa.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N6: Proyección por panel y `GET /changes`, `/checksums` y `/snapshot`
 
@@ -360,7 +374,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - un panel de otra instalación recibe solo sus datos (Riesgo 4);
   - checksum de `[{id:"b",data:{x:1}},{id:"a",data:{y:true,a:"ñ"}}]` = sha256 de `a\t{"a":"ñ","y":true}\nb\t{"x":1}\n` (vector fijo, copiado en la prueba de Python P3).
 - [ ] **Paso 2:** implementar. Las pruebas pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N7: `POST /changes` (cambios hechos en el panel)
 
@@ -398,7 +412,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - `permissions` con `permission_id` 3 nuevo crea el perfil y la regla solo para ese panel;
   - un panel no puede modificar un registro de otra instalación: `rejected` con `"no encontrado"` (Riesgo 4).
 - [ ] **Paso 2:** implementar. Las pruebas pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N8: Importación al vincular
 
@@ -415,7 +429,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - botón por `rf_code`;
   - PIN por `pin_lookup`;
   - titular por `kind` + `name` sin distinguir mayúsculas.
-- Server action `confirmImport(panelId, selectedIds: string[])`:
+- Server action `confirmImport(panelId, selectedIds: string[])`, en `src/app/t/[tenant]/installations/[id]/paneles/actions.ts`:
   - importa solo lo seleccionado, como alta pura: un titular con el mismo `kind` y `name` se reutiliza;
   - los conflictos nunca se importan;
   - los permisos locales del panel se vuelven perfiles nuevos con regla solo en ese panel. Toman el menor `local_permission_id` libre, y se asignan a los titulares seleccionados que los tenían. Pasando de 32 perfiles, los sobrantes van a `conflicts` con `"Máximo 32 perfiles por instalación."`;
@@ -428,7 +442,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - `confirmImport` importa la nueva y no la conflictiva;
   - un titular con el mismo nombre se reutiliza en lugar de duplicarse.
 - [ ] **Paso 2:** implementar. Las pruebas pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N9: Logs, retención y alertas
 
@@ -449,7 +463,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
 - **Retención:** `pg_cron` corre el día 1 de cada mes y borra lo que tenga más de 12 meses.
 - **`POST /alerts`:**
   - guarda `panels.sync_blocked = {type, table, would_delete, total, at}`;
-  - la server action `confirmDeletions(panelId)` (solo `admin`) pone `confirm_deletions_until = now() + CONFIRM_DELETIONS_WINDOW_S` y limpia `sync_blocked`;
+  - la server action `confirmDeletions(panelId)` (solo `admin`, en `paneles/actions.ts`) pone `confirm_deletions_until = now() + CONFIRM_DELETIONS_WINDOW_S` y limpia `sync_blocked`;
   - la confirmación caduca sola: no hay que reiniciarla.
 
 - [ ] **Paso 1: pruebas:**
@@ -458,7 +472,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - la alerta deja `sync_blocked`;
   - después de `confirmDeletions`, el pull y `/checksums` traen `confirm_deletions:true`; con `confirm_deletions_until` en el pasado, `false`.
 - [ ] **Paso 2:** implementar. Las pruebas pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N10: MQTT (EMQX), avisos de cambio y estado en línea
 
@@ -479,6 +493,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
 - **Aviso de revisión:** en `0005_notify.sql`, un `CONSTRAINT TRIGGER … AFTER UPDATE OF revision ON installations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW` llama con `pg_net` a `net.http_post(APP_URL || '/api/internal/revision-changed', body {installation_id, revision}, header x-internal-secret)`.
   - Se envía **un solo aviso por instalación por transacción**: la marca `set_config('acc.notified.' || id, '1', true)` evita repetirlo. Así, importar 450 filas no manda 450 avisos.
   - `APP_URL` y el secreto se guardan en Supabase Vault.
+  - **[decisión de Claude]** Si Vault no tiene `APP_URL` o el secreto (por ejemplo, en las pruebas de integración de otras tareas), el trigger no hace nada y no falla.
 - **`/api/internal/revision-changed`:** valida el secreto y publica `{"type":"sync","revision":N}` a cada panel `active` de la instalación.
 
 - [ ] **Paso 1: pruebas** (sin broker; `fetch` simulado):
@@ -487,16 +502,18 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - `/api/internal/revision-changed` publica una vez por panel activo y ninguna para los revocados;
   - en pgTAP: una transacción que escribe 3 filas de la misma instalación, con `SET CONSTRAINTS ALL IMMEDIATE`, deja 1 sola petición en `net.http_request_queue`.
 - [ ] **Paso 2:** implementar. Verificar el `docker-compose` con `docker compose -f infra/emqx/docker-compose.yml config`. El README de `infra/emqx` explica TLS (certificados con Caddy o certbot) y cómo crear la API key.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N11: Acceso, súper administrador y usuarios del tenant
 
 **Archivos:**
-- Crear: `src/app/(auth)/login/page.tsx`, `src/app/admin/tenants/page.tsx`, `src/app/t/[tenant]/users/page.tsx`, `src/middleware.ts` y `src/lib/auth/guards.ts`.
+- Crear: `src/app/(auth)/login/page.tsx`, `src/app/admin/tenants/page.tsx`, `src/app/t/[tenant]/users/page.tsx` y `src/proxy.ts` (Next 16 renombró `middleware.ts` a `proxy.ts`).
+- Completar: `src/lib/auth/guards.ts`, que N5 creó.
+- **[decisión de Claude]** El proxy no toca `/api/*`: las rutas de dispositivo, MQTT, internas y de salud tienen su propia autenticación.
 - Pruebas: `tests/ui/guards.test.ts` y `tests/ui/tenants.test.tsx`.
 
 **Interfaces:**
-- **Inicio de sesión:** Supabase Auth con correo y contraseña. El middleware lleva a `/login` a quien no tenga sesión.
+- **Inicio de sesión:** Supabase Auth con correo y contraseña. El proxy lleva a `/login` a quien no tenga sesión.
 - **Guardas:** `requirePlatformAdmin()` y `requireTenantRole(tenantId, 'admin'|'tecnico')` responden 403 si no se cumplen.
 - **`/admin/tenants`:** lista, alta y suspensión de tenants, e invitación del primer `admin` con `auth.admin.inviteUserByEmail`.
 - **`/t/[tenant]/users`:** solo para `admin`; lista, invita, cambia rol y quita miembros. No permite quitar al último `admin`.
@@ -507,7 +524,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - un no-administrador de plataforma en `/admin/tenants` → 403;
   - quitar al último `admin` → error `"El tenant debe tener al menos un administrador."`.
 - [ ] **Paso 2:** implementar. `npm test`, `lint` y `build` pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N12: Instalaciones y paneles en la interfaz
 
@@ -529,7 +546,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - la revisión atrasada se marca;
   - la pantalla de importación envía solo los IDs marcados.
 - [ ] **Paso 2:** implementar. Las pruebas pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N13: Titulares, tarjetas y controles en la interfaz
 
@@ -549,7 +566,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - un `card_code` duplicado muestra el mensaje en español;
   - borrar una tarjeta deja `deleted_at` y aumenta la revisión.
 - [ ] **Paso 2:** implementar. Las pruebas pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N14: Perfiles y salidas en la interfaz
 
@@ -570,7 +587,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - el perfil número 33 se rechaza con el mensaje;
   - cambiar el alias aumenta la revisión.
 - [ ] **Paso 2:** implementar. Las pruebas pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea N15: Logs y conflictos en la interfaz
 
@@ -587,7 +604,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - la salida se muestra con su alias;
   - un conflicto de unicidad muestra `"Rechazado: duplicado"`.
 - [ ] **Paso 2:** implementar. Las pruebas pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ## Parte P — Panel (`panel/`)
 
@@ -631,7 +648,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - una escritura de la web en paralelo, en otro hilo, durante la aplicación del agente espera (`busy_timeout`) y sí genera su entrada (Riesgo 5);
   - la salida 1 con alias "Pluma vehicular" se guarda y la página de salidas lo muestra.
 - [ ] **Paso 2:** implementar. Correr toda la suite del backend y `npm test`, `lint` y `build` en el frontend: todo pasa.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea P2: Agente: configuración, identidad, registro y activación
 
@@ -659,7 +676,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - `activate` con 202 → `None`; con 200 → `Activation`, y las credenciales guardadas tienen modo 0600;
   - un `401` en `get_changes` lanza `CloudError(401, "unauthorized")`.
 - [ ] **Paso 2:** implementar. Las pruebas pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea P3: Motor de sincronización
 
@@ -716,7 +733,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - el vector de checksum es idéntico al de N6;
   - un permiso que llega con máscaras en 0 se aplica, y el daemon niega la tarjeta en ese lector (prueba con `handle_event`).
 - [ ] **Paso 2:** implementar. Las pruebas pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea P4: Agente: MQTT, planificador y servicio
 
@@ -754,7 +771,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - una excepción de red en `pull` no termina el `Runner` y el siguiente ciclo reintenta;
   - el `caplog` no contiene el token ni el `panel_secret`.
 - [ ] **Paso 2:** implementar. Pasan la suite completa, `bash -n deploy/*.sh` y `bash deploy/test_install_validation.sh`.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ### Tarea P5: Página "Nube" del panel local
 
@@ -778,7 +795,7 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - la respuesta nunca contiene `panel_secret` ni el token;
   - la página muestra el `panel_code` y oculta el código hasta presionar "Mostrar".
 - [ ] **Paso 2:** implementar. Las suites pasan.
-- [ ] **Paso 3:** commit.
+- [ ] **Paso 3:** dejar los cambios sin confirmar; el dueño hace el commit.
 
 ## Parte E — Integración y despliegue
 
@@ -807,4 +824,4 @@ RLS: los miembros leen los paneles de su tenant. Las escrituras solo van por ser
   - costos aproximados con la nota "a confirmar con precios vigentes".
 
 - [ ] **Paso 1:** escribir el script y correrlo. Termina con `E2E OK`.
-- [ ] **Paso 2:** commit.
+- [ ] **Paso 2:** dejar los cambios sin confirmar; el dueño hace el commit.

@@ -11,6 +11,7 @@ Contexto para Claude Code. Léelo antes de trabajar en este repositorio.
   1. brainstorming → diseño en `docs/superpowers/specs/`;
   2. writing-plans → plan en `docs/superpowers/plans/`;
   3. implementación con subagent-driven-development (revisor por tarea y revisión final).
+- **Git:** las funcionalidades nuevas se desarrollan en la rama `develop`. Ni Claude ni sus subagentes hacen commits ni merges: dejan los cambios sin confirmar y el dueño los confirma y fusiona.
 - En los diseños, las decisiones que no tomó el dueño se marcan **[decisión de Claude]**.
 - Para la interfaz se usan las skills `frontend-design` y `vercel-react-best-practices`; para SQLite, `sqlite-database-expert`.
 
@@ -60,14 +61,14 @@ Un cambio al protocolo toca el firmware, el documento y el daemon (`panel/backen
 
 - **Backend (`panel/backend`, paquete `acceso`):**
   - Python ≥ 3.9, FastAPI, pyserial y SQLite en modo WAL;
-  - dos servicios systemd: `acceso-daemon` (UART y autorización) y `acceso-web` (API y web local en el puerto 8080);
-  - configuración en `/etc/acceso/acceso.env`.
-- **Esquema v5:** `holders` (persona o domicilio, PIN único de 4–6 dígitos), `cards`, `controls`, `control_buttons`, `permissions` (`output_mask`, `card_reader_mask`, `pin_reader_mask`, `allow_rf`, días y horario), `holder_permissions`, `outputs` y `access_logs`.
+  - tres servicios systemd: `acceso-daemon` (UART y autorización), `acceso-web` (API y web local en el puerto 8080) y `acceso-cloud` (agente de sincronización con la nube, paquete `acceso.cloud`);
+  - configuración en `/etc/acceso/acceso.env`; credenciales de la nube en `/etc/acceso/cloud.env` (0600, `acceso:acceso`).
+- **Esquema v6:** `holders` (persona o domicilio, PIN único de 4–6 dígitos), `cards`, `controls`, `control_buttons`, `permissions` (`output_mask`, `card_reader_mask`, `pin_reader_mask`, `allow_rf`, días y horario), `holder_permissions`, `outputs` (con `alias`) y `access_logs`. Las tablas replicadas llevan `uuid`, `updated_at` y `origin`; `sync_outbox` (con triggers y la guarda `sync_guard`) y `sync_state` sirven a la sincronización.
 - **Migraciones:** `acceso/migrate.py`, con bloqueo de archivo, una transacción y respaldo atómico en modo 0600 (máximo 3 copias).
 - **Frontend (`panel/frontend`):** Next.js con exportación estática que sirve el backend; pruebas con Vitest.
 - **Pruebas:**
-  - backend: `cd panel/backend && .venv/bin/pytest` (197 pruebas);
-  - frontend: `cd panel/frontend && npm test` (56 pruebas), además de `npm run lint` y `npm run build`.
+  - backend: `cd panel/backend && .venv/bin/pytest` (453 pruebas);
+  - frontend: `cd panel/frontend && npm test` (69 pruebas), además de `npm run lint` y `npm run build`.
 - **Paquete:** `panel/deploy/build_release.sh` genera `panel/dist/acceso-panel-AAAAMMDD.tar.gz`; se instala en la placa con `deploy/install.sh`. Último paquete: 20261021 (PIN, permisos v5 y abreviaturas).
 - **Desarrollo en Mac:**
   - `panel/backend/.env` (ignorado por git), con `UART_PORT=/dev/cu.usbmodem…`;
@@ -83,14 +84,17 @@ Un cambio al protocolo toca el firmware, el documento y el daemon (`panel/backen
 - **Errores de la API:** `{"detail": "<texto en español>"}`.
 - **Nunca subir** bases SQLite, respaldos ni `.env`: tienen nombres reales y PIN en texto plano. El repositorio es **público**.
 
-## Estado (2026-10-26)
+## Estado (2026-10-28)
 
-- **Panel local:** terminado y en uso (PIN, permisos por método y abreviaturas).
-- **Plataforma en la nube:**
-  - **diseño aprobado** en `docs/superpowers/specs/2026-10-26-plataforma-nube-design.md`;
-  - **plan de la etapa 1** (ver y sincronizar) en `docs/superpowers/plans/2026-10-26-plataforma-nube-etapa1.md`, con Next.js + Supabase + EMQX y el agente `acceso-cloud` en el panel;
-  - **aún no se implementa**: el dueño pidió solo el plan. Falta que lo revise y elija cómo ejecutarlo; se recomendó subagent-driven.
+- **Panel local:** terminado y en uso (PIN, permisos por método y abreviaturas). En `develop`, sin confirmar: esquema v6, agente `acceso-cloud` y página "Nube".
+- **Plataforma en la nube (`cloud/`):**
+  - **etapa 1 implementada** en `develop` (sin confirmar), con revisión por tarea y revisión final: Next.js 16 + Supabase + EMQX. Diseño en `docs/superpowers/specs/2026-10-26-plataforma-nube-design.md`, plan en `docs/superpowers/plans/2026-10-26-plataforma-nube-etapa1.md` y decisiones de Claude en `docs/superpowers/plans/2026-10-26-plataforma-nube-etapa1-decisiones.md`;
+  - cuentas creadas con correo y contraseña (autoconfirmadas), sin invitaciones;
+  - **pruebas:** `cd cloud && npm test` (392), `npx supabase test db` (295, contra el Supabase local) y el E2E local `bash cloud/e2e/run_e2e.sh`; despliegue en `cloud/docs/despliegue.md`;
+  - **pendiente del dueño:** confirmar los commits; aplicar en Access-Core-DEV las migraciones que faltan (`sync`, `notify`, `tenant_admin_guard`, `conflicts_review` y `claim_panel_neutral_author`), alinear su historial y configurar Auth; Vercel y el servidor de EMQX.
   - Después vienen la etapa 2 (API pública y webhooks), la 3 (apertura remota) y la 4 (QR temporales).
+- **Desarrollo de la nube en la Mac:** Supabase local (`cd cloud && npx supabase start`), `cloud/.env.local` (ignorado). Si la web del panel ocupa el puerto 3000, la nube arranca en el 3001. El agente del panel se prueba con `CLOUD_URL=http://localhost:3001 MQTT_URL= CLOUD_CREDENTIALS_PATH=data/cloud.env .venv/bin/python -m acceso.cloud` desde `panel/backend`.
+- **Python en la placa:** `constraints.txt` fija `anyio` 4.15.1, que pide Python ≥ 3.10; confirmar la versión de la placa antes de instalar.
 - **Pendientes del dueño en hardware:**
   - probar el teclado real;
   - instalar en la Orange Pi;

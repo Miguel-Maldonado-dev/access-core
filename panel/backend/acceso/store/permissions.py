@@ -1,8 +1,9 @@
 """Permisos (ids 0..31)."""
 import sqlite3
+import uuid
 from typing import List
 
-from acceso.db import transaction
+from acceso.db import now_ms, transaction
 from acceso.store.errors import Conflict, NotFound
 
 _COLS = ("permission_id", "name", "output_mask", "card_reader_mask", "pin_reader_mask", "weekday_mask",
@@ -21,8 +22,10 @@ def create_permission(conn: sqlite3.Connection, p: dict) -> None:
         ).fetchone():
             raise Conflict("Ya existe el permiso %s." % p["permission_id"])
         conn.execute(
-            "INSERT INTO permissions(%s) VALUES (%s)" % (", ".join(_COLS), ", ".join("?" * len(_COLS))),
-            tuple(int(bool(p[c])) if c == "allow_rf" else p[c] for c in _COLS),
+            "INSERT INTO permissions(%s, uuid, updated_at, origin) VALUES (%s, ?, ?, 'local')"
+            % (", ".join(_COLS), ", ".join("?" * len(_COLS))),
+            tuple(int(bool(p[c])) if c == "allow_rf" else p[c] for c in _COLS)
+            + (str(uuid.uuid4()), now_ms()),
         )
 
 
@@ -33,10 +36,11 @@ def update_permission(conn: sqlite3.Connection, permission_id: int, p: dict) -> 
         cur = conn.execute(
             "UPDATE permissions SET name=?, output_mask=?, card_reader_mask=COALESCE(?, card_reader_mask),"
             " pin_reader_mask=COALESCE(?, pin_reader_mask), weekday_mask=?, start_minute=?,"
-            " end_minute=?, allow_rf=COALESCE(?, allow_rf) WHERE permission_id=?",
+            " end_minute=?, allow_rf=COALESCE(?, allow_rf), updated_at=?, origin='local'"
+            " WHERE permission_id=?",
             (p["name"], p["output_mask"], p.get("card_reader_mask"), p.get("pin_reader_mask"),
              p["weekday_mask"], p["start_minute"], p["end_minute"],
-             None if allow_rf is None else int(allow_rf), permission_id),
+             None if allow_rf is None else int(allow_rf), now_ms(), permission_id),
         )
         if cur.rowcount == 0:
             raise NotFound("El permiso %s no existe." % permission_id)

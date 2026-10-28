@@ -6,7 +6,8 @@ def test_list_has_four(client, db):
 def test_update(client, db):
     r = client.put("/api/outputs/2", json={"duration_ms": 1500, "reader_mask": 1, "enabled": False})
     assert r.status_code == 200
-    assert r.json() == {"output_id": 2, "duration_ms": 1500, "reader_mask": 1, "enabled": False}
+    assert r.json() == {"output_id": 2, "duration_ms": 1500, "reader_mask": 1, "enabled": False,
+                        "alias": ""}
     assert client.get("/api/outputs").json()[2]["enabled"] is False
 
 

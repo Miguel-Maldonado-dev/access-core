@@ -5,7 +5,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator, model_validator
 
 from acceso.constants import (
-    CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE, PIN_MAX_DIGITS, PIN_MIN_DIGITS,
+    CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE, OUTPUT_ALIAS_MAX, PIN_MAX_DIGITS, PIN_MIN_DIGITS,
 )
 
 
@@ -86,6 +86,17 @@ class OutputIn(BaseModel):
     duration_ms: int = Field(ge=0, le=65535)
     reader_mask: int = Field(ge=0, le=15)
     enabled: bool
+    alias: Optional[str] = None  # None: conservar el actual
+
+    @field_validator("alias")
+    @classmethod
+    def _alias(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if len(v) > OUTPUT_ALIAS_MAX:
+            raise ValueError("El alias no puede pasar de %d caracteres." % OUTPUT_ALIAS_MAX)
+        return v
 
 
 def _check_code(v: Optional[int]) -> Optional[int]:

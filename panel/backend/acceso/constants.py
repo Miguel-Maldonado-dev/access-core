@@ -1,12 +1,17 @@
 OUTPUT_COUNT = 4
+OUTPUT_ALIAS_MAX = 40
 READER_COUNT = 4
 CONTROL_BUTTONS = 4
 EXIT_BUTTON_OUTPUTS = (0, 1)
 MAX_CODE = 4294967295
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 RECONNECT_SECONDS = 3.0
 
 HOLDER_KINDS = ("persona", "domicilio")
+
+# Tablas que se replican en la nube (llevan uuid, updated_at y origin, y disparan la bandeja).
+REPLICATED_TABLES = ("holders", "cards", "controls", "control_buttons", "permissions",
+                     "holder_permissions", "outputs")
 
 SOURCE_CARD, SOURCE_RF, SOURCE_EXIT_BUTTON, SOURCE_PIN = 0, 1, 2, 3
 

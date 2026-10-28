@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Instala o actualiza el panel en la placa. Ejecutar como root desde el paquete
 # descomprimido:  sudo ./deploy/install.sh [--db RUTA_A_LA_BASE]
+# Para vincular el panel con la nube en la primera instalación, indica sus URL:
+#   sudo CLOUD_URL=https://nube.ejemplo.com MQTT_URL=mqtts://mqtt.ejemplo.com:8883 ./deploy/install.sh
+# Se guardan en /etc/acceso/cloud.env solo si ese archivo no existe; después se edita a mano.
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -23,8 +26,17 @@ PKG="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib_validate.sh
 source "$PKG/deploy/lib_validate.sh"
 ENV_FILE=/etc/acceso/acceso.env
+CLOUD_ENV_FILE=/etc/acceso/cloud.env
 DB_DEFAULT=/var/lib/acceso/access_control.sqlite
 STATIC_LINE="STATIC_DIR=/opt/acceso/backend/acceso/web/static"
+
+for NOMBRE in CLOUD_URL MQTT_URL; do
+  VALOR="${!NOMBRE:-}"
+  if [ -n "$VALOR" ] && ! valor_valido "$VALOR"; then
+    echo "$NOMBRE no es válido: $MSG_VALOR_INVALIDO" >&2
+    exit 1
+  fi
+done
 
 if [ -n "$DB_SRC" ]; then
   [ -f "$DB_SRC" ] || { echo "No existe la base: $DB_SRC" >&2; exit 1; }
@@ -111,6 +123,8 @@ if ! grep -q '^STATIC_DIR=' "$ENV_FILE"; then
 fi
 chmod 600 "$ENV_FILE"
 chown acceso:acceso "$ENV_FILE"
+# Agente de nube: el archivo (con su credencial) lo crea la instalación y después lo reescribe el agente.
+crea_cloud_env_si_falta "$CLOUD_ENV_FILE" "${CLOUD_URL:-}" "${MQTT_URL:-}" acceso:acceso
 
 DB_PATH="$(sed -n 's/^DB_PATH=//p' "$ENV_FILE" | tail -n1)"
 DB_PATH="${DB_PATH:-$DB_DEFAULT}"
@@ -132,8 +146,9 @@ fi
 echo "==> Servicios"
 install -m 644 "$PKG/deploy/acceso-daemon.service" /etc/systemd/system/acceso-daemon.service
 install -m 644 "$PKG/deploy/acceso-web.service" /etc/systemd/system/acceso-web.service
-systemctl daemon-reload && systemctl enable --now acceso-daemon acceso-web
-systemctl restart acceso-daemon acceso-web
+install -m 644 "$PKG/deploy/acceso-cloud.service" /etc/systemd/system/acceso-cloud.service
+systemctl daemon-reload && systemctl enable --now acceso-daemon acceso-web acceso-cloud
+systemctl restart acceso-daemon acceso-web acceso-cloud
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 PORT="$(sed -n 's/^WEB_PORT=//p' "$ENV_FILE" | tail -n1)"

@@ -1,0 +1,1 @@
+-- Sin datos de semilla por ahora (config.toml apunta a este archivo).

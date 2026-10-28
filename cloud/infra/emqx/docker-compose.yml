@@ -1,0 +1,41 @@
+# EMQX 5 para access-core. Los secretos y la URL salen de .env (ver .env.example).
+# Verificar: docker compose -f infra/emqx/docker-compose.yml --env-file infra/emqx/.env.example config
+#
+# EMQX 5.8 NO sustituye variables de entorno ${...} dentro de emqx.conf (HOCON). Por eso emqx.conf
+# se monta como PLANTILLA y render-entrypoint.sh la convierte en el emqx.conf definitivo (dentro
+# del contenedor, con APP_URL y EMQX_WEBHOOK_SECRET del entorno) justo antes de arrancar EMQX.
+services:
+  emqx:
+    image: emqx/emqx:5.8.6
+    container_name: ${EMQX_CONTAINER_NAME:-acceso-emqx}
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/opt/emqx/etc/render-entrypoint.sh"]
+    # Útil en Linux si APP_URL apunta al host (host.docker.internal); inofensivo en producción.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:?define EMQX_NODE_COOKIE}
+      # Los lee render-entrypoint.sh (autenticación y webhook de emqx.conf).
+      APP_URL: ${APP_URL:?define APP_URL}
+      EMQX_WEBHOOK_SECRET: ${EMQX_WEBHOOK_SECRET:?define EMQX_WEBHOOK_SECRET}
+      # Credenciales del panel de administración (cámbialas en el primer arranque).
+      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USER:-admin}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:?define EMQX_DASHBOARD_PASSWORD}
+    ports:
+      - "${EMQX_MQTT_PORT:-8883}:8883"   # MQTT sobre TLS
+      - "${EMQX_WSS_PORT:-443}:8084"     # MQTT sobre WebSocket seguro (wss); si Caddy usa el 443, define EMQX_WSS_PORT=8084
+      - "127.0.0.1:${EMQX_API_PORT:-18083}:18083"   # API REST y dashboard: solo local; publícalos con un proxy si hace falta
+    volumes:
+      - ./emqx.conf:/opt/emqx/etc/emqx.template.conf:ro
+      - ./render-entrypoint.sh:/opt/emqx/etc/render-entrypoint.sh:ro
+      - ./acl.conf:/opt/emqx/etc/acl.conf:ro
+      - ${EMQX_CERT_DIR:?define EMQX_CERT_DIR}:/opt/emqx/etc/certs:ro
+      - emqx-data:/opt/emqx/data
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  emqx-data:

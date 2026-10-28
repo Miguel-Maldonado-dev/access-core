@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "acceso-panel"
 version = "0.1.0"
 requires-python = ">=3.9"
-dependencies = ["fastapi", "uvicorn", "pyserial", "itsdangerous", "python-dotenv"]
+dependencies = ["fastapi", "uvicorn", "pyserial", "itsdangerous", "python-dotenv", "httpx", "paho-mqtt>=2"]
 
 [project.optional-dependencies]
 dev = ["pytest", "httpx"]

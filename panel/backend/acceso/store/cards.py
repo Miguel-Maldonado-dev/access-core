@@ -1,8 +1,9 @@
 """Tarjetas de acceso."""
 import sqlite3
+import uuid
 from typing import List, Optional
 
-from acceso.db import transaction
+from acceso.db import now_ms, transaction
 from acceso.store.errors import Conflict, Invalid, NotFound
 
 _SELECT = (
@@ -43,8 +44,9 @@ def create_card(conn: sqlite3.Connection, card_code: int, holder_id: int, descri
         if owner is not None:
             raise Conflict("La tarjeta %s ya está registrada a %s." % (card_code, owner["name"]))
         conn.execute(
-            "INSERT INTO cards(card_code, holder_id, description) VALUES (?, ?, ?)",
-            (card_code, holder_id, description),
+            "INSERT INTO cards(card_code, holder_id, description, uuid, updated_at, origin)"
+            " VALUES (?, ?, ?, ?, ?, 'local')",
+            (card_code, holder_id, description, str(uuid.uuid4()), now_ms()),
         )
 
 
@@ -54,8 +56,9 @@ def update_card(conn: sqlite3.Connection, card_code: int, holder_id: int, descri
             raise NotFound("La tarjeta %s no existe." % card_code)
         _check_holder(conn, holder_id)
         conn.execute(
-            "UPDATE cards SET holder_id = ?, description = ? WHERE card_code = ?",
-            (holder_id, description, card_code),
+            "UPDATE cards SET holder_id = ?, description = ?, updated_at = ?, origin = 'local'"
+            " WHERE card_code = ?",
+            (holder_id, description, now_ms(), card_code),
         )
 
 

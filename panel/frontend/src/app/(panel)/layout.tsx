@@ -12,6 +12,7 @@ const SECTIONS = [
   { href: "/permisos/", label: "Permisos" },
   { href: "/salidas/", label: "Salidas" },
   { href: "/logs/", label: "Logs" },
+  { href: "/nube/", label: "Nube" },
 ];
 
 export default function PanelLayout({ children }: { children: React.ReactNode }) {

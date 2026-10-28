@@ -1,0 +1,18 @@
+[Unit]
+Description=Acceso - agente de sincronización con la nube
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=acceso
+UMask=0077
+EnvironmentFile=/etc/acceso/acceso.env
+EnvironmentFile=-/etc/acceso/cloud.env
+WorkingDirectory=/var/lib/acceso
+ExecStart=/opt/acceso/venv/bin/python -m acceso.cloud
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

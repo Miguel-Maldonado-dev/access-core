@@ -1,4 +1,5 @@
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -15,6 +16,11 @@ def connect(db_path: Path, *, check_same_thread: bool = True) -> sqlite3.Connect
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
+
+
+def now_ms() -> int:
+    """Milisegundos desde la época: la marca updated_at de los registros replicados."""
+    return int(time.time() * 1000)
 
 
 @contextmanager

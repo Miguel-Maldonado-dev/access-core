@@ -1,0 +1,131 @@
+@import "tailwindcss";
+
+/* Mismo lenguaje visual que el panel local (panel/frontend/src/app/globals.css):
+   tinta azul-verdosa para la estructura, papel gris frío para el trabajo,
+   verde señal para la acción y ámbar para lo que requiere atención. */
+:root {
+  --ink: #12222b;
+  --ink-soft: #1c3340;
+  --paper: #eef2f4;
+  --surface: #ffffff;
+  --line: #d3dce1;
+  --text: #15232b;
+  --muted: #55676f;
+  --signal: #0a6f5c;
+  --signal-strong: #07584a;
+  --accent: #5fd1b8;
+  --warn: #9a5b00;
+  --danger: #b42318;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-line: var(--line);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-signal: var(--signal);
+  --color-signal-strong: var(--signal-strong);
+  --color-accent: var(--accent);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --font-sans: "Avenir Next", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+body {
+  background: var(--paper);
+  color: var(--text);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+}
+
+:focus-visible {
+  outline: 3px solid #f0b429;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Piezas de formulario compartidas por las páginas de gestión (las mismas del panel local). */
+@layer components {
+  .field {
+    margin-top: 0.25rem;
+    display: block;
+    width: 100%;
+    border-radius: 0.25rem;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 0.5rem 0.75rem;
+    color: var(--text);
+  }
+  .btn {
+    border-radius: 0.25rem;
+    background: var(--signal);
+    padding: 0.5rem 1rem;
+    font-weight: 500;
+    color: #fff;
+  }
+  .btn:hover { background: var(--signal-strong); }
+  .btn:disabled { opacity: 0.6; }
+  .btn-quiet {
+    border-radius: 0.25rem;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 0.5rem 1rem;
+  }
+  .btn-quiet:hover { background: var(--paper); }
+  .btn-quiet:disabled { opacity: 0.5; cursor: not-allowed; background: var(--surface); }
+  .panel {
+    border-radius: 0.5rem;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 1.25rem;
+  }
+  /* Avisos: error (role="alert") y confirmación (role="status"). */
+  .notice-error {
+    border-radius: 0.25rem;
+    border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+    background: var(--surface);
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--danger);
+  }
+  .notice-ok {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--signal);
+  }
+  /* Etiqueta pequeña de estado en tablas. */
+  .tag {
+    display: inline-block;
+    border-radius: 0.25rem;
+    border: 1px solid currentColor;
+    padding: 0 0.375rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1.25rem;
+    white-space: nowrap;
+  }
+  /* Acciones de texto en filas de tabla. */
+  .link-action {
+    font-weight: 500;
+    color: var(--signal);
+    text-decoration: underline;
+  }
+  .link-action:disabled { opacity: 0.5; cursor: not-allowed; }
+  .link-danger {
+    font-weight: 500;
+    color: var(--danger);
+    text-decoration: underline;
+  }
+  .link-danger:disabled { opacity: 0.5; cursor: not-allowed; }
+}

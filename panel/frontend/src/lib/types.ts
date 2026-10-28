@@ -32,6 +32,7 @@ export interface Output {
   duration_ms: number;
   reader_mask: number;
   enabled: boolean;
+  alias: string;
 }
 
 export interface Card {
@@ -83,4 +84,17 @@ export interface Clock {
   now: string;
   timezone: string;
   ntp_synchronized: boolean | null;
+}
+
+export type CloudState = "unlinked" | "staging" | "awaiting_review" | "active";
+
+export interface CloudStatus {
+  panel_code: string | null;
+  claim_code: string | null;
+  state: CloudState;
+  installation_name: string | null;
+  last_sync_at: string | null;
+  cloud_revision: number;
+  pending_changes: number;
+  last_error: string | null;
 }

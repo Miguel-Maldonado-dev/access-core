@@ -9,8 +9,10 @@ export interface OutputPayload {
   duration_ms: number;
   reader_mask: number;
   enabled: boolean;
+  alias: string;
 }
 
+const ALIAS_MAX = 40;
 const READERS = ["Reader1", "Reader2", "Reader3", "Reader4"];
 
 export default function OutputForm({ output, onSubmit }: {
@@ -20,6 +22,7 @@ export default function OutputForm({ output, onSubmit }: {
   const [duration, setDuration] = useState(String(output.duration_ms));
   const [readers, setReaders] = useState(fromMask(output.reader_mask, 4));
   const [enabled, setEnabled] = useState(output.enabled);
+  const [alias, setAlias] = useState(output.alias);
   const [error, setError] = useState("");
   const name = outputLabel(output.output_id);
 
@@ -31,13 +34,16 @@ export default function OutputForm({ output, onSubmit }: {
       return;
     }
     setError("");
-    await onSubmit({ duration_ms: ms, reader_mask: toMask(readers), enabled });
+    await onSubmit({ duration_ms: ms, reader_mask: toMask(readers), enabled, alias: alias.trim() });
   }
 
   return (
     <form onSubmit={submit} noValidate className="panel grid gap-4" aria-label={name}>
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">{name}</h2>
+        <h2 className="text-lg font-semibold">
+          {name}
+          {output.alias !== "" && <span className="font-normal text-muted"> · {output.alias}</span>}
+        </h2>
         <label className="flex items-center gap-2 text-sm font-medium">
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           Habilitada
@@ -48,6 +54,10 @@ export default function OutputForm({ output, onSubmit }: {
           {error}
         </p>
       )}
+      <label className="text-sm font-medium">
+        Alias
+        <input className="field" type="text" maxLength={ALIAS_MAX} value={alias} onChange={(e) => setAlias(e.target.value)} />
+      </label>
       <label className="text-sm font-medium">
         Duración del pulso (ms)
         <input className="field" type="number" min={0} max={65535} value={duration} onChange={(e) => setDuration(e.target.value)} />

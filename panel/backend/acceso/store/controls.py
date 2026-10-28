@@ -1,10 +1,11 @@
 """Controles RF y sus botones."""
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
 from acceso.constants import CONTROL_BUTTONS, OUTPUT_COUNT
-from acceso.db import transaction
+from acceso.db import now_ms, transaction
 from acceso.store.errors import Conflict, Invalid, NotFound
 
 _SELECT = (
@@ -81,12 +82,31 @@ def _validate(conn: sqlite3.Connection, holder_id: int, buttons: Sequence[Button
 
 
 def _set_buttons(conn: sqlite3.Connection, control_id: int, buttons: Sequence[ButtonData]) -> None:
-    conn.execute("DELETE FROM control_buttons WHERE control_id = ?", (control_id,))
-    conn.executemany(
-        "INSERT INTO control_buttons(control_id, button, rf_code, output_id) VALUES (?, ?, ?, ?)",
-        [(control_id, i, b.rf_code, b.output_id)
-         for i, b in enumerate(buttons) if b.rf_code is not None],
-    )
+    """Guarda los botones por diferencia: el que conserva botón y código mantiene su uuid.
+
+    Un botón cuyo código cambia se borra y se vuelve a crear (así un intercambio de códigos entre
+    botones no choca con el UNIQUE de rf_code); solo cambia la salida con UPDATE.
+    """
+    wanted = {i: b for i, b in enumerate(buttons) if b.rf_code is not None}
+    current = {r["button"]: r for r in conn.execute(
+        "SELECT button, rf_code, output_id FROM control_buttons WHERE control_id = ?",
+        (control_id,))}
+    for button, row in current.items():
+        if button not in wanted or wanted[button].rf_code != row["rf_code"]:
+            conn.execute("DELETE FROM control_buttons WHERE control_id = ? AND button = ?",
+                         (control_id, button))
+    stamp = now_ms()
+    for button, b in wanted.items():
+        row = current.get(button)
+        if row is None or row["rf_code"] != b.rf_code:
+            conn.execute(
+                "INSERT INTO control_buttons(control_id, button, rf_code, output_id, uuid,"
+                " updated_at, origin) VALUES (?, ?, ?, ?, ?, ?, 'local')",
+                (control_id, button, b.rf_code, b.output_id, str(uuid.uuid4()), stamp))
+        elif row["output_id"] != b.output_id:
+            conn.execute(
+                "UPDATE control_buttons SET output_id = ?, updated_at = ?, origin = 'local'"
+                " WHERE control_id = ? AND button = ?", (b.output_id, stamp, control_id, button))
 
 
 def create_control(conn: sqlite3.Connection, holder_id: int, description: str,
@@ -94,7 +114,9 @@ def create_control(conn: sqlite3.Connection, holder_id: int, description: str,
     with transaction(conn):
         _validate(conn, holder_id, buttons, None)
         cur = conn.execute(
-            "INSERT INTO controls(holder_id, description) VALUES (?, ?)", (holder_id, description)
+            "INSERT INTO controls(holder_id, description, uuid, updated_at, origin)"
+            " VALUES (?, ?, ?, ?, 'local')",
+            (holder_id, description, str(uuid.uuid4()), now_ms()),
         )
         _set_buttons(conn, cur.lastrowid, buttons)
         return cur.lastrowid
@@ -107,8 +129,9 @@ def update_control(conn: sqlite3.Connection, control_id: int, holder_id: int, de
             raise NotFound("El control %s no existe." % control_id)
         _validate(conn, holder_id, buttons, control_id)
         conn.execute(
-            "UPDATE controls SET holder_id = ?, description = ? WHERE control_id = ?",
-            (holder_id, description, control_id),
+            "UPDATE controls SET holder_id = ?, description = ?, updated_at = ?, origin = 'local'"
+            " WHERE control_id = ?",
+            (holder_id, description, now_ms(), control_id),
         )
         _set_buttons(conn, control_id, buttons)
 

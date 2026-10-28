@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="es">
+  <body style="margin:0;padding:24px;background:#eef2f4;font-family:'Avenir Next','Segoe UI',Roboto,Arial,sans-serif;color:#15232b;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border:1px solid #d3dce1;border-radius:8px;">
+            <tr>
+              <td style="background:#12222b;color:#ffffff;padding:16px 24px;font-size:18px;font-weight:600;border-radius:8px 8px 0 0;">
+                Access Core
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:24px;">
+                <h1 style="margin:0 0 12px;font-size:22px;">Restablece tu contraseña</h1>
+                <p style="margin:0 0 20px;line-height:1.5;">
+                  Pediste un enlace para elegir una contraseña nueva en Access Core.
+                </p>
+                <p style="margin:0 0 20px;">
+                  <a href="{{ .RedirectTo }}?token_hash={{ .TokenHash }}&type=recovery" style="display:inline-block;background:#0a6f5c;color:#ffffff;text-decoration:none;font-weight:600;padding:10px 18px;border-radius:4px;">Elegir una contraseña nueva</a>
+                </p>
+                <p style="margin:0;font-size:13px;color:#55676f;line-height:1.5;">
+                  El enlace sirve una sola vez. Si ya venció, pide otro en «¿Olvidaste tu contraseña?».
+                  Si no lo pediste, ignora este correo: tu contraseña no cambia.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

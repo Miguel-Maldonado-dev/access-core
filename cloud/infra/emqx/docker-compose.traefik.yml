@@ -6,8 +6,9 @@
 # - EMQX publica MQTT con TLS en el 8883 del anfitrión (el certificado lo usa EMQX directamente).
 # - La API REST de EMQX sale por el 443 de Traefik solo en https://EMQX_DOMAIN/api/v5/...
 #   (la usa la aplicación para publicar avisos, con su API key). El resto de ese dominio sigue
-#   yendo a lo que ya tenga Traefik (p. ej. Portainer). El dashboard no se publica: úsalo con un
-#   túnel SSH al 127.0.0.1:18083 del servidor.
+#   yendo a lo que ya tenga Traefik (p. ej. Portainer).
+# - El dashboard se publica solo por HTTPS en https://EMQX_DOMAIN:18084 (mismo certificado). Usa
+#   una contraseña de admin fuerte. El 18083 sin cifrar queda solo en 127.0.0.1.
 # - El wss (8084) no se publica: el 443 es de Traefik y los paneles usan el 8883.
 #
 # Los archivos de esta carpeta deben estar en el servidor en EMQX_DIR (por omisión /opt/acceso-emqx).
@@ -69,9 +70,14 @@ services:
       EMQX_WEBHOOK_SECRET: ${EMQX_WEBHOOK_SECRET:?define EMQX_WEBHOOK_SECRET}
       EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USER:-admin}
       EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:?define EMQX_DASHBOARD_PASSWORD}
+      # Dashboard por HTTPS (mismo certificado de Let's Encrypt) en el 18084: https://EMQX_DOMAIN:18084
+      EMQX_DASHBOARD__LISTENERS__HTTPS__BIND: "18084"
+      EMQX_DASHBOARD__LISTENERS__HTTPS__SSL_OPTIONS__CERTFILE: /opt/emqx/etc/certs/fullchain.pem
+      EMQX_DASHBOARD__LISTENERS__HTTPS__SSL_OPTIONS__KEYFILE: /opt/emqx/etc/certs/privkey.pem
     ports:
       - "${EMQX_MQTT_PORT:-8883}:8883"              # MQTT sobre TLS (paneles)
-      - "127.0.0.1:${EMQX_API_PORT:-18083}:18083"   # dashboard y API, solo local (túnel SSH)
+      - "127.0.0.1:${EMQX_API_PORT:-18083}:18083"   # dashboard y API sin cifrar: solo local
+      - "${EMQX_DASHBOARD_PORT:-18084}:18084"       # dashboard por HTTPS (público; contraseña fuerte)
     volumes:
       - ${EMQX_DIR:-/opt/acceso-emqx}/emqx.conf:/opt/emqx/etc/emqx.template.conf:ro
       - ${EMQX_DIR:-/opt/acceso-emqx}/render-entrypoint.sh:/opt/emqx/etc/render-entrypoint.sh:ro

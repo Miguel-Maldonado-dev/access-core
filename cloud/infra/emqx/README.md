@@ -97,7 +97,7 @@ Si el servidor ya tiene un Traefik en los puertos 80 y 443 (por ejemplo, el que 
 - **Certificado:** Traefik emite y renueva el certificado de `EMQX_DOMAIN`. El servicio `certs` (alpine con jq) lo copia de `acme.json` a PEM cada 6 horas, con el dueño del usuario `emqx`.
 - **MQTT con TLS:** EMQX publica el 8883 directamente.
 - **API REST:** sale por el 443 de Traefik solo en `https://EMQX_DOMAIN/api/v5/...`. La aplicación usa `EMQX_API_URL=https://EMQX_DOMAIN`.
-- **Dashboard:** no se publica; ábrelo con un túnel: `ssh -L 18083:127.0.0.1:18083 usuario@servidor` y luego `http://localhost:18083`.
+- **Dashboard:** por HTTPS en `https://EMQX_DOMAIN:18084`, con el mismo certificado. El 18083 sin cifrar queda solo en `127.0.0.1` (o por túnel SSH). Usa una contraseña de admin fuerte.
 
 Pasos:
 

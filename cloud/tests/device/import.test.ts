@@ -340,6 +340,31 @@ describe("computeImportDiff (puro)", () => {
     });
   });
 
+  it("dos botones que la nube ya tiene con el mismo número en su control: el segundo es conflicto", () => {
+    // En la nube, dos botones vivos del control de Beto comparten el número 0 porque van
+    // a paneles distintos; el panel nuevo no puede recibir los dos.
+    const compartido: CloudState = {
+      ...nube,
+      control_buttons: [...nube.control_buttons, { id: "c-btn-5558", control_id: "c-ctl-beto", button: 0, rf_code: 5558 }],
+    };
+    const s = conControl({ id: "s-beto", name: "Beto" }, "s-ctl", [
+      [0, 5555],
+      [1, 5558],
+    ]);
+    expect(computeImportDiff(compartido, s)).toEqual<ImportDiff>({
+      onlyInPanel: [],
+      conflicts: [
+        {
+          type: "control_button",
+          id: "s-b5558",
+          holder_name: "Beto",
+          rf_code: 5558,
+          reason: "El botón 0 del control ya tiene otro código RF en este panel.",
+        },
+      ],
+    });
+  });
+
   it("un titular con el mismo UUID en la instalación es el mismo aunque cambie el nombre", () => {
     const s: StoredSnapshot = {
       ...snap(),
@@ -471,14 +496,19 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
   let instDatos: string;
   let inst32: string;
   let instB: string;
+  let instVinculos: string;
 
   let pVacio: PanelPrueba;
   let pRemap: PanelPrueba;
   let pDatos: PanelPrueba;
   let pDatos2: PanelPrueba;
   let pRelink: PanelPrueba;
+  let pFusion: PanelPrueba;
+  let pMigrado: PanelPrueba;
   let pActivo: PanelPrueba;
   let p32: PanelPrueba;
+  let pVinculos: PanelPrueba;
+  let pVinculosOtro: PanelPrueba;
 
   // instDatos
   const PIN_ANA = "731864";
@@ -486,6 +516,8 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
   let beto: string;
   let residente: string;
   let controlBeto: string; // botones 0 = RF 5555 y 2 = RF 5557
+  let boton5555: string;
+  let boton5557: string;
   let controlFer: string; // lo crea la importación de pDatos2
   const salidasNubeDatos: string[] = [];
   // instB (otro tenant): sus UUID reaparecen en el snapshot de pRemap (Riesgo 4)
@@ -516,6 +548,18 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
 
   async function filasDe(tabla: string, columna: string, valor: string): Promise<Fila[]> {
     const { data, error } = await admin.from(tabla).select("*").eq(columna, valor).order("id");
+    if (error) throw error;
+    return data as Fila[];
+  }
+
+  /** Vínculos vivos botón–panel de un panel, ordenados por botón. */
+  async function vinculosDe(panel: PanelPrueba): Promise<Fila[]> {
+    const { data, error } = await admin
+      .from("control_button_panels")
+      .select("button_id, output_index, installation_id, origin, updated_by")
+      .eq("panel_id", panel.id)
+      .is("deleted_at", null)
+      .order("button_id");
     if (error) throw error;
     return data as Fila[];
   }
@@ -598,21 +642,27 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
     ]);
     if (e2) throw e2;
 
-    const nombres = ["Vacia", "Remap", "Datos", "32", "B"].map((n) => `Fracc ${n} ${corrida}`);
+    const nombres = ["Vacia", "Remap", "Datos", "32", "B", "Vinculos"].map((n) => `Fracc ${n} ${corrida}`);
     const { data: is, error: e3 } = await admin
       .from("installations")
       .insert(nombres.map((name) => ({ tenant_id: name.startsWith("Fracc B") ? tenantB : tenantA, name })))
       .select("id, name");
     if (e3) throw e3;
-    [instVacia, instRemap, instDatos, inst32, instB] = nombres.map((n) => is.find((i) => i.name === n)!.id);
+    [instVacia, instRemap, instDatos, inst32, instB, instVinculos] = nombres.map(
+      (n) => is.find((i) => i.name === n)!.id,
+    );
 
     pVacio = await crearPanel(instVacia, "staging");
     pRemap = await crearPanel(instRemap, "staging");
     pDatos = await crearPanel(instDatos, "staging");
     pDatos2 = await crearPanel(instDatos, "staging");
     pRelink = await crearPanel(instDatos, "staging");
+    pFusion = await crearPanel(instDatos, "staging");
+    pMigrado = await crearPanel(instDatos, "staging");
     pActivo = await crearPanel(instDatos, "active");
     p32 = await crearPanel(inst32, "staging");
+    pVinculos = await crearPanel(instVinculos, "staging");
+    pVinculosOtro = await crearPanel(instVinculos, "active");
     const pB = await crearPanel(instB, "active");
 
     // instDatos: Ana (con PIN) y Beto, sus tarjetas y el perfil Residente (0).
@@ -630,8 +680,12 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
     residente = await insertar("access_profiles", { ...d, name: "Residente", local_permission_id: 0 });
     await insertar("holder_profiles", { ...d, holder_id: ana, profile_id: residente });
     controlBeto = await insertar("controls", { ...d, holder_id: beto, description: "Control Beto" });
-    await insertar("control_buttons", { ...d, control_id: controlBeto, button: 0, rf_code: 5555, output_index: 0 });
-    await insertar("control_buttons", { ...d, control_id: controlBeto, button: 2, rf_code: 5557, output_index: 0 });
+    // Los botones de la nube van al panel activo con S1; los paneles en staging no tienen vínculos.
+    boton5555 = await insertar("control_buttons", { ...d, control_id: controlBeto, button: 0, rf_code: 5555 });
+    boton5557 = await insertar("control_buttons", { ...d, control_id: controlBeto, button: 2, rf_code: 5557 });
+    for (const button_id of [boton5555, boton5557]) {
+      await insertar("control_button_panels", { ...d, button_id, panel_id: pActivo.id, output_index: 0 });
+    }
     // pDatos ya tenía salidas vivas en esta instalación (se vinculó antes).
     salidasNubeDatos.push(...(await crearSalidasNube(pDatos.id, instDatos)));
 
@@ -670,11 +724,11 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
       else process.env[k] = v;
     }
     if (!admin) return;
-    // Salidas y reglas referencian a los paneles; los paneles a las instalaciones (y
-    // borran en cascada sus panel_imports); los tenants borran en cascada instalaciones,
+    // Salidas, reglas y vínculos referencian a los paneles; los paneles a las instalaciones
+    // (y borran en cascada sus panel_imports); los tenants borran en cascada instalaciones,
     // datos replicados, miembros y auditoría.
     if (paneles.length) {
-      for (const tabla of ["outputs", "profile_panel_rules"]) {
+      for (const tabla of ["outputs", "profile_panel_rules", "control_button_panels"]) {
         const { error } = await admin.from(tabla).delete().in("panel_id", paneles);
         if (error) throw error;
       }
@@ -727,8 +781,10 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
         control_id: control.id,
         button: 1,
         rf_code: 9001,
-        output_index: 2,
       });
+      expect(await vinculosDe(pVacio)).toEqual([
+        { button_id: boton.id, output_index: 2, installation_id: instVacia, origin: origenDe(pVacio), updated_by: origenDe(pVacio) },
+      ]);
       expect(await fila("access_profiles", peatonal.id)).toMatchObject({
         ...comoPanel,
         name: "Peatonal",
@@ -751,6 +807,29 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
           ...resto,
         });
       }
+    });
+
+    it("importar un panel a una instalación vacía vincula sus botones solo a ese panel", async () => {
+      const s = snapshotVacio();
+      const ines = titular("persona", "Inés");
+      s.holders.push(ines);
+      const control = { id: randomUUID(), data: { holder_id: ines.id, description: "Control Inés" } };
+      s.controls.push(control);
+      const conSalida = { id: randomUUID(), data: { control_id: control.id, button: 0, rf_code: 9101, output_id: 1 } };
+      const sinSalida = { id: randomUUID(), data: { control_id: control.id, button: 1, rf_code: 9102, output_id: null } };
+      s.control_buttons.push(conSalida, sinSalida);
+      s.outputs.push(...salidasDelPanel());
+
+      expect(await (await subir(pVinculos, s)).json()).toEqual({ status: "active" });
+
+      const comoPanel = { installation_id: instVinculos, origin: origenDe(pVinculos), updated_by: origenDe(pVinculos) };
+      const esperados = [
+        { button_id: conSalida.id, output_index: 1, ...comoPanel },
+        { button_id: sinSalida.id, output_index: null, ...comoPanel },
+      ].sort((a, b) => (a.button_id < b.button_id ? -1 : 1));
+      expect(await vinculosDe(pVinculos)).toEqual(esperados);
+      // El otro panel de la instalación no recibe vínculos automáticos.
+      expect(await vinculosDe(pVinculosOtro)).toEqual([]);
     });
 
     it("con el panel fuera de staging responde 409 y no cambia nada", async () => {
@@ -1002,8 +1081,10 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
         ...comoPanel,
         control_id: control.id,
         rf_code: 7007,
-        output_index: null,
       });
+      expect(await vinculosDe(pDatos2)).toEqual([
+        { button_id: boton.id, output_index: null, installation_id: instDatos, origin: origenDe(pDatos2), updated_by: origenDe(pDatos2) },
+      ]);
       // Lo no seleccionado no entra.
       expect(await fila("holders", gil.id)).toBeNull();
       expect(await fila("cards", kGil.id)).toBeNull();
@@ -1026,7 +1107,7 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
       const b7777 = { id: randomUUID(), data: { control_id: controlBeto, button: 1, rf_code: 7777, output_id: 1 } };
       const b7778 = { id: randomUUID(), data: { control_id: controlBeto, button: 2, rf_code: 7778, output_id: null } };
       s.control_buttons.push(
-        { id: randomUUID(), data: { control_id: controlBeto, button: 0, rf_code: 5555, output_id: 0 } },
+        { id: randomUUID(), data: { control_id: controlBeto, button: 0, rf_code: 5555, output_id: 3 } },
         b7777,
         b7778,
       );
@@ -1074,10 +1155,18 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
         control_id: controlBeto,
         button: 1,
         rf_code: 7777,
-        output_index: 1,
         origin: origenDe(pRelink),
       });
       expect(await fila("control_buttons", b7778.id)).toBeNull();
+      // Vínculos con pRelink: el 5555 que ya estaba (con su salida local), el 7777 y el 9100
+      // nuevos; el 5557 de la nube (que el panel no tiene) y el 7007 de Fer, no.
+      expect((await vinculosDe(pRelink)).map((v) => [v.button_id, v.output_index]).sort()).toEqual(
+        [
+          [boton5555, 3],
+          [b7777.id, 1],
+          [b9100.id, 0],
+        ].sort(),
+      );
 
       // El control de Hugo es otro (UUID nuevo) con solo su botón libre; el de Fer no cambia.
       const [ctlHugo] = await filasDe("controls", "holder_id", hugo.id);
@@ -1086,6 +1175,66 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
       expect(botonesHugo.map((b) => [b.id, b.rf_code])).toEqual([[b9100.id, 9100]]);
       expect(await fila("controls", controlFer)).toEqual(controlFerAntes);
       expect((await filasDe("control_buttons", "control_id", controlFer)).map((b) => b.rf_code)).toEqual([7007]);
+    });
+  });
+
+  describe("vínculos de los botones que la nube ya tiene", () => {
+    // pFusion trae el control de Beto con otro UUID y solo el RF 5557 (que la nube ya tiene
+    // en el control de Beto) con la salida S4.
+    const sBeto = titular("persona", "Beto");
+    const control = { id: randomUUID(), data: { holder_id: sBeto.id, description: "Control de Beto" } };
+    const b5557 = { id: randomUUID(), data: { control_id: control.id, button: 2, rf_code: 5557, output_id: 3 } };
+
+    it("un botón que la nube ya tiene con el mismo titular queda vinculado al panel nuevo con su salida local", async () => {
+      const s = snapshotVacio();
+      s.holders.push(sBeto);
+      s.controls.push(control);
+      s.control_buttons.push(b5557);
+      s.outputs.push(...salidasDelPanel());
+
+      expect(await (await subir(pFusion, s)).json()).toEqual({ status: "awaiting_review" });
+      // No es una diferencia: no se ofrece ni es conflicto.
+      expect(await readImportDiffAs(clienteAdminA, pFusion.id)).toEqual<ImportDiff>({ onlyInPanel: [], conflicts: [] });
+
+      expect(await confirmImportAs(clienteAdminA, pFusion.id, [])).toEqual({ imported: [], ignored: [] });
+      expect(await estadoDe(pFusion)).toBe("active");
+      expect(await vinculosDe(pFusion)).toEqual([
+        { button_id: boton5557, output_index: 3, installation_id: instDatos, origin: origenDe(pFusion), updated_by: origenDe(pFusion) },
+      ]);
+      // El botón compartido no cambia ni se duplica, y el panel activo conserva su vínculo.
+      expect(await fila("control_buttons", b5557.id)).toBeNull();
+      expect(await fila("control_buttons", boton5557)).toMatchObject({ control_id: controlBeto, button: 2, deleted_at: null });
+      expect(await fila("controls", control.id)).toBeNull();
+      expect((await vinculosDe(pActivo)).find((v) => v.button_id === boton5557)).toMatchObject({ output_index: 0 });
+    });
+
+    it("los botones de la nube que el panel no tiene no se vinculan al panel nuevo", async () => {
+      const vivos = (await filasDe("control_buttons", "control_id", controlBeto)).filter((b) => b.deleted_at === null);
+      expect(vivos.map((b) => b.rf_code).sort()).toEqual([5555, 5557, 7777]);
+      expect((await vinculosDe(pFusion)).map((v) => v.button_id)).toEqual([boton5557]);
+    });
+
+    it("un vínculo vivo que el panel ya tenía (de la migración) solo cambia a la salida local", async () => {
+      const s = snapshotVacio();
+      const otroBeto = titular("persona", "Beto");
+      const otroControl = { id: randomUUID(), data: { holder_id: otroBeto.id, description: "Control" } };
+      s.holders.push(otroBeto);
+      s.controls.push(otroControl);
+      s.control_buttons.push({ id: randomUUID(), data: { control_id: otroControl.id, button: 0, rf_code: 5555, output_id: 2 } });
+      s.outputs.push(...salidasDelPanel());
+      expect(await (await subir(pMigrado, s)).json()).toEqual({ status: "awaiting_review" });
+      // La migración vinculó los botones vivos a los paneles en revisión.
+      await insertar("control_button_panels", {
+        installation_id: instDatos,
+        button_id: boton5555,
+        panel_id: pMigrado.id,
+        output_index: 0,
+      });
+
+      expect(await confirmImportAs(clienteAdminA, pMigrado.id, [])).toEqual({ imported: [], ignored: [] });
+      expect(await vinculosDe(pMigrado)).toEqual([
+        { button_id: boton5555, output_index: 2, installation_id: instDatos, origin: origenDe(pMigrado), updated_by: origenDe(pMigrado) },
+      ]);
     });
   });
 

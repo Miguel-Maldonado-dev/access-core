@@ -15,15 +15,17 @@ export interface OutputPayload {
 const ALIAS_MAX = 40;
 const READERS = ["Reader1", "Reader2", "Reader3", "Reader4"];
 
-export default function OutputForm({ output, onSubmit }: {
+export default function OutputForm({ output, onSubmit, onTest }: {
   output: Output;
   onSubmit: (payload: OutputPayload) => void | Promise<void>;
+  onTest: () => Promise<void>;
 }) {
   const [duration, setDuration] = useState(String(output.duration_ms));
   const [readers, setReaders] = useState(fromMask(output.reader_mask, 4));
   const [enabled, setEnabled] = useState(output.enabled);
   const [alias, setAlias] = useState(output.alias);
   const [error, setError] = useState("");
+  const [testing, setTesting] = useState(false);
   const name = outputLabel(output.output_id);
 
   async function submit(e: FormEvent) {
@@ -35,6 +37,15 @@ export default function OutputForm({ output, onSubmit }: {
     }
     setError("");
     await onSubmit({ duration_ms: ms, reader_mask: toMask(readers), enabled, alias: alias.trim() });
+  }
+
+  async function test() {
+    setTesting(true);
+    try {
+      await onTest();
+    } finally {
+      setTesting(false);
+    }
   }
 
   return (
@@ -77,9 +88,19 @@ export default function OutputForm({ output, onSubmit }: {
           ))}
         </div>
       </fieldset>
-      <div>
+      <div className="flex flex-wrap items-center gap-3">
         <button type="submit" className="btn">
           Guardar {name}
+        </button>
+        <button
+          type="button"
+          className="btn-quiet"
+          onClick={test}
+          disabled={testing}
+          aria-label={`Probar ${name}`}
+          aria-busy={testing}
+        >
+          {testing ? "Probando…" : `Probar ${name}`}
         </button>
       </div>
     </form>

@@ -25,6 +25,8 @@ class Settings:
     session_hours: int
     cors_origins: Tuple[str, ...]
     static_dir: Path
+    # Con valor por omisión y al final: tests/conftest.py construye Settings a mano.
+    daemon_socket: str = "/run/acceso/daemon.sock"
 
 
 def _int(env: Mapping[str, str], name: str, default: int) -> int:
@@ -68,4 +70,5 @@ def load_settings(
         session_hours=_int(env, "SESSION_HOURS", 12),
         cors_origins=origins,
         static_dir=Path(text("STATIC_DIR")) if text("STATIC_DIR") else default_static,
+        daemon_socket=text("DAEMON_SOCKET", "/run/acceso/daemon.sock"),
     )

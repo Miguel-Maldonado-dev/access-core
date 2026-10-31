@@ -1,16 +1,24 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ConflictsManager from "@/components/conflicts/ConflictsManager";
 import LogFilters from "@/components/logs/LogFilters";
 import LogTable from "@/components/logs/LogTable";
+import RefreshLogsButton from "@/components/logs/RefreshLogsButton";
 import Pagination from "@/components/Pagination";
 import type { ActionResult } from "@/lib/actions";
 import type { ConflictRow } from "@/lib/conflict-view";
 import { parseLogFilters, type LogRow } from "@/lib/log-view";
 
 /** Interfaz de logs y conflictos: las server actions se sustituyen por funciones de prueba. */
-afterEach(cleanup);
+const refresh = vi.fn();
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh }) }));
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  refresh.mockClear();
+});
 
 const ok = <T,>(data: T): ActionResult<T> => ({ ok: true, data });
 const fallo = (mensaje: string, status = 409): ActionResult<never> => ({ ok: false, status, error: mensaje });
@@ -78,6 +86,144 @@ describe("LogTable", () => {
   });
 });
 
+describe("RefreshLogsButton", () => {
+  const PEDIDA = "2026-03-10T18:30:00.000Z";
+  const PA = { id: "pa", panel_code: "PNL-AAAA-AAAA", online: true };
+  const PB = { id: "pb", panel_code: "PNL-BBBB-BBBB", online: false };
+  /** Avanza el reloj falso y deja correr las promesas pendientes. */
+  const avanzar = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+
+  function montar(
+    onStatus = vi.fn<(since: string) => Promise<ActionResult<{ pending: string[] }>>>(async () => ok({ pending: ["pa"] })),
+    onRequest = vi.fn(async () => ok({ requestedAt: PEDIDA, panels: [PA] })),
+  ) {
+    vi.useFakeTimers();
+    render(<RefreshLogsButton onRequest={onRequest} onStatus={onStatus} />);
+    return { onRequest, onStatus };
+  }
+  const pulsar = () => fireEvent.click(screen.getByRole("button", { name: "Actualizar logs" }));
+
+  it("pide la subida, consulta cada 2 s y refresca cuando ya no hay pendientes", async () => {
+    const onStatus = vi.fn<(since: string) => Promise<ActionResult<{ pending: string[] }>>>(async () => ok({ pending: [] }));
+    onStatus.mockResolvedValueOnce(ok({ pending: ["pa"] }));
+    const { onRequest } = montar(onStatus);
+    pulsar();
+    await avanzar(0);
+    expect(onRequest).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Sincronizando…" })).toBeTruthy();
+    await avanzar(1999);
+    expect(onStatus).not.toHaveBeenCalled();
+    await avanzar(1);
+    expect(onStatus).toHaveBeenCalledWith(PEDIDA);
+    expect(refresh).not.toHaveBeenCalled();
+    await avanzar(2000);
+    expect(onStatus).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Actualizar logs" })).toBeTruthy();
+    await avanzar(10_000);
+    expect(onStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("a los 15 s refresca aunque haya paneles pendientes", async () => {
+    const { onStatus } = montar();
+    pulsar();
+    await avanzar(14_999);
+    expect(refresh).not.toHaveBeenCalled();
+    await avanzar(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status").textContent).toContain("PNL-AAAA-AAAA");
+    // Es una advertencia, no una confirmación.
+    const aviso = screen.getByText("Sin respuesta de PNL-AAAA-AAAA: se muestra lo último recibido.");
+    expect(aviso.closest(".text-warn")).not.toBeNull();
+    expect(aviso.closest(".notice-ok")).toBeNull();
+    const llamadas = onStatus.mock.calls.length;
+    await avanzar(10_000);
+    expect(onStatus).toHaveBeenCalledTimes(llamadas);
+  });
+
+  it("muestra los paneles sin conexión", async () => {
+    montar(
+      vi.fn(async () => ok({ pending: [] as string[] })),
+      vi.fn(async () => ok({ requestedAt: PEDIDA, panels: [PA, PB] })),
+    );
+    pulsar();
+    await avanzar(0);
+    // Dentro de la región role="status" (aria-live polite): el lector de pantalla la anuncia.
+    expect(within(screen.getByRole("status")).getByText("Panel PNL-BBBB-BBBB sin conexión")).toBeTruthy();
+    expect(screen.queryByText("Panel PNL-AAAA-AAAA sin conexión")).toBeNull();
+    await avanzar(2000);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // Lo último recibido del panel sin conexión se sigue mostrando, con su aviso.
+    expect(screen.getByText("Panel PNL-BBBB-BBBB sin conexión")).toBeTruthy();
+  });
+
+  it("si ningún panel está en línea refresca sin consultar", async () => {
+    const { onStatus } = montar(undefined, vi.fn(async () => ok({ requestedAt: PEDIDA, panels: [PB] })));
+    pulsar();
+    await avanzar(0);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(onStatus).not.toHaveBeenCalled();
+    expect(screen.getByText("Panel PNL-BBBB-BBBB sin conexión")).toBeTruthy();
+  });
+
+  it("si pedir la subida lanza (red o base) muestra un error y refresca", async () => {
+    const { onStatus } = montar(
+      undefined,
+      vi.fn(async (): Promise<ActionResult<{ requestedAt: string; panels: (typeof PA)[] }>> => {
+        throw new Error("fetch failed");
+      }),
+    );
+    pulsar();
+    await avanzar(0);
+    expect(screen.getByRole("alert").textContent).toBe("No se pudo consultar el panel. Intenta de nuevo.");
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Actualizar logs" })).toBeTruthy();
+    await avanzar(20_000);
+    expect(onStatus).not.toHaveBeenCalled();
+  });
+
+  it("si la consulta lanza muestra un error, deja de consultar y refresca", async () => {
+    const onStatus = vi.fn(async (): Promise<ActionResult<{ pending: string[] }>> => {
+      throw new Error("fetch failed");
+    });
+    montar(onStatus);
+    pulsar();
+    await avanzar(2000);
+    expect(screen.getByRole("alert").textContent).toBe("No se pudo consultar el panel. Intenta de nuevo.");
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await avanzar(20_000);
+    expect(onStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("si se sale de la página mientras pide la subida, no consulta ni refresca", async () => {
+    let responder: (r: ActionResult<{ requestedAt: string; panels: (typeof PA)[] }>) => void = () => {};
+    const onRequest = vi.fn(
+      () => new Promise<ActionResult<{ requestedAt: string; panels: (typeof PA)[] }>>((r) => (responder = r)),
+    );
+    const { onStatus } = montar(undefined, onRequest);
+    pulsar();
+    await avanzar(0);
+    cleanup();
+    // Sin paneles en línea se refrescaría de inmediato: el desmontaje debe impedirlo.
+    responder(ok({ requestedAt: PEDIDA, panels: [PB] }));
+    await avanzar(20_000);
+    expect(onStatus).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("muestra el 429 y no consulta ni refresca", async () => {
+    const mensaje = "Espera unos segundos antes de volver a actualizar.";
+    const { onStatus } = montar(undefined, vi.fn(async () => fallo(mensaje, 429)));
+    pulsar();
+    await avanzar(0);
+    expect(screen.getByRole("alert").textContent).toBe(mensaje);
+    await avanzar(20_000);
+    expect(onStatus).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Actualizar logs" })).toBeTruthy();
+  });
+});
+
 describe("LogFilters", () => {
   const paneles = [{ id: "pa", panel_code: "PNL-AAAA-AAAA" }];
   const titulares = [{ id: "h-1", name: "Ana Pérez" }];
@@ -105,6 +251,11 @@ describe("LogFilters", () => {
     expect((screen.getByLabelText("Origen") as HTMLSelectElement).value).toBe("3");
     expect((screen.getByLabelText("Resultado") as HTMLSelectElement).value).toBe("denegado");
     expect((screen.getByLabelText("Desde") as HTMLInputElement).value).toBe("2026-03-10");
+  });
+
+  it("se puede filtrar por el origen Prueba (5)", () => {
+    render(<LogFilters action="/logs" filters={{ page: 1 }} panels={paneles} holders={titulares} />);
+    expect(within(screen.getByLabelText("Origen")).getByRole("option", { name: "Prueba" }).getAttribute("value")).toBe("5");
   });
 
   it("lista los paneles y los titulares", () => {

@@ -6,12 +6,12 @@ import { listOutputsAs } from "@/lib/outputs";
 import { listPanelsAs } from "@/lib/panels/list";
 import { isLinkedPanel } from "@/lib/profile-view";
 import { createServerSupabase } from "@/lib/supabase/server";
-import { saveOutput } from "./actions";
+import { commandStatus, saveOutput, testOutput } from "./actions";
 
 export const instant = false;
 export const metadata: Metadata = { title: "Salidas" };
 
-/** Pestaña Salidas: las 4 salidas de cada panel con su alias, duración, lectores y estado. */
+/** Pestaña Salidas: las 4 salidas de cada panel con su alias, duración, lectores y estado, y "Probar". */
 export default async function OutputsPage({ params }: PageProps<"/t/[tenant]/installations/[id]/salidas">) {
   const { tenant, id } = await params;
   const supabase = await createServerSupabase();
@@ -26,6 +26,8 @@ export default async function OutputsPage({ params }: PageProps<"/t/[tenant]/ins
       panels={paneles.filter(isLinkedPanel).map((p) => ({ id: p.id, panel_code: p.panel_code }))}
       outputs={salidas}
       onSave={saveOutput.bind(null, tenant, instalacion.id)}
+      onTest={testOutput.bind(null, tenant, instalacion.id)}
+      onStatus={commandStatus.bind(null, tenant, instalacion.id)}
     />
   );
 }

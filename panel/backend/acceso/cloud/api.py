@@ -168,3 +168,8 @@ class CloudApi:
 
     def post_alert(self, alert: Mapping[str, Any]) -> None:
         self._send("POST", "/alerts", auth=True, json=dict(alert))
+
+    def post_command_result(self, command_id: str, ok: bool, detail: Optional[str]) -> None:
+        """Resultado de una orden de la nube (`test_output`); la nube responde 204."""
+        body = {"command_id": command_id, "ok": ok, "detail": detail}
+        self._send("POST", "/command-result", auth=True, json=body)

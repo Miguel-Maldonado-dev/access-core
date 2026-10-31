@@ -39,9 +39,9 @@ insert into public.panels (id, panel_code, panel_secret_hash, installation_id, s
 select is(
   (select count(*)::int from pg_class
    where relnamespace = 'public'::regnamespace and relrowsecurity
-     and relname in ('holders', 'cards', 'controls', 'control_buttons', 'access_profiles',
-                     'holder_profiles', 'profile_panel_rules', 'outputs', 'audit_log')),
-  9, 'RLS activa en las 8 tablas replicadas y en audit_log');
+     and relname in ('holders', 'cards', 'controls', 'control_buttons', 'control_button_panels',
+                     'access_profiles', 'holder_profiles', 'profile_panel_rules', 'outputs', 'audit_log')),
+  10, 'RLS activa en las 9 tablas replicadas y en audit_log');
 select columns_are('public', 'audit_log',
   array['id', 'tenant_id', 'table_name', 'row_id', 'op', 'updated_by', 'at'],
   'audit_log tiene exactamente las columnas del contrato');
@@ -52,8 +52,8 @@ select is(
 select is(
   (select count(*)::int from pg_indexes
    where schemaname = 'public'
-     and tablename in ('holders', 'cards', 'controls', 'control_buttons', 'access_profiles',
-                       'holder_profiles', 'profile_panel_rules', 'outputs')
+     and tablename in ('holders', 'cards', 'controls', 'control_buttons', 'control_button_panels',
+                       'access_profiles', 'holder_profiles', 'profile_panel_rules', 'outputs')
      and indexdef like 'CREATE UNIQUE INDEX % WHERE (deleted_at IS NULL)'),
   8, 'existen los 8 indices unicos parciales sobre registros vivos');
 
@@ -147,17 +147,18 @@ select throws_ok(
 insert into public.controls (id, installation_id, holder_id, updated_by, origin)
 values ('50000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-00000000000a',
         '30000000-0000-0000-0000-000000000001', 'panel:PNL-TEST-0001', 'panel:PNL-TEST-0001');
-insert into public.control_buttons (id, installation_id, control_id, button, rf_code, output_index, updated_by, origin)
+insert into public.control_buttons (id, installation_id, control_id, button, rf_code, updated_by, origin)
 values ('60000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-00000000000a',
-        '50000000-0000-0000-0000-000000000001', 0, 5555, 0, 'panel:PNL-TEST-0001', 'panel:PNL-TEST-0001');
+        '50000000-0000-0000-0000-000000000001', 0, 5555, 'panel:PNL-TEST-0001', 'panel:PNL-TEST-0001');
 select throws_ok(
   $$insert into public.control_buttons (installation_id, control_id, button, rf_code, updated_by, origin)
     values ('20000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 5555, 'x', 'cloud')$$,
   '23505', null, 'rf_code vivo duplicado en la instalacion falla');
-select throws_ok(
+-- El número de botón es único por panel (control_button_panels.test.sql), no por control.
+select lives_ok(
   $$insert into public.control_buttons (installation_id, control_id, button, rf_code, updated_by, origin)
     values ('20000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 0, 6666, 'x', 'cloud')$$,
-  '23505', null, 'el mismo boton vivo dos veces en un control falla');
+  'sin vinculos a paneles, el mismo boton vivo puede repetirse en un control');
 select throws_ok(
   $$insert into public.holders (installation_id, kind, name, pin_ciphertext, pin_lookup, updated_by, origin)
     values ('20000000-0000-0000-0000-00000000000a', 'persona', 'Otro PIN', 'cifrado-x', 'lookup-1', 'x', 'cloud')$$,

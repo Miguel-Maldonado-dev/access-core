@@ -31,6 +31,11 @@ describe("parseLogFilters", () => {
     expect(parseLogFilters({ pagina: "abc" }).page).toBe(1);
   });
 
+  it("acepta el origen Prueba (5) y no el 4, reservado", () => {
+    expect(parseLogFilters({ origen: "5" }).source).toBe(5);
+    expect(parseLogFilters({ origen: "4" }).source).toBeUndefined();
+  });
+
   it("toma el primer valor si el parámetro se repite", () => {
     expect(parseLogFilters({ origen: ["2", "3"] }).source).toBe(2);
   });
@@ -67,6 +72,7 @@ describe("etiquetas", () => {
     expect(reasonLabel(42)).toBe("Motivo 42");
     expect(sourceLabel(3)).toBe("PIN");
     expect(sourceLabel(1)).toBe("Control RF");
+    expect(sourceLabel(5)).toBe("Prueba");
     expect(sourceLabel(9)).toBe("Origen 9");
   });
 
@@ -85,6 +91,8 @@ describe("etiquetas", () => {
     expect(mediumLabel({ ...base, source: 1, reason: 5 })).toBe("Control no registrado");
     expect(mediumLabel({ ...base, source: 1, credential_label: "Control Ana", device_id: 1 })).toBe("Control Ana · Botón 2");
     expect(mediumLabel({ ...base, source: 2, device_id: 0 })).toBe("Botón de salida 1");
+    expect(mediumLabel({ ...base, source: 5, credential_label: "Prueba — ana@example.com" })).toBe("Prueba — ana@example.com");
+    expect(mediumLabel({ ...base, source: 5 })).toBe("Prueba");
   });
 
   it("la página es de 50", () => {

@@ -13,19 +13,23 @@ import {
 import {
   PANEL_SOURCES,
   SOURCE_COLUMNS,
+  buttonForPanel,
+  hasNoLiveButtons,
+  isControlVisible,
   liveRows,
+  loadControlContext,
   loadPermissionContext,
   profileFrom,
   projectCard,
   projectControl,
-  projectControlButton,
   projectHolder,
   projectHolderPermission,
   projectOutput,
   projectPermission,
+  type ButtonLinkRow,
   type CardRow,
   type ControlButtonRow,
-  type ControlRow,
+  type ControlContext,
   type HolderProfileRow,
   type HolderRow,
   type OutputRow,
@@ -51,6 +55,7 @@ const ORIGENES_PULL: readonly SourceTable[] = [
   "cards",
   "controls",
   "control_buttons",
+  "control_button_panels",
   "access_profiles",
   "profile_panel_rules",
   "holder_profiles",
@@ -63,6 +68,24 @@ const ORIGENES_DE_PERFILES: ReadonlySet<SourceTable> = new Set([
   "profile_panel_rules",
   "holder_profiles",
 ]);
+
+/** Orígenes que se proyectan con lo que recibe el panel de controles y botones. */
+const ORIGENES_DE_CONTROLES: ReadonlySet<SourceTable> = new Set([
+  "controls",
+  "control_buttons",
+  "control_button_panels",
+]);
+
+/**
+ * Columnas extra del feed por origen. Un vínculo trae el control de su botón (aunque el
+ * botón esté borrado): sin él no se sabe qué control revisar tras el `delete` del botón.
+ */
+const COLUMNAS_EXTRA: Partial<Record<SourceTable, string>> = {
+  control_button_panels: ", boton:control_buttons(control_id)",
+};
+
+/** Un cambio de vínculo leído del feed, con el control de su botón. */
+type VinculoCrudo = ButtonLinkRow & { boton: { control_id: string } };
 
 interface Marcas {
   id: string;
@@ -133,7 +156,7 @@ async function leerCambiosDeOrigen(
 ): Promise<FilaCruda[]> {
   let consulta = admin
     .from(origen)
-    .select(`${SOURCE_COLUMNS[origen]}, deleted_at, revision`)
+    .select(`${SOURCE_COLUMNS[origen]}, deleted_at, revision${COLUMNAS_EXTRA[origen] ?? ""}`)
     .eq("installation_id", panel.installation_id)
     .gt("revision", since)
     .lte("revision", R);
@@ -160,16 +183,6 @@ function proyectarCambio(
       return { table: "holders", op: "upsert", id, revision, data: projectHolder(fila as unknown as HolderRow) };
     case "cards":
       return { table: "cards", op: "upsert", id, revision, data: projectCard(fila as unknown as CardRow) };
-    case "controls":
-      return { table: "controls", op: "upsert", id, revision, data: projectControl(fila as unknown as ControlRow) };
-    case "control_buttons":
-      return {
-        table: "control_buttons",
-        op: "upsert",
-        id,
-        revision,
-        data: projectControlButton(fila as unknown as ControlButtonRow),
-      };
     case "holder_profiles": {
       const asignacion = fila as unknown as HolderProfileRow;
       const perfil = profileFrom(ctx!.profiles, asignacion.profile_id);
@@ -189,9 +202,60 @@ function proyectarCambio(
 }
 
 /**
+ * Proyección para el panel de un cambio de `controls`, `control_buttons` o
+ * `control_button_panels` (de ESTE panel), con el estado vigente de `ctx`. Agrega a
+ * `cambios`, con la revisión del cambio de origen:
+ * - controls: `upsert` si el panel recibe el control; si no, `delete`;
+ * - botón B (cambio del botón o de su vínculo): si el panel recibe B, `upsert` de B,
+ *   precedido del `upsert` de su control si aún no salió en la página (`controlesEnviados`);
+ *   si no, `delete` de B seguido del `delete` de su control si el panel dejó de recibirlo,
+ *   o del `upsert` si ahora lo recibe porque se quedó sin botones.
+ * Una misma (tabla, id) puede repetirse en la página: el panel aplica en orden y es
+ * idempotente.
+ */
+function proyectarDeControles(
+  { origen, fila }: FilaCruda,
+  ctx: ControlContext,
+  controlesEnviados: Set<string>,
+  cambios: ChangeItem[],
+): void {
+  const { revision } = fila;
+  const enviarControl = (controlId: string) => {
+    const control = ctx.controls.get(controlId);
+    if (control && isControlVisible(ctx, controlId)) {
+      cambios.push({ table: "controls", op: "upsert", id: controlId, revision, data: projectControl(control) });
+      controlesEnviados.add(controlId);
+    } else {
+      cambios.push({ table: "controls", op: "delete", id: controlId, revision });
+    }
+  };
+
+  if (origen === "controls") {
+    enviarControl(fila.id);
+    return;
+  }
+  const [botonId, controlId] =
+    origen === "control_buttons"
+      ? [fila.id, (fila as unknown as ControlButtonRow).control_id]
+      : [(fila as unknown as VinculoCrudo).button_id, (fila as unknown as VinculoCrudo).boton.control_id];
+  const boton = buttonForPanel(ctx, botonId);
+  if (boton) {
+    if (!controlesEnviados.has(boton.control_id)) enviarControl(boton.control_id);
+    cambios.push({ table: "control_buttons", op: "upsert", id: botonId, revision, data: boton });
+    return;
+  }
+  cambios.push({ table: "control_buttons", op: "delete", id: botonId, revision });
+  // El control vigente del botón (si sigue vivo) o el que tenía al borrarse.
+  const suControl = ctx.buttons.get(botonId)?.control_id ?? controlId;
+  if (!isControlVisible(ctx, suControl) || hasNoLiveButtons(ctx, suControl)) enviarControl(suControl);
+}
+
+/**
  * Cambios de la instalación para un panel desde `since`, en páginas de `limit` cambios
  * de origen ordenados por revisión.
  * - Si `since >= R` responde `changes: []` sin consultar las tablas replicadas.
+ * - Los cambios de controles, botones y vínculos de ESTE panel se proyectan con lo que el
+ *   panel recibe hoy (ver `proyectarDeControles`).
  * - Un cambio de un perfil o de su regla para ESTE panel emite `permissions` con la
  *   proyección vigente (una regla borrada da máscaras en 0); solo el borrado del perfil
  *   emite `delete`. Si un perfil aparece varias veces en la página, sale una sola entrada
@@ -217,14 +281,19 @@ export async function listChanges(panel: Panel, since: number, limit: number): P
 
   // Los perfiles y las reglas se leen después de la página: todo perfil al que apunta
   // una fila de la página ya existe (FK) y la proyección usa su versión vigente.
-  const ctx = pagina.some((c) => ORIGENES_DE_PERFILES.has(c.origen))
-    ? await loadPermissionContext(admin, panel)
-    : null;
+  // Igual con los controles, los botones y los vínculos del panel (estado vigente).
+  const [ctx, ctxControles] = await Promise.all([
+    pagina.some((c) => ORIGENES_DE_PERFILES.has(c.origen)) ? loadPermissionContext(admin, panel) : null,
+    pagina.some((c) => ORIGENES_DE_CONTROLES.has(c.origen)) ? loadControlContext(admin, panel) : null,
+  ]);
 
   const cambios: ChangeItem[] = [];
   const revisionPorPerfil = new Map<string, number>();
+  const controlesEnviados = new Set<string>();
   for (const cruda of pagina) {
-    if (cruda.origen === "access_profiles" || cruda.origen === "profile_panel_rules") {
+    if (ORIGENES_DE_CONTROLES.has(cruda.origen)) {
+      proyectarDeControles(cruda, ctxControles!, controlesEnviados, cambios);
+    } else if (cruda.origen === "access_profiles" || cruda.origen === "profile_panel_rules") {
       const perfilId =
         cruda.origen === "access_profiles" ? cruda.fila.id : (cruda.fila as unknown as RuleRow).profile_id;
       // La página va en orden de revisión: la última vista es la más alta.
@@ -247,6 +316,7 @@ export async function listChanges(panel: Panel, since: number, limit: number): P
           },
     );
   }
+  // `sort` es estable: el control que precede a su botón (misma revisión) sigue antes.
   cambios.sort((a, b) => a.revision - b.revision);
 
   return {

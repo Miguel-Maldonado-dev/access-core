@@ -1,5 +1,6 @@
 """Motor de sincronización del agente acceso-cloud contra una nube falsa que sigue el contrato real."""
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -146,6 +147,24 @@ def test_rejected_with_current_null_deletes_the_local_row_without_entering_the_o
     assert card_codes(conn) == []
     assert outbox(conn) == []
     assert "duplicado" in get_state(conn, "last_error")
+
+
+def test_rejected_as_merged_deletes_the_local_copy_without_reporting_an_error(conn, db_path, cloud, caplog):
+    # La nube fusionó el botón nuevo con uno vivo del mismo titular: el panel borra su copia
+    # (current null) y lo recibe en el siguiente pull. No es un error para la página "Nube".
+    holder_id = new_holder(conn)
+    mark_synced(conn, cloud)
+    controls.create_control(conn, holder_id, "Control", BUTTONS)
+    button_uuid = uuid_of(conn, "control_buttons", "rf_code=555")
+    cloud.forced[button_uuid] = ("rejected", "fusionado")
+
+    with caplog.at_level(logging.INFO, logger="acceso.cloud"):
+        engine_for(db_path, cloud).push()
+
+    assert conn.execute("SELECT count(*) FROM control_buttons WHERE uuid=?", (button_uuid,)).fetchone()[0] == 0
+    assert outbox(conn) == []
+    assert get_state(conn, "last_error") in (None, "")
+    assert "fusionó" in caplog.text
 
 
 def test_superseded_with_current_keeps_the_cloud_version(conn, db_path, cloud):
@@ -528,6 +547,26 @@ def test_upload_logs_sends_pin_logs_without_code_and_the_holder_as_uuid(conn, db
     assert len(cloud.paths("POST")) == 1
 
 
+def test_upload_logs_always_post_without_pending_logs_posts_an_empty_list(conn, db_path, cloud):
+    engine = engine_for(db_path, cloud)
+    assert engine.upload_logs() == 0
+    assert cloud.paths("POST") == []   # sin `always_post` no se llama a la nube
+    assert engine.upload_logs(always_post=True) == 0
+    assert [b for m, p, _, b in cloud.requests if p == "/logs"] == [{"logs": []}]
+    assert cloud.logs_uploads == 1 and get_state(conn, "last_log_uploaded") is None
+
+
+def test_upload_logs_always_post_with_pending_logs_does_not_add_an_empty_post(conn, db_path, cloud):
+    conn.execute("INSERT INTO access_logs(timestamp, allowed, source, credential_label, output_id, reason)"
+                 " VALUES (1790000000, 1, 5, 'Prueba — ana@example.com', 2, 0)")
+    engine = engine_for(db_path, cloud)
+    assert engine.upload_logs(always_post=True) == 1
+    assert cloud.logs_uploads == 1
+    (test_log,) = cloud.logs
+    assert test_log["source"] == 5 and test_log["output_id"] == 2   # el origen "Prueba" sube tal cual
+    assert test_log["credential_label"] == "Prueba — ana@example.com"
+
+
 def test_engine_start_resets_the_agent_guard(conn, db_path, cloud):
     conn.execute("UPDATE sync_guard SET applying=1 WHERE id=1")
 
@@ -837,6 +876,24 @@ def test_pull_with_a_row_whose_parent_is_missing_for_no_reason_fails_without_app
     assert "no existe en el panel" in str(error.value)
     assert card_codes(conn) == []
     assert cursor(conn) == start
+
+
+def test_pull_delete_de_uuid_desconocido_no_falla(conn, db_path, cloud):
+    # Con controles por panel, la nube manda a todos los paneles el borrado de un botón (y de su
+    # control) que solo estaba vinculado a otro panel: este panel nunca los tuvo y los ignora.
+    ids = _two_holders_with_control(conn)
+    mark_synced(conn, cloud)
+    cloud.remove("control_buttons", str(uuid.uuid4()))
+    cloud.remove("controls", str(uuid.uuid4()))
+
+    assert engine_for(db_path, cloud).pull() == 2
+
+    assert cursor(conn) == cloud.revision
+    assert [r[0] for r in conn.execute("SELECT uuid FROM controls")] == [ids["control"]]
+    assert [r[0] for r in conn.execute("SELECT uuid FROM control_buttons")] == [ids["button"]]
+    assert get_state(conn, "last_error") is None
+    assert cloud.alerts == []
+    assert outbox(conn) == []
 
 
 def test_an_unknown_table_from_the_cloud_fails_with_a_clear_spanish_message(conn):

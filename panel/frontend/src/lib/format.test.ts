@@ -34,6 +34,7 @@ describe("format", () => {
     expect(reasonLabel(0)).toBe("Permitido");
     expect(sourceLabel(2)).toBe("Botón de salida");
     expect(sourceLabel(0)).toBe("Tarjeta");
+    expect(sourceLabel(5)).toBe("Prueba");
     expect(sourceLabel(1)).toBe("Control RF");
     expect(sourceLabel(3)).toBe("PIN");
     expect(reasonLabel(8)).toBe("PIN desconocido");
@@ -56,6 +57,8 @@ describe("format", () => {
     expect(mediumLabel(log({ source: 3, credential_label: "PIN", device_id: 1 }))).toBe("PIN · Reader2");
     expect(mediumLabel(log({ source: 3, credential_label: null, device_id: null }))).toBe("PIN");
     expect(mediumLabel(log({ source: 2, device_id: 1 }))).toBe("Botón de salida 2");
+    expect(mediumLabel(log({ source: 5, credential_label: "Prueba — web local" }))).toBe("Prueba — web local");
+    expect(mediumLabel(log({ source: 5, credential_label: null }))).toBe("Prueba");
   });
 
   it("formatea fecha y hora en es-MX", () => {

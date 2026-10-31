@@ -33,6 +33,10 @@ import { createAdminSupabase } from "@/lib/supabase/admin";
  * Node valida el snapshot, cifra el PIN, calcula el diff (`computeImportDiff`, pura) y
  * arma el plan; las funciones SQL de 0004 lo escriben en una transacción (RPC con la
  * llave secreta). Un UUID del panel que ya existe en la nube recibe uno nuevo (Riesgo 4).
+ *
+ * Cada botón que queda en la nube y que el panel tenía (uno nuevo, o uno que la nube ya
+ * tenía con el mismo titular) se vincula solo a este panel (`control_button_panels`) con
+ * la salida que tenía en el panel; los demás botones de la nube no se le vinculan.
  */
 
 /** Máximo de perfiles de acceso por instalación (`local_permission_id` 0..31). */
@@ -136,13 +140,25 @@ export interface ConfirmImportResult {
   ignored: string[];
 }
 
+/** Vínculo de un botón con el panel que importa. */
+interface ButtonLink {
+  button_id: string;
+  output_index: number | null;
+}
+
 /** Plan de importación con columnas de la nube (lo escribe `private.import_rows`). */
 interface ImportPlan {
   holders: ({ id: string } & StoredHolderData)[];
   holder_pins: { holder_id: string; pin_ciphertext: string; pin_lookup: string }[];
   cards: { id: string; card_code: number; holder_id: string; description: string }[];
   controls: { id: string; holder_id: string; description: string }[];
-  control_buttons: { id: string; control_id: string; button: number; rf_code: number; output_index: number | null }[];
+  control_buttons: { id: string; control_id: string; button: number; rf_code: number }[];
+  /**
+   * Vínculos con el panel que importa: `button_id` es el id de un botón del plan (por el
+   * id del panel) o el de un botón vivo de la instalación (uno que la nube ya tenía con el
+   * mismo titular); `output_index` es la salida que tenía en el panel.
+   */
+  control_button_links: ButtonLink[];
   access_profiles: ({ id: string; name: string; local_permission_id: number } & Omit<
     PermissionData,
     "permission_id" | "name"
@@ -251,6 +267,8 @@ interface Analisis {
   perfilesNuevos: Map<string, number>;
   /** Control de la nube al que se agrega cada botón ofrecido como `button`. */
   destinoDeBoton: Map<string, string>;
+  /** Vínculos con el panel de los botones que la nube ya tiene con el mismo titular. */
+  vinculosExistentes: ButtonLink[];
 }
 
 const claveTitular = (kind: string, name: string) => `${kind}\n${name.trim().toLowerCase()}`;
@@ -350,7 +368,10 @@ function analizar(nube: CloudState, snap: StoredSnapshot): Analisis {
   }
 
   // Controles. Cada botón se compara por rf_code: si la nube lo tiene en el mismo titular,
-  // ya está; en otro titular, es conflicto; si no lo tiene, solo está en el panel.
+  // ya está (no es diferencia, pero el panel queda vinculado a ese botón con su salida
+  // local); en otro titular, es conflicto; si no lo tiene, solo está en el panel. Dos
+  // botones que ya están no pueden quedar vinculados con el mismo número del mismo control
+  // de la nube (el número es único por panel): el segundo es conflicto.
   // El control "de la nube" es el del mismo UUID vivo en el mismo titular, o el del primer
   // botón que la nube ya tiene en ese titular: sus botones nuevos se le agregan (`button`)
   // si el número de botón está libre en ese control (si no, conflicto). Un control sin
@@ -366,6 +387,8 @@ function analizar(nube: CloudState, snap: StoredSnapshot): Analisis {
     ocupados.set(b.control_id, usados);
   }
   const destinoDeBoton = new Map<string, string>();
+  const vinculosExistentes: ButtonLink[] = [];
+  const numerosVinculados = new Set<string>();
   const botonesDe = agruparPor(snap.control_buttons, (b) => b.data.control_id);
   for (const c of snap.controls) {
     const m = titularDe.get(c.data.holder_id);
@@ -399,7 +422,21 @@ function analizar(nube: CloudState, snap: StoredSnapshot): Analisis {
             rf_code: b.data.rf_code,
             reason: `El código RF ${b.data.rf_code} ya es de otro titular (${nombreNube(dueno)}).`,
           });
+          continue;
         }
+        const numero = `${enNube.control_id} ${enNube.button}`;
+        if (numerosVinculados.has(numero)) {
+          conflicts.push({
+            type: "control_button",
+            id: b.id,
+            holder_name: nombre,
+            rf_code: b.data.rf_code,
+            reason: `El botón ${enNube.button} del control ya tiene otro código RF en este panel.`,
+          });
+          continue;
+        }
+        numerosVinculados.add(numero);
+        vinculosExistentes.push({ button_id: enNube.id, output_index: b.data.output_id });
         continue;
       }
       if (destino === undefined) {
@@ -457,7 +494,7 @@ function analizar(nube: CloudState, snap: StoredSnapshot): Analisis {
     }
   });
 
-  return { diff: { onlyInPanel, conflicts }, titularDe, perfilesNuevos, destinoDeBoton };
+  return { diff: { onlyInPanel, conflicts }, titularDe, perfilesNuevos, destinoDeBoton, vinculosExistentes };
 }
 
 /**
@@ -466,9 +503,10 @@ function analizar(nube: CloudState, snap: StoredSnapshot): Analisis {
  * - titular: el mismo UUID vivo en la instalación, o el mismo `kind` y `name` sin
  *   distinguir mayúsculas;
  * - tarjeta por `card_code`, botón por `rf_code` y PIN por `pin_lookup`.
- * Lo que la nube ya tiene con el mismo dueño (el titular emparejado) no aparece. Un RF
- * que la nube no tiene, en un control que la nube ya tiene en ese titular, es un
- * `button` para ese control. Son conflictos: una tarjeta, un código RF o un PIN de otro
+ * Lo que la nube ya tiene con el mismo dueño (el titular emparejado) no aparece (un botón
+ * así se vincula al panel al importar; si dos chocan por número en el mismo control de la
+ * nube, el segundo es conflicto). Un RF que la nube no tiene, en un control que la nube
+ * ya tiene en ese titular, es un `button` para ese control. Son conflictos: una tarjeta, un código RF o un PIN de otro
  * titular; un PIN distinto del que ya tiene el titular en la nube; un botón cuyo número
  * ya ocupa otro RF en el control de la nube; y los permisos que pasan de `MAX_PROFILES`
  * perfiles. Los permisos que caben, sus asignaciones y las salidas no se listan: se
@@ -494,6 +532,10 @@ const planBoton = (b: ContractRow<"control_buttons">) => ({
   control_id: b.data.control_id,
   button: b.data.button,
   rf_code: b.data.rf_code,
+});
+
+const planVinculo = (b: ContractRow<"control_buttons">, buttonId: string = b.id): ButtonLink => ({
+  button_id: buttonId,
   output_index: b.data.output_id,
 });
 
@@ -519,7 +561,10 @@ const planSalida = ({ id, data: { output_id, ...resto } }: ContractRow<"outputs"
   ...resto,
 });
 
-/** Importación directa (instalación vacía): todo, con `local_permission_id = permission_id`. */
+/**
+ * Importación directa (instalación vacía): todo, con `local_permission_id = permission_id`,
+ * y cada botón vinculado a este panel.
+ */
 function directPlan(snap: StoredSnapshot): ImportPlan {
   const perfilDe = new Map(snap.permissions.map((p) => [p.data.permission_id, p.id]));
   return {
@@ -528,6 +573,7 @@ function directPlan(snap: StoredSnapshot): ImportPlan {
     cards: snap.cards.map((k) => planTarjeta(k, k.data.holder_id)),
     controls: snap.controls.map((c) => ({ id: c.id, ...c.data })),
     control_buttons: snap.control_buttons.map(planBoton),
+    control_button_links: snap.control_buttons.map((b) => planVinculo(b)),
     access_profiles: snap.permissions.map((p) => planPerfil(p, p.data.permission_id)),
     holder_profiles: snap.holder_permissions.map((a) => ({
       id: a.id,
@@ -546,10 +592,11 @@ function directPlan(snap: StoredSnapshot): ImportPlan {
  * este panel. Las asignaciones del panel son la unión: cada titular que queda en la nube
  * (nuevo seleccionado o emparejado) recibe las que tenía en el panel y la nube no tiene,
  * con el perfil nuevo o el perfil vivo con el mismo UUID. Las salidas del panel se
- * importan siempre.
+ * importan siempre. Se vinculan a este panel los botones importados y, siempre, los que
+ * la nube ya tenía con el mismo titular.
  */
 function confirmPlan(nube: CloudState, snap: StoredSnapshot, seleccion: readonly string[]) {
-  const { diff, titularDe, perfilesNuevos, destinoDeBoton } = analizar(nube, snap);
+  const { diff, titularDe, perfilesNuevos, destinoDeBoton, vinculosExistentes } = analizar(nube, snap);
   const items = agruparPor(diff.onlyInPanel, (i) => i.id);
   const imported = seleccion.filter((id) => items.has(id));
   const ignored = seleccion.filter((id) => !items.has(id));
@@ -564,6 +611,7 @@ function confirmPlan(nube: CloudState, snap: StoredSnapshot, seleccion: readonly
     cards: [],
     controls: [],
     control_buttons: [],
+    control_button_links: [...vinculosExistentes],
     access_profiles: [],
     holder_profiles: [],
     outputs: snap.outputs.map(planSalida),
@@ -573,10 +621,20 @@ function confirmPlan(nube: CloudState, snap: StoredSnapshot, seleccion: readonly
   // recibe un UUID nuevo aquí: así toda referencia del plan a un control vivo apunta a
   // un control de la nube y la reasignación de ids de import_rows no es ambigua.
   const controlesNube = new Set(nube.controls.map((c) => c.id));
+  // Igual con los botones: un vínculo del plan apunta a un botón del plan o a uno vivo de
+  // la instalación (los que ya están); con un UUID nuevo para el botón del plan que repite
+  // el de uno vivo, la reasignación de import_rows nunca toca el vínculo de un botón vivo.
+  const botonesNube = new Set(nube.control_buttons.map((b) => b.id));
+  const agregarBoton = (resumen: { id: string }, controlId: string) => {
+    const b = botones.get(resumen.id)!;
+    const id = botonesNube.has(b.id) ? randomUUID() : b.id;
+    plan.control_buttons.push({ ...planBoton(b), id, control_id: controlId });
+    plan.control_button_links.push(planVinculo(b, id));
+  };
   const agregarControl = (resumen: ImportControlSummary, holderId: string) => {
     const id = controlesNube.has(resumen.id) ? randomUUID() : resumen.id;
     plan.controls.push({ id, holder_id: holderId, description: controles.get(resumen.id)!.data.description });
-    for (const b of resumen.buttons) plan.control_buttons.push({ ...planBoton(botones.get(b.id)!), control_id: id });
+    for (const b of resumen.buttons) agregarBoton(b, id);
   };
   const titularesNuevos = new Set<string>();
   for (const item of imported.flatMap((id) => items.get(id)!)) {
@@ -598,7 +656,7 @@ function confirmPlan(nube: CloudState, snap: StoredSnapshot, seleccion: readonly
         agregarControl(item, titularDe.get(controles.get(item.id)!.data.holder_id)!);
         break;
       case "button":
-        plan.control_buttons.push({ ...planBoton(botones.get(item.id)!), control_id: destinoDeBoton.get(item.id)! });
+        agregarBoton(item, destinoDeBoton.get(item.id)!);
         break;
       case "pin": {
         const h = titulares.get(item.id)!;

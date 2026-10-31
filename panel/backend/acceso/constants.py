@@ -14,6 +14,8 @@ REPLICATED_TABLES = ("holders", "cards", "controls", "control_buttons", "permiss
                      "holder_permissions", "outputs")
 
 SOURCE_CARD, SOURCE_RF, SOURCE_EXIT_BUTTON, SOURCE_PIN = 0, 1, 2, 3
+# El 4 queda reservado para "Remota" (etapa 3 de la nube).
+SOURCE_TEST = 5
 
 PIN_MIN_DIGITS, PIN_MAX_DIGITS = 4, 6
 

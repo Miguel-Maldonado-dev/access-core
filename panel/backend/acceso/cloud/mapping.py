@@ -387,10 +387,12 @@ class _Applier:
             self.applied += 1
         except MissingParent as missing:
             if self.skip_missing_parents:
-                # `current` del push: el padre aún no se descarga; el pull siguiente trae los dos.
+                # `current` del push: el padre aún no se descarga; el pull siguiente (o, si la fila
+                # no cambia de revisión en la nube, la conciliación) trae los dos.
                 self.skipped.add((table, row_id))
                 log.warning("Se omitió la versión de la nube de %s %s: su registro de %s aún no está"
-                            " en el panel; llegará con el siguiente pull", table, row_id, missing.table)
+                            " en el panel; llegará con el siguiente pull o en la conciliación",
+                            table, row_id, missing.table)
                 return
             if not self._parent_pending_delete(missing):
                 # Nunca se omite en silencio una fila que la nube conserva: se aborta el lote.

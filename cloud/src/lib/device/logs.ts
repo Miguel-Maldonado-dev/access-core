@@ -12,7 +12,9 @@ const SOURCE_PIN = 3;
  * do nothing`. `tenant_id`, `installation_id` y `panel_id` salen del panel autenticado,
  * nunca del cuerpo. Un log de PIN se guarda con `code = null`.
  * `accepted` cuenta todos los logs recibidos (los repetidos ya estaban guardados) y
- * `last_local_log_id` es el mayor id recibido.
+ * `last_local_log_id` es el mayor id recibido (0 si la lista viene vacía).
+ * Siempre marca `panels.logs_uploaded_at`, aunque la lista venga vacía: así la página de
+ * logs sabe que el panel atendió "Actualizar logs".
  */
 export async function storeLogs(
   panel: Panel,
@@ -36,10 +38,19 @@ export async function storeLogs(
     device_id: l.device_id ?? null,
     output_index: l.output_id ?? null,
   }));
-  const { error } = await createAdminSupabase()
-    .from("access_logs")
-    .upsert(filas, { onConflict: "panel_id,local_log_id", ignoreDuplicates: true });
-  if (error) throw error;
+  const admin = createAdminSupabase();
+  if (filas.length) {
+    const { error } = await admin
+      .from("access_logs")
+      .upsert(filas, { onConflict: "panel_id,local_log_id", ignoreDuplicates: true });
+    if (error) throw error;
+  }
+  // Después de guardar: la página deja de esperar solo cuando los logs ya están en la nube.
+  const { error: errorSubida } = await admin
+    .from("panels")
+    .update({ logs_uploaded_at: new Date().toISOString() })
+    .eq("id", panel.id);
+  if (errorSubida) throw errorSubida;
   return {
     accepted: logs.length,
     last_local_log_id: logs.reduce((mayor, l) => Math.max(mayor, l.local_log_id), 0),

@@ -1,7 +1,7 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { GET as getChanges } from "@/app/api/device/v1/changes/route";
+import { GET as getChanges, POST as postChanges } from "@/app/api/device/v1/changes/route";
 import { GET as getChecksums } from "@/app/api/device/v1/checksums/route";
 import { GET as getSnapshot } from "@/app/api/device/v1/snapshot/route";
 import { encryptPin, pinLookup } from "@/lib/crypto";
@@ -11,6 +11,8 @@ import {
   dataSchemas,
   type ChangeItem,
   type PullResponse,
+  type PushItem,
+  type PushResponse,
   type TableName,
 } from "@/lib/device/contract";
 import { localAdmin, requireLocalSupabase } from "../helpers/supabase-local";
@@ -92,7 +94,26 @@ const dataDe = (r: PullResponse, tabla: TableName, id: string) => {
 };
 
 const idsDe = (r: PullResponse, tabla: TableName) =>
-  r.changes.filter((c) => c.table === tabla).map((c) => c.id).sort();
+  [...new Set(r.changes.filter((c) => c.table === tabla).map((c) => c.id))].sort();
+
+/** Operaciones de un registro en la página, en orden. */
+const opsDe = (r: PullResponse, tabla: TableName, id: string) =>
+  r.changes.filter((c) => c.table === tabla && c.id === id).map((c) => c.op);
+
+/** Posición de la primera operación `op` de un registro en la página (-1 si no está). */
+const posicionDe = (r: PullResponse, tabla: TableName, id: string, op: ChangeItem["op"]) =>
+  r.changes.findIndex((c) => c.table === tabla && c.id === id && c.op === op);
+
+/** El último cambio de cada (tabla, id): lo que queda en el panel tras aplicar la página. */
+function colapsar(r: PullResponse): ChangeItem[] {
+  const ultimo = new Map<string, ChangeItem>();
+  for (const c of r.changes) {
+    const llave = `${c.table}:${c.id}`;
+    ultimo.delete(llave);
+    ultimo.set(llave, c);
+  }
+  return [...ultimo.values()];
+}
 
 describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () => {
   const corrida = base32(6).toLowerCase();
@@ -277,8 +298,17 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
     c1 = await insertar("cards", { ...i1, card_code: 1001, holder_id: h1, description: "Tarjeta Ana" });
     c2 = await insertar("cards", { ...i1, card_code: 4294967295, holder_id: h2 });
     k1 = await insertar("controls", { ...i1, holder_id: h2, description: "Control casa" });
-    kb0 = await insertar("control_buttons", { ...i1, control_id: k1, button: 0, rf_code: 5555, output_index: 1 });
-    kb1 = await insertar("control_buttons", { ...i1, control_id: k1, button: 1, rf_code: 5556, output_index: null });
+    kb0 = await insertar("control_buttons", { ...i1, control_id: k1, button: 0, rf_code: 5555 });
+    kb1 = await insertar("control_buttons", { ...i1, control_id: k1, button: 1, rf_code: 5556 });
+    // Cada panel con su salida del mismo botón; kb1 vinculado a los dos sin salida.
+    for (const [boton, panel, salida] of [
+      [kb0, panelA, 1],
+      [kb0, panelB, 2],
+      [kb1, panelA, null],
+      [kb1, panelB, null],
+    ] as const) {
+      await insertar("control_button_panels", { ...i1, button_id: boton, panel_id: panel.id, output_index: salida });
+    }
     p0 = await insertar("access_profiles", { ...i1, name: "Residente", local_permission_id: 0 });
     p1 = await insertar("access_profiles", { ...i1, name: "Servicio", local_permission_id: 1 });
     r0a = await regla(inst1, p0, panelA.id, {
@@ -350,7 +380,7 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
     // Salidas y reglas referencian a los paneles; los paneles a las instalaciones; los
     // tenants borran en cascada instalaciones, datos replicados y auditoría.
     if (paneles.length) {
-      for (const tabla of ["outputs", "profile_panel_rules"]) {
+      for (const tabla of ["outputs", "profile_panel_rules", "control_button_panels"]) {
         const { error } = await admin.from(tabla).delete().in("panel_id", paneles);
         if (error) throw error;
       }
@@ -369,11 +399,16 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
       const R = await revisionInstalacion(inst1);
       expect(r).toMatchObject({ revision: R, has_more: false, confirm_deletions: false });
 
+      // Un registro puede repetirse (un botón por su cambio y por el de su vínculo, con su
+      // control antes): todas sus apariciones traen lo mismo.
       const revisiones = r.changes.map((c) => c.revision);
       expect(revisiones).toEqual([...revisiones].sort((a, b) => a - b));
-      expect(new Set(revisiones).size).toBe(revisiones.length);
       expect(Math.max(...revisiones)).toBeLessThanOrEqual(R);
-      expect(new Set(r.changes.map((c) => `${c.table}:${c.id}`)).size).toBe(r.changes.length);
+      for (const ultimo of colapsar(r)) {
+        for (const c of r.changes.filter((x) => x.table === ultimo.table && x.id === ultimo.id)) {
+          expect({ ...c, revision: 0 }).toEqual({ ...ultimo, revision: 0 });
+        }
+      }
 
       for (const cambio of r.changes) {
         expect(cambio.op).toBe("upsert");
@@ -407,6 +442,7 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
         output_id: 1,
       });
       expect(dataDe(r, "control_buttons", kb1)).toMatchObject({ output_id: null });
+      expect(posicionDe(r, "controls", k1, "upsert")).toBeLessThan(posicionDe(r, "control_buttons", kb0, "upsert"));
       expect(dataDe(r, "permissions", p0)).toEqual({
         permission_id: 0,
         name: "Residente",
@@ -456,6 +492,8 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
         end_minute: 600,
       });
       expect(idsDe(r, "outputs")).toEqual([...salidasB].sort());
+      // El mismo botón llega a B con la salida de su vínculo con B.
+      expect(dataDe(r, "control_buttons", kb0)).toEqual({ control_id: k1, button: 0, rf_code: 5555, output_id: 2 });
     });
 
     it("un panel de otra instalación recibe solo sus datos (Riesgo 4)", async () => {
@@ -498,7 +536,7 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
         const r = await pull(panel, 0);
         for (const tabla of TABLES) {
           const snap = await snapshot(panel, tabla);
-          const delPull = r.changes
+          const delPull = colapsar(r)
             .filter((c) => c.table === tabla)
             .map((c) => ({ id: c.id, data: (c as Upsert).data }))
             .sort((a, b) => (a.id < b.id ? -1 : 1));
@@ -619,6 +657,295 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
       const permisos = await snapshot(panelA, "permissions");
       expect(permisos.rows.map((f) => f.id)).toEqual([p0]);
       expect((await snapshot(panelA, "holder_permissions")).rows.map((f) => f.id)).toEqual([hp1]);
+    });
+  });
+
+  describe("controles por panel (vínculos botón–panel)", () => {
+    let rfSiguiente = 7000;
+    const nuevoRf = () => rfSiguiente++;
+
+    const control = (descripcion: string) =>
+      insertar("controls", { installation_id: inst1, holder_id: h2, description: descripcion });
+    const boton = (controlId: string, numero: number, rf = nuevoRf()) =>
+      insertar("control_buttons", { installation_id: inst1, control_id: controlId, button: numero, rf_code: rf });
+    const vincular = (botonId: string, panel: PanelPrueba, salida: number | null) =>
+      insertar("control_button_panels", {
+        installation_id: inst1,
+        button_id: botonId,
+        panel_id: panel.id,
+        output_index: salida,
+      });
+
+    async function push(panel: PanelPrueba, changes: PushItem[]): Promise<PushResponse> {
+      const res = await postChanges(
+        new Request(`${URL_BASE}/changes`, {
+          method: "POST",
+          headers: {
+            authorization: `Device ${panel.code}.${panel.token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ changes }),
+        }),
+      );
+      expect(res.status).toBe(200);
+      return res.json();
+    }
+
+    // Control con un botón vinculado solo a A (de la primera prueba; la cuarta lo vincula a B).
+    let soloA: string;
+    let botonSoloA: string;
+    // Control con un botón vinculado a los dos paneles con salidas distintas.
+    let compartido: string;
+    let botonCompartido: string;
+    let vinculoCompartidoB: string;
+
+    it("el Panel 2 no recibe un botón vinculado solo al Panel 1, ni su control si todos sus botones son del Panel 1", async () => {
+      const since = await revisionInstalacion(inst1);
+      soloA = await control("Solo del Panel 1");
+      botonSoloA = await boton(soloA, 0);
+      await vincular(botonSoloA, panelA, 2);
+
+      const a = await pull(panelA, since);
+      expect(dataDe(a, "controls", soloA)).toEqual({ holder_id: h2, description: "Solo del Panel 1" });
+      expect(dataDe(a, "control_buttons", botonSoloA)).toMatchObject({ control_id: soloA, output_id: 2 });
+      expect(opsDe(a, "controls", soloA)).not.toContain("delete");
+      expect(opsDe(a, "control_buttons", botonSoloA)).not.toContain("delete");
+      expect(posicionDe(a, "controls", soloA, "upsert")).toBeLessThan(
+        posicionDe(a, "control_buttons", botonSoloA, "upsert"),
+      );
+
+      // B solo puede recibir borrados de lo que nunca tuvo (el panel los ignora).
+      const b = await pull(panelB, since);
+      expect(opsDe(b, "controls", soloA)).not.toContain("upsert");
+      expect(opsDe(b, "control_buttons", botonSoloA)).not.toContain("upsert");
+      expect(colapsar(b).filter((c) => c.op === "upsert")).toEqual([]);
+    });
+
+    it("cada panel recibe su propia salida del mismo botón", async () => {
+      const since = await revisionInstalacion(inst1);
+      compartido = await control("Compartido");
+      botonCompartido = await boton(compartido, 0);
+      await vincular(botonCompartido, panelA, 0);
+      vinculoCompartidoB = await vincular(botonCompartido, panelB, 3);
+
+      for (const [panel, salida] of [
+        [panelA, 0],
+        [panelB, 3],
+      ] as const) {
+        const r = await pull(panel, since);
+        expect(dataDe(r, "controls", compartido)).toEqual({ holder_id: h2, description: "Compartido" });
+        expect(dataDe(r, "control_buttons", botonCompartido)).toEqual({
+          control_id: compartido,
+          button: 0,
+          rf_code: expect.any(Number),
+          output_id: salida,
+        });
+        const snap = await snapshot(panel, "control_buttons");
+        expect(snap.rows.find((f) => f.id === botonCompartido)!.data.output_id).toBe(salida);
+      }
+    });
+
+    it("desvincular el Panel 2 le envía delete del botón y del control", async () => {
+      const since = await revisionInstalacion(inst1);
+      await borrar("control_button_panels", vinculoCompartidoB);
+      const revision = await revisionDe("control_button_panels", vinculoCompartidoB);
+
+      expect((await pull(panelB, since)).changes).toEqual([
+        { table: "control_buttons", op: "delete", id: botonCompartido, revision },
+        { table: "controls", op: "delete", id: compartido, revision },
+      ]);
+      // El vínculo es de B: A no recibe nada.
+      expect((await pull(panelA, since)).changes).toEqual([]);
+    });
+
+    it("vincular por primera vez al Panel 2 le envía upsert del control antes que el del botón", async () => {
+      const since = await revisionInstalacion(inst1);
+      const vinculo = await vincular(botonSoloA, panelB, 1);
+      const revision = await revisionDe("control_button_panels", vinculo);
+
+      expect((await pull(panelB, since)).changes).toEqual([
+        {
+          table: "controls",
+          op: "upsert",
+          id: soloA,
+          revision,
+          data: { holder_id: h2, description: "Solo del Panel 1" },
+        },
+        {
+          table: "control_buttons",
+          op: "upsert",
+          id: botonSoloA,
+          revision,
+          data: { control_id: soloA, button: 0, rf_code: expect.any(Number), output_id: 1 },
+        },
+      ]);
+    });
+
+    it("un control sin botones llega a ambos paneles, también cuando pierde su último botón", async () => {
+      let since = await revisionInstalacion(inst1);
+      const vacio = await control("Sin botones");
+      for (const panel of [panelA, panelB]) {
+        expect(dataDe(await pull(panel, since), "controls", vacio)).toEqual({ holder_id: h2, description: "Sin botones" });
+      }
+
+      // Un control con su único botón en A: B no lo tiene; al borrarse el botón, le llega.
+      const k = await control("Pierde su botón");
+      const b = await boton(k, 0);
+      await vincular(b, panelA, 0);
+      since = await revisionInstalacion(inst1);
+      await borrar("control_buttons", b);
+      for (const panel of [panelA, panelB]) {
+        const r = await pull(panel, since);
+        expect(opsDe(r, "control_buttons", b)).toEqual(expect.arrayContaining(["delete"]));
+        expect(opsDe(r, "control_buttons", b)).not.toContain("upsert");
+        expect(posicionDe(r, "control_buttons", b, "delete")).toBeLessThan(posicionDe(r, "controls", k, "upsert"));
+        expect(colapsar(r).find((c) => c.table === "controls" && c.id === k)).toMatchObject({
+          op: "upsert",
+          data: { description: "Pierde su botón" },
+        });
+      }
+    });
+
+    it("panelChecksums y panelSnapshot del Panel 2 excluyen los botones y controles del Panel 1", async () => {
+      const k = await control("Otro solo del Panel 1");
+      const b = await boton(k, 1);
+      await vincular(b, panelA, 3);
+
+      const controlesA = (await snapshot(panelA, "controls")).rows.map((f) => f.id);
+      const botonesA = await snapshot(panelA, "control_buttons");
+      expect(controlesA).toContain(k);
+      expect(botonesA.rows.find((f) => f.id === b)!.data).toEqual({
+        control_id: k,
+        button: 1,
+        rf_code: expect.any(Number),
+        output_id: 3,
+      });
+
+      const controlesB = await snapshot(panelB, "controls");
+      const botonesB = await snapshot(panelB, "control_buttons");
+      expect(controlesB.rows.map((f) => f.id)).not.toContain(k);
+      expect(controlesB.rows.map((f) => f.id)).not.toContain(compartido);
+      expect(controlesB.rows.map((f) => f.id)).toEqual(expect.arrayContaining([k1, soloA]));
+      expect(botonesB.rows.map((f) => f.id)).not.toContain(b);
+      expect(botonesB.rows.map((f) => f.id)).not.toContain(botonCompartido);
+      // Ningún botón de B apunta a un control que B no recibe.
+      const idsControlesB = new Set(controlesB.rows.map((f) => f.id));
+      for (const f of botonesB.rows) expect(idsControlesB.has(f.data.control_id as string)).toBe(true);
+
+      for (const [panel, controles, botones] of [
+        [panelB, controlesB, botonesB],
+        [panelA, await snapshot(panelA, "controls"), botonesA],
+      ] as const) {
+        const cs = await checksums(panel);
+        expect(cs.tables.controls).toBe(tableChecksum(controles.rows));
+        expect(cs.tables.control_buttons).toBe(tableChecksum(botones.rows));
+      }
+    });
+
+    it("una fusión en el Panel 2 le envía en su siguiente pull el control y luego el botón", async () => {
+      const k = await control("Control del Panel 1");
+      const codigo = nuevoRf();
+      const existente = await boton(k, 0, codigo);
+      await vincular(existente, panelA, 0);
+      const since = await revisionInstalacion(inst1);
+
+      // El técnico registra en el Panel 2 el mismo control: un control nuevo y su botón.
+      const controlNuevo = randomUUID();
+      const botonNuevo = randomUUID();
+      const hora = new Date(Date.now() + 1000).toISOString();
+      const alta = await push(panelB, [
+        {
+          change_id: randomBytes(16).toString("hex"),
+          table: "controls",
+          op: "upsert",
+          id: controlNuevo,
+          updated_at: hora,
+          data: { holder_id: h2, description: "El mismo, en el Panel 2" },
+        },
+        {
+          change_id: randomBytes(16).toString("hex"),
+          table: "control_buttons",
+          op: "upsert",
+          id: botonNuevo,
+          updated_at: hora,
+          data: { control_id: controlNuevo, button: 0, rf_code: codigo, output_id: 2 },
+        },
+      ]);
+      expect(alta.results.map((r) => r.status)).toEqual(["applied", "rejected"]);
+      expect(alta.results[1]).toMatchObject({ reason: "fusionado" });
+
+      const r = await pull(panelB, since);
+      expect(dataDe(r, "controls", k)).toEqual({ holder_id: h2, description: "Control del Panel 1" });
+      expect(dataDe(r, "control_buttons", existente)).toEqual({
+        control_id: k,
+        button: 0,
+        rf_code: codigo,
+        output_id: 2,
+      });
+      expect(posicionDe(r, "controls", k, "upsert")).toBeLessThan(posicionDe(r, "control_buttons", existente, "upsert"));
+      // El control vacío que creó el panel se borró; el botón rechazado no existe.
+      expect(colapsar(r).find((c) => c.table === "controls" && c.id === controlNuevo)).toMatchObject({ op: "delete" });
+      expect(opsDe(r, "control_buttons", botonNuevo)).not.toContain("upsert");
+      // A sigue con su salida.
+      const botonesA = await snapshot(panelA, "control_buttons");
+      expect(botonesA.rows.find((f) => f.id === existente)!.data.output_id).toBe(0);
+    });
+
+    it("una fusión que revive el vínculo borrado con el Panel 2 le envía el control y luego el botón", async () => {
+      const k = await control("Control revivido");
+      const codigo = nuevoRf();
+      const existente = await boton(k, 0, codigo);
+      await vincular(existente, panelA, 0);
+      const vinculoB = await vincular(existente, panelB, 1);
+      // La nube desvincula el Panel 2: deja de recibir el botón y el control.
+      let since = await revisionInstalacion(inst1);
+      await borrar("control_button_panels", vinculoB);
+      expect(colapsar(await pull(panelB, since)).map((c) => [c.table, c.op, c.id])).toEqual([
+        ["control_buttons", "delete", existente],
+        ["controls", "delete", k],
+      ]);
+
+      // El técnico vuelve a registrar el control en el Panel 2: la fusión revive el vínculo.
+      since = await revisionInstalacion(inst1);
+      const controlNuevo = randomUUID();
+      const hora = new Date(Date.now() + 1000).toISOString();
+      const alta = await push(panelB, [
+        {
+          change_id: randomBytes(16).toString("hex"),
+          table: "controls",
+          op: "upsert",
+          id: controlNuevo,
+          updated_at: hora,
+          data: { holder_id: h2, description: "Otra vez en el Panel 2" },
+        },
+        {
+          change_id: randomBytes(16).toString("hex"),
+          table: "control_buttons",
+          op: "upsert",
+          id: randomUUID(),
+          updated_at: hora,
+          data: { control_id: controlNuevo, button: 0, rf_code: codigo, output_id: 3 },
+        },
+      ]);
+      expect(alta.results[1]).toMatchObject({ status: "rejected", reason: "fusionado" });
+      // Se revivió la misma fila del vínculo, no se creó otra.
+      const { data: vinculos, error } = await admin
+        .from("control_button_panels")
+        .select("id, output_index, deleted_at")
+        .eq("button_id", existente)
+        .eq("panel_id", panelB.id);
+      if (error) throw error;
+      expect(vinculos).toEqual([{ id: vinculoB, output_index: 3, deleted_at: null }]);
+
+      const r = await pull(panelB, since);
+      expect(dataDe(r, "controls", k)).toEqual({ holder_id: h2, description: "Control revivido" });
+      expect(dataDe(r, "control_buttons", existente)).toEqual({
+        control_id: k,
+        button: 0,
+        rf_code: codigo,
+        output_id: 3,
+      });
+      expect(posicionDe(r, "controls", k, "upsert")).toBeLessThan(posicionDe(r, "control_buttons", existente, "upsert"));
     });
   });
 

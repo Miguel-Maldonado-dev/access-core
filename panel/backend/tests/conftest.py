@@ -44,6 +44,8 @@ def settings(tmp_path):
         session_hours=12,
         cors_origins=(),
         static_dir=static,
+        # Nunca el socket por omisión (/run/acceso/daemon.sock): en la placa activaría un relevador real.
+        daemon_socket=str(tmp_path / "sin-daemon.sock"),
     )
 
 

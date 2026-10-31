@@ -12,11 +12,18 @@ export type ActionResult<T = void> =
 
 export const INVALID_DATA: ActionResult<never> = { ok: false, status: 400, error: "Datos inválidos." };
 
-/** Ejecuta la acción, refresca la vista si sale bien y traduce los `HttpError`. Solo en server actions. */
-export async function runAction<T>(accion: () => Promise<T>): Promise<ActionResult<T>> {
+/**
+ * Ejecuta la acción, refresca la vista si sale bien y traduce los `HttpError`. Solo en
+ * server actions. `{ refresh: false }` no refresca: para las que solo consultan o cuya
+ * página se refresca desde el cliente (las órdenes a los paneles).
+ */
+export async function runAction<T>(
+  accion: () => Promise<T>,
+  opciones: { refresh?: boolean } = {},
+): Promise<ActionResult<T>> {
   try {
     const data = await accion();
-    refresh();
+    if (opciones.refresh !== false) refresh();
     return { ok: true, data };
   } catch (error) {
     if (error instanceof HttpError) {

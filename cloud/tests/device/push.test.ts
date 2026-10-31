@@ -99,7 +99,7 @@ describe("subida de cambios del panel (POST /changes)", () => {
   let hB: string; // Beto, sin PIN
   let kA: string; // tarjeta 1001 de Ana
   let kc: string; // control de Beto
-  let kb: string; // botón 0 del control, rf 5555
+  let kb: string; // botón 0 del control, rf 5555, con la salida 0 en A y en B
   let p0: string; // Residente (permission_id 0), regla en A y en B
   let pX: string; // Temporal (permission_id 5), regla en A y en B, asignado a Ana y Beto
   let hp0: string; // Ana → Residente
@@ -267,7 +267,10 @@ describe("subida de cambios del panel (POST /changes)", () => {
     hB = await insertar("holders", { ...i1, kind: "persona", name: "Beto" });
     kA = await insertar("cards", { ...i1, card_code: 1001, holder_id: hA, description: "Tarjeta Ana" });
     kc = await insertar("controls", { ...i1, holder_id: hB, description: "Control Beto" });
-    kb = await insertar("control_buttons", { ...i1, control_id: kc, button: 0, rf_code: 5555, output_index: 0 });
+    kb = await insertar("control_buttons", { ...i1, control_id: kc, button: 0, rf_code: 5555 });
+    for (const panel of [panelA, panelB]) {
+      await insertar("control_button_panels", { ...i1, button_id: kb, panel_id: panel.id, output_index: 0 });
+    }
     p0 = await insertar("access_profiles", { ...i1, name: "Residente", local_permission_id: 0 });
     pX = await insertar("access_profiles", { ...i1, name: "Temporal", local_permission_id: 5 });
     for (const perfil of [p0, pX]) {
@@ -299,7 +302,7 @@ describe("subida de cambios del panel (POST /changes)", () => {
     // borran en cascada sus device_changes y sync_conflicts); los tenants borran en
     // cascada instalaciones, datos replicados y auditoría.
     if (paneles.length) {
-      for (const tabla of ["outputs", "profile_panel_rules"]) {
+      for (const tabla of ["outputs", "profile_panel_rules", "control_button_panels"]) {
         const { error } = await admin.from(tabla).delete().in("panel_id", paneles);
         if (error) throw error;
       }
@@ -387,12 +390,15 @@ describe("subida de cambios del panel (POST /changes)", () => {
       expect(await fila("cards", k3)).toMatchObject({ card_code: 7103, deleted_at: null });
     });
 
-    it("un botón nuevo traduce output_id a output_index", async () => {
+    it("un botón nuevo guarda output_id en el output_index de su vínculo con ese panel", async () => {
       const id = randomUUID();
       const datos = { control_id: kc, button: 2, rf_code: 5600, output_id: 2 };
       const r = await pushUno(panelA, upsert("control_buttons", id, datos));
       expect(r.status).toBe("applied");
-      expect(await fila("control_buttons", id)).toMatchObject({ control_id: kc, button: 2, rf_code: 5600, output_index: 2 });
+      expect(await fila("control_buttons", id)).toMatchObject({ control_id: kc, button: 2, rf_code: 5600 });
+      const vinculos = await filas("control_button_panels", "button_id", id);
+      expect(vinculos).toHaveLength(1);
+      expect(vinculos[0]).toMatchObject({ panel_id: panelA.id, output_index: 2, deleted_at: null });
     });
 
     it("la edición de un titular con PIN guarda el PIN cifrado y su pin_lookup", async () => {
@@ -629,8 +635,10 @@ describe("subida de cambios del panel (POST /changes)", () => {
       });
       expect(await fila("cards", propia)).toEqual(antes);
 
+      // El rf_code 5555 es de un botón de Beto; este control es de Ana (otro titular).
+      const deAna = await insertar("controls", { installation_id: inst1, holder_id: hA, description: "Ana" });
       const boton = randomUUID();
-      const repetido = { control_id: kc, button: 1, rf_code: 5555, output_id: null };
+      const repetido = { control_id: deAna, button: 1, rf_code: 5555, output_id: null };
       const r3 = await pushUno(panelA, upsert("control_buttons", boton, repetido));
       expect(r3).toMatchObject({ status: "rejected", reason: "duplicado", current: null });
       expect((await conflictos(boton)).map((c) => c.kind)).toEqual(["unique"]);
@@ -829,6 +837,372 @@ describe("subida de cambios del panel (POST /changes)", () => {
         alias: "Peatonal",
         origin: origenDe(panelA),
       });
+    });
+  });
+
+  describe("controles por panel (vínculos botón–panel)", () => {
+    const i1 = () => ({ installation_id: inst1 });
+    let rf = 8100;
+    const nuevoRf = () => ++rf;
+
+    /** Control de la nube (origin cloud) del titular dado. */
+    const crearControl = (holderId: string, description = "Control") =>
+      insertar("controls", { ...i1(), holder_id: holderId, description });
+
+    /** Botón de la nube con un vínculo por cada [panel, salida]. */
+    async function crearBoton(
+      controlId: string,
+      button: number,
+      rfCode: number,
+      salidas: [PanelPrueba, number | null][],
+    ): Promise<string> {
+      const id = await insertar("control_buttons", { ...i1(), control_id: controlId, button, rf_code: rfCode });
+      for (const [panel, salida] of salidas) {
+        await insertar("control_button_panels", { ...i1(), button_id: id, panel_id: panel.id, output_index: salida });
+      }
+      return id;
+    }
+
+    /** Vínculos de un botón (vivos y borrados), por panel. */
+    async function vinculosDe(buttonId: string): Promise<Map<string, Fila[]>> {
+      const porPanel = new Map<string, Fila[]>();
+      for (const v of await filas("control_button_panels", "button_id", buttonId)) {
+        porPanel.set(v.panel_id as string, [...(porPanel.get(v.panel_id as string) ?? []), v]);
+      }
+      return porPanel;
+    }
+
+    /** El vínculo vivo de un botón con un panel, o null. */
+    async function vinculoVivo(buttonId: string, panel: PanelPrueba): Promise<Fila | null> {
+      const vivos = ((await vinculosDe(buttonId)).get(panel.id) ?? []).filter((v) => v.deleted_at === null);
+      expect(vivos.length).toBeLessThanOrEqual(1);
+      return vivos[0] ?? null;
+    }
+
+    it("cambio de salida en el Panel 1 cambia solo su vínculo", async () => {
+      const c = await crearControl(hA);
+      const codigo = nuevoRf();
+      const b = await crearBoton(c, 0, codigo, [
+        [panelA, 0],
+        [panelB, 3],
+      ]);
+      const r = await pushUno(panelA, upsert("control_buttons", b, { control_id: c, button: 0, rf_code: codigo, output_id: 2 }));
+      expect(r.status).toBe("applied");
+      expect(r.revision).toBe(await revisionInstalacion(inst1));
+      expect(await vinculoVivo(b, panelA)).toMatchObject({ output_index: 2, origin: origenDe(panelA) });
+      expect(await vinculoVivo(b, panelB)).toMatchObject({ output_index: 3, origin: "cloud" });
+      expect(await fila("control_buttons", b)).toMatchObject({ rf_code: codigo, deleted_at: null });
+    });
+
+    it("cambios de salida de dos paneles que llegan en desorden se aplican sin conflicto ni tocar el botón", async () => {
+      const c = await crearControl(hA);
+      const codigo = nuevoRf();
+      const b = await crearBoton(c, 0, codigo, [
+        [panelA, 0],
+        [panelB, 1],
+      ]);
+      const boton = await fila("control_buttons", b);
+      const datos = (salida: number) => ({ control_id: c, button: 0, rf_code: codigo, output_id: salida });
+
+      // El Panel 1 sube su cambio de las 10:00; después llega el del Panel 2 de las 09:00.
+      const r1 = await pushUno(panelA, upsert("control_buttons", b, datos(2), hora(10_000)));
+      const r2 = await pushUno(panelB, upsert("control_buttons", b, datos(3), hora(5_000)));
+      expect(r1.status).toBe("applied");
+      expect(r2.status).toBe("applied");
+      expect(r2.revision).toBe(await revisionInstalacion(inst1));
+      expect(await vinculoVivo(b, panelA)).toMatchObject({ output_index: 2 });
+      expect(await vinculoVivo(b, panelB)).toMatchObject({ output_index: 3 });
+      expect(await conflictos(b)).toEqual([]);
+      expect(await fila("control_buttons", b)).toEqual(boton);
+    });
+
+    it("alta de botón nuevo en el Panel 1 queda vinculada solo al Panel 1", async () => {
+      const c = await crearControl(hA);
+      const id = randomUUID();
+      const codigo = nuevoRf();
+      const r = await pushUno(panelA, upsert("control_buttons", id, { control_id: c, button: 1, rf_code: codigo, output_id: 1 }));
+      expect(r.status).toBe("applied");
+      expect(await fila("control_buttons", id)).toMatchObject({
+        control_id: c,
+        button: 1,
+        rf_code: codigo,
+        origin: origenDe(panelA),
+        deleted_at: null,
+      });
+      const vinculos = await vinculosDe(id);
+      expect([...vinculos.keys()]).toEqual([panelA.id]);
+      expect(vinculos.get(panelA.id)).toEqual([
+        expect.objectContaining({ output_index: 1, deleted_at: null, origin: origenDe(panelA) }),
+      ]);
+    });
+
+    it("código RF existente con el mismo titular se fusiona", async () => {
+      const c1 = await crearControl(hA, "Control de Ana en el Panel 1");
+      const codigo = nuevoRf();
+      const existente = await crearBoton(c1, 0, codigo, [[panelA, 0]]);
+
+      // El técnico registra en el Panel 2 el mismo control: un control nuevo y su botón.
+      const c2 = randomUUID();
+      const nuevo = randomUUID();
+      const vinculoAntes = await revisionInstalacion(inst1);
+      const alta = await push(panelB, [
+        upsert("controls", c2, { holder_id: hA, description: "El mismo, en el Panel 2" }),
+        upsert("control_buttons", nuevo, { control_id: c2, button: 0, rf_code: codigo, output_id: 2 }),
+      ]);
+      expect(alta.results[0].status).toBe("applied");
+      const item = alta.results[1];
+      expect(item).toEqual({ change_id: item.change_id, status: "rejected", reason: "fusionado", current: null });
+      expect(await cambioGuardado(panelB.id, item.change_id)).toEqual([
+        expect.objectContaining({ result: { status: "rejected", reason: "fusionado" } }),
+      ]);
+
+      expect(await fila("control_buttons", nuevo)).toBeNull();
+      expect(await vinculoVivo(existente, panelB)).toMatchObject({ output_index: 2, origin: origenDe(panelB) });
+      expect(await vinculoVivo(existente, panelA)).toMatchObject({ output_index: 0 });
+      const vacio = await fila("controls", c2);
+      expect(vacio!.deleted_at).not.toBeNull();
+      expect(vacio!.origin).toBe(origenDe(panelB));
+      expect(await fila("controls", c1)).toMatchObject({ deleted_at: null });
+      expect(await conflictos(nuevo)).toEqual([]);
+
+      // El vínculo nuevo tiene una revisión posterior al push: el Panel 2 lo recibe en su
+      // siguiente pull.
+      expect(alta.revision).toBe(await revisionInstalacion(inst1));
+      expect((await vinculoVivo(existente, panelB))!.revision).toBeGreaterThan(vinculoAntes);
+    });
+
+    it("código RF existente con otro titular se rechaza como duplicado", async () => {
+      const c1 = await crearControl(hA);
+      const codigo = nuevoRf();
+      const existente = await crearBoton(c1, 0, codigo, [[panelA, 0]]);
+      const deBeto = await crearControl(hB);
+      const nuevo = randomUUID();
+      const r = await pushUno(
+        panelB,
+        upsert("control_buttons", nuevo, { control_id: deBeto, button: 0, rf_code: codigo, output_id: 1 }),
+      );
+      expect(r).toEqual({ change_id: r.change_id, status: "rejected", reason: "duplicado", current: null });
+      expect(await fila("control_buttons", nuevo)).toBeNull();
+      expect(await vinculoVivo(existente, panelB)).toBeNull();
+      expect(await fila("controls", deBeto)).toMatchObject({ deleted_at: null });
+      const [unico, ...otros] = await conflictos(nuevo);
+      expect(otros).toEqual([]);
+      expect(unico).toMatchObject({ kind: "unique", table_name: "control_buttons", panel_id: panelB.id });
+      expect(unico.cloud_version).toMatchObject({ id: existente, rf_code: codigo });
+    });
+
+    it("número de botón ocupado en el panel se rechaza como duplicado con la versión del botón que lo ocupa", async () => {
+      const c = await crearControl(hA);
+      const ocupante = await crearBoton(c, 2, nuevoRf(), [[panelA, 3]]);
+      const nuevo = randomUUID();
+      const r = await pushUno(
+        panelA,
+        upsert("control_buttons", nuevo, { control_id: c, button: 2, rf_code: nuevoRf(), output_id: 0 }),
+      );
+      expect(r).toMatchObject({ status: "rejected", reason: "duplicado", current: null });
+      expect(await fila("control_buttons", nuevo)).toBeNull();
+      const [unico] = await conflictos(nuevo);
+      expect(unico).toMatchObject({ kind: "unique", table_name: "control_buttons" });
+      expect(unico.cloud_version).toMatchObject({
+        id: ocupante,
+        control_id: c,
+        button: 2,
+        panel_id: panelA.id,
+        linked: true,
+        output_index: 3,
+      });
+
+      // En el Panel 2 ese número está libre: el mismo alta se aplica.
+      const r2 = await pushUno(
+        panelB,
+        upsert("control_buttons", nuevo, { control_id: c, button: 2, rf_code: nuevoRf(), output_id: 0 }),
+      );
+      expect(r2.status).toBe("applied");
+    });
+
+    it("un cambio de salida más viejo que el vínculo de ese panel queda superseded con la salida de ese panel", async () => {
+      const c = await crearControl(hA);
+      const codigo = nuevoRf();
+      const b = await crearBoton(c, 0, codigo, [
+        [panelA, 1],
+        [panelB, 2],
+      ]);
+      const viejo = hora(-60 * 60 * 1000);
+      const r = await pushUno(panelB, upsert("control_buttons", b, { control_id: c, button: 0, rf_code: codigo, output_id: 0 }, viejo));
+      expect(r).toMatchObject({
+        status: "superseded",
+        current: { data: { control_id: c, button: 0, rf_code: codigo, output_id: 2 } },
+      });
+      expect(await vinculoVivo(b, panelB)).toMatchObject({ output_index: 2 });
+      const [lww] = await conflictos(b);
+      expect(lww).toMatchObject({ kind: "lww", table_name: "control_buttons", panel_id: panelB.id });
+      expect(lww.cloud_version).toMatchObject({ id: b, panel_id: panelB.id, linked: true, output_index: 2 });
+
+      // Un vínculo borrado en la nube después del cambio no se revive: current null.
+      const vinculo = await vinculoVivo(b, panelB);
+      await borrarEnLaNube("control_button_panels", vinculo!.id as string);
+      const r2 = await pushUno(panelB, upsert("control_buttons", b, { control_id: c, button: 0, rf_code: codigo, output_id: 3 }, hora(-1000)));
+      expect(r2).toMatchObject({ status: "superseded", current: null });
+      expect(await vinculoVivo(b, panelB)).toBeNull();
+
+      // Uno más nuevo que el borrado sí lo revive, con la salida enviada.
+      const r3 = await pushUno(panelB, upsert("control_buttons", b, { control_id: c, button: 0, rf_code: codigo, output_id: 3 }, hora(5000)));
+      expect(r3.status).toBe("applied");
+      expect(await vinculoVivo(b, panelB)).toMatchObject({ id: vinculo!.id, output_index: 3, origin: origenDe(panelB) });
+    });
+
+    it("un upsert de un botón borrado en la nube queda superseded con current null y no lo revive", async () => {
+      const c = await crearControl(hA);
+      const codigo = nuevoRf();
+      const b = await crearBoton(c, 0, codigo, [[panelA, 1]]);
+      await borrarEnLaNube("control_buttons", b);
+      const r = await pushUno(panelA, upsert("control_buttons", b, { control_id: c, button: 0, rf_code: codigo, output_id: 2 }, hora(5000)));
+      expect(r).toMatchObject({ status: "superseded", current: null });
+      expect((await fila("control_buttons", b))!.deleted_at).not.toBeNull();
+      expect(await vinculoVivo(b, panelA)).toBeNull();
+    });
+
+    it("borrado en el Panel 1 de un botón vinculado a ambos solo quita el vínculo del Panel 1", async () => {
+      const c = await crearControl(hA);
+      const b = await crearBoton(c, 0, nuevoRf(), [
+        [panelA, 0],
+        [panelB, 1],
+      ]);
+      const r = await pushUno(panelA, borrado("control_buttons", b));
+      expect(r.status).toBe("applied");
+      expect(await vinculoVivo(b, panelA)).toBeNull();
+      expect((await vinculosDe(b)).get(panelA.id)![0]).toMatchObject({ origin: origenDe(panelA) });
+      expect(await vinculoVivo(b, panelB)).toMatchObject({ output_index: 1 });
+      expect(await fila("control_buttons", b)).toMatchObject({ deleted_at: null });
+    });
+
+    /** Cambia updated_at a mano (escritura de servicio: el trigger lo respeta). */
+    async function fijarHora(tabla: string, id: string, cambios: Fila, updatedAt: string) {
+      const { error } = await admin
+        .from(tabla)
+        .update({ ...cambios, updated_at: updatedAt, updated_by: "prueba", origin: "cloud" })
+        .eq("id", id);
+      if (error) throw error;
+    }
+
+    it("borrado de botón del panel más viejo que una edición de RF en la nube queda superseded y no borra nada", async () => {
+      // El Panel 1, fuera de línea, borra el botón a las T1; un admin cambia el código RF en
+      // la nube a las T2 > T1; el vínculo es anterior a ambos. Llega el push: gana la nube.
+      const c = await crearControl(hA);
+      const b = await crearBoton(c, 0, nuevoRf(), [[panelA, 1]]);
+      const vinculo = await vinculoVivo(b, panelA);
+      await fijarHora("control_button_panels", vinculo!.id as string, {}, hora(-2 * 60 * 60 * 1000));
+      const codigoNube = nuevoRf();
+      await fijarHora("control_buttons", b, { rf_code: codigoNube }, hora(-30 * 60 * 1000));
+
+      const r = await pushUno(panelA, borrado("control_buttons", b, hora(-60 * 60 * 1000)));
+      expect(r).toMatchObject({
+        status: "superseded",
+        current: { data: { control_id: c, button: 0, rf_code: codigoNube, output_id: 1 } },
+      });
+      expect(await fila("control_buttons", b)).toMatchObject({ rf_code: codigoNube, deleted_at: null });
+      expect(await vinculoVivo(b, panelA)).toMatchObject({ id: vinculo!.id, output_index: 1 });
+      const [lww] = await conflictos(b);
+      expect(lww).toMatchObject({ kind: "lww", table_name: "control_buttons", panel_id: panelA.id });
+
+      // Un borrado más nuevo que el botón y que el vínculo sí se aplica.
+      const r2 = await pushUno(panelA, borrado("control_buttons", b, hora(5000)));
+      expect(r2.status).toBe("applied");
+      expect(await vinculoVivo(b, panelA)).toBeNull();
+      expect((await fila("control_buttons", b))!.deleted_at).not.toBeNull();
+    });
+
+    it("borrado de control del panel más viejo que una edición de RF de uno de sus botones queda superseded", async () => {
+      const c = await crearControl(hA);
+      const b = await crearBoton(c, 0, nuevoRf(), [[panelA, 0]]);
+      const vinculo = await vinculoVivo(b, panelA);
+      await fijarHora("controls", c, {}, hora(-2 * 60 * 60 * 1000));
+      await fijarHora("control_button_panels", vinculo!.id as string, {}, hora(-2 * 60 * 60 * 1000));
+      const codigoNube = nuevoRf();
+      await fijarHora("control_buttons", b, { rf_code: codigoNube }, hora(-30 * 60 * 1000));
+
+      const r = await pushUno(panelA, borrado("controls", c, hora(-60 * 60 * 1000)));
+      expect(r.status).toBe("superseded");
+      expect(await fila("controls", c)).toMatchObject({ deleted_at: null });
+      expect(await fila("control_buttons", b)).toMatchObject({ rf_code: codigoNube, deleted_at: null });
+      expect(await vinculoVivo(b, panelA)).toMatchObject({ id: vinculo!.id, output_index: 0 });
+
+      // Más nuevo que todo: se borran el vínculo, el botón y el control.
+      const r2 = await pushUno(panelA, borrado("controls", c, hora(5000)));
+      expect(r2.status).toBe("applied");
+      expect(await vinculoVivo(b, panelA)).toBeNull();
+      expect((await fila("control_buttons", b))!.deleted_at).not.toBeNull();
+      expect((await fila("controls", c))!.deleted_at).not.toBeNull();
+    });
+
+    it("cambio de código RF en el Panel 1", async () => {
+      const c = await crearControl(hA);
+      const x = await crearBoton(c, 0, nuevoRf(), [
+        [panelA, 0],
+        [panelB, 1],
+      ]);
+      const y = randomUUID();
+      const codigoY = nuevoRf();
+      const r = await push(panelA, [
+        borrado("control_buttons", x),
+        upsert("control_buttons", y, { control_id: c, button: 0, rf_code: codigoY, output_id: 0 }),
+      ]);
+      expect(r.results.map((z) => z.status)).toEqual(["applied", "applied"]);
+      expect(await fila("control_buttons", x)).toMatchObject({ deleted_at: null });
+      expect(await vinculoVivo(x, panelA)).toBeNull();
+      expect(await vinculoVivo(x, panelB)).toMatchObject({ output_index: 1 });
+      expect(await fila("control_buttons", y)).toMatchObject({ control_id: c, button: 0, rf_code: codigoY, deleted_at: null });
+      const deY = await vinculosDe(y);
+      expect([...deY.keys()]).toEqual([panelA.id]);
+      expect(await vinculoVivo(y, panelA)).toMatchObject({ output_index: 0 });
+      expect(await fila("controls", c)).toMatchObject({ deleted_at: null });
+    });
+
+    it("borrado de botón que deja el control vacío no borra el control", async () => {
+      const c = await crearControl(hA);
+      const b = await crearBoton(c, 0, nuevoRf(), [[panelA, 0]]);
+      const r = await pushUno(panelA, borrado("control_buttons", b));
+      expect(r.status).toBe("applied");
+      const boton = await fila("control_buttons", b);
+      expect(boton!.deleted_at).not.toBeNull();
+      expect(boton!.origin).toBe(origenDe(panelA));
+      expect(await fila("controls", c)).toMatchObject({ deleted_at: null });
+    });
+
+    it("borrado de control en el Panel 1 con botones vinculados al Panel 2", async () => {
+      const c = await crearControl(hA);
+      const ambos = await crearBoton(c, 0, nuevoRf(), [
+        [panelA, 0],
+        [panelB, 1],
+      ]);
+      const soloA = await crearBoton(c, 1, nuevoRf(), [[panelA, 1]]);
+      const soloB = await crearBoton(c, 2, nuevoRf(), [[panelB, 2]]);
+
+      const r = await pushUno(panelA, borrado("controls", c));
+      expect(r.status).toBe("applied");
+      expect(await fila("controls", c)).toMatchObject({ deleted_at: null });
+      expect(await fila("control_buttons", ambos)).toMatchObject({ deleted_at: null });
+      expect(await vinculoVivo(ambos, panelA)).toBeNull();
+      expect(await vinculoVivo(ambos, panelB)).toMatchObject({ output_index: 1 });
+      expect((await fila("control_buttons", soloA))!.deleted_at).not.toBeNull();
+      expect(await fila("control_buttons", soloB)).toMatchObject({ deleted_at: null });
+      expect(await vinculoVivo(soloB, panelB)).toMatchObject({ output_index: 2 });
+
+      // Un control cuyos botones son solo del Panel 1, o no tienen vínculos, sí se borra
+      // con todos sus botones (la cascada borra el que no tenía vínculos).
+      const c2 = await crearControl(hA);
+      const b2 = await crearBoton(c2, 0, nuevoRf(), [[panelA, 0]]);
+      const sinVinculos = await crearBoton(c2, 1, nuevoRf(), []);
+      expect((await pushUno(panelA, borrado("controls", c2))).status).toBe("applied");
+      for (const [tabla, id] of [
+        ["controls", c2],
+        ["control_buttons", b2],
+        ["control_buttons", sinVinculos],
+      ]) {
+        const borrada = await fila(tabla, id);
+        expect(borrada!.deleted_at, tabla).not.toBeNull();
+        expect(borrada!.origin, tabla).toBe(origenDe(panelA));
+      }
     });
   });
 

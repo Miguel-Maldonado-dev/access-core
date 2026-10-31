@@ -62,16 +62,17 @@ Un cambio al protocolo toca el firmware, el documento y el daemon (`panel/backen
 - **Backend (`panel/backend`, paquete `acceso`):**
   - Python ≥ 3.9, FastAPI, pyserial y SQLite en modo WAL;
   - tres servicios systemd: `acceso-daemon` (UART y autorización), `acceso-web` (API y web local en el puerto 8080) y `acceso-cloud` (agente de sincronización con la nube, paquete `acceso.cloud`);
+  - el daemon es el único dueño del puerto serie y atiende un **socket Unix** (`/run/acceso/daemon.sock`, variable `DAEMON_SOCKET`, modo 0600; `RuntimeDirectory=acceso` en `acceso-daemon.service`): por ahí la web (`POST /api/outputs/{id}/test`, botón "Probar") y el agente piden probar una salida; origen de log 5 = "Prueba";
   - configuración en `/etc/acceso/acceso.env`; credenciales de la nube en `/etc/acceso/cloud.env` (0600, `acceso:acceso`).
 - **Esquema v6:** `holders` (persona o domicilio, PIN único de 4–6 dígitos), `cards`, `controls`, `control_buttons`, `permissions` (`output_mask`, `card_reader_mask`, `pin_reader_mask`, `allow_rf`, días y horario), `holder_permissions`, `outputs` (con `alias`) y `access_logs`. Las tablas replicadas llevan `uuid`, `updated_at` y `origin`; `sync_outbox` (con triggers y la guarda `sync_guard`) y `sync_state` sirven a la sincronización.
 - **Migraciones:** `acceso/migrate.py`, con bloqueo de archivo, una transacción y respaldo atómico en modo 0600 (máximo 3 copias).
 - **Frontend (`panel/frontend`):** Next.js con exportación estática que sirve el backend; pruebas con Vitest.
 - **Pruebas:**
-  - backend: `cd panel/backend && .venv/bin/pytest` (453 pruebas);
-  - frontend: `cd panel/frontend && npm test` (69 pruebas), además de `npm run lint` y `npm run build`.
+  - backend: `cd panel/backend && .venv/bin/pytest` (548 pruebas);
+  - frontend: `cd panel/frontend && npm test` (72 pruebas), además de `npm run lint` y `npm run build`.
 - **Paquete:** `panel/deploy/build_release.sh` genera `panel/dist/acceso-panel-AAAAMMDD.tar.gz`; se instala en la placa con `deploy/install.sh`. Último paquete: 20261021 (PIN, permisos v5 y abreviaturas).
 - **Desarrollo en Mac:**
-  - `panel/backend/.env` (ignorado por git), con `UART_PORT=/dev/cu.usbmodem…`;
+  - `panel/backend/.env` (ignorado por git), con `UART_PORT=/dev/cu.usbmodem…` y `DAEMON_SOCKET=data/daemon.sock` (el mismo valor para el daemon y la web; en la Mac no existe `/run/acceso`);
   - base de prueba en `panel/backend/data/`;
   - el simulador Tkinter y el daemon no pueden compartir el puerto serie.
 
@@ -84,19 +85,25 @@ Un cambio al protocolo toca el firmware, el documento y el daemon (`panel/backen
 - **Errores de la API:** `{"detail": "<texto en español>"}`.
 - **Nunca subir** bases SQLite, respaldos ni `.env`: tienen nombres reales y PIN en texto plano. El repositorio es **público**.
 
-## Estado (2026-10-28)
+## Estado (2026-10-30)
 
 - **Panel local:** terminado y en uso (PIN, permisos por método y abreviaturas). En `develop`, sin confirmar: esquema v6, agente `acceso-cloud` y página "Nube".
 - **Plataforma en la nube (`cloud/`):**
   - **etapa 1 implementada** en `develop` (sin confirmar), con revisión por tarea y revisión final: Next.js 16 + Supabase + EMQX. Diseño en `docs/superpowers/specs/2026-10-26-plataforma-nube-design.md`, plan en `docs/superpowers/plans/2026-10-26-plataforma-nube-etapa1.md` y decisiones de Claude en `docs/superpowers/plans/2026-10-26-plataforma-nube-etapa1-decisiones.md`;
   - cuentas creadas con correo y contraseña (autoconfirmadas), sin invitaciones;
-  - **pruebas:** `cd cloud && npm test` (392), `npx supabase test db` (295, contra el Supabase local) y el E2E local `bash cloud/e2e/run_e2e.sh`; despliegue en `cloud/docs/despliegue.md`;
-  - **pendiente del dueño:** confirmar los commits; aplicar en Access-Core-DEV las migraciones que faltan (`sync`, `notify`, `tenant_admin_guard`, `conflicts_review` y `claim_panel_neutral_author`), alinear su historial y configurar Auth; Vercel y el servidor de EMQX.
+  - **pruebas:** `cd cloud && npm test` (478), `npm run test:db` (383, pgTAP contra el Supabase local) y el E2E local `bash cloud/e2e/run_e2e.sh`; despliegue en `cloud/docs/despliegue.md`;
+  - **pendiente del dueño:** confirmar los commits; aplicar en Access-Core-DEV las migraciones que faltan (`sync`, `notify`, `tenant_admin_guard`, `conflicts_review`, `claim_panel_neutral_author`, `control_button_panels` y `panel_commands`), alinear su historial y configurar Auth; Vercel y el servidor de EMQX.
+  - **Controles por panel, actualizar logs y prueba de salidas** (diseño `docs/superpowers/specs/2026-10-30-controles-por-panel-logs-y-prueba-de-salidas-design.md`, plan en `docs/superpowers/plans/2026-10-30-controles-por-panel-logs-y-prueba-de-salidas.md`), implementado en `develop` sin confirmar:
+    - **controles por panel:** cada botón se vincula por panel (`control_button_panels`, con `output_index` por panel; `control_buttons` ya no lo tiene) y cada panel recibe solo sus botones. La migración vincula cada botón vivo a los paneles reclamados, importando, en revisión o activos de su instalación (no a los revocados ni a los pendientes). El esquema local sigue en v6;
+    - **"Actualizar logs"** en la página de logs de la nube: publica `upload_logs` en `acc/<code>/cmd` y el agente sube los logs pendientes al momento (`panels.logs_uploaded_at`, `installations.logs_requested_at`);
+    - **"Probar" salida** en la web local y en la nube (admin y técnico): la nube guarda la orden en `panel_commands`, publica `test_output` (vigencia 10 s) y el agente informa el resultado por `POST /api/device/v1/command-result`. **EMQX no cambia.** El panel necesita la hora correcta (NTP), porque compara `expires_at` con su reloj; `install.sh` ya habilita NTP.
   - Después vienen la etapa 2 (API pública y webhooks), la 3 (apertura remota) y la 4 (QR temporales).
 - **Desarrollo de la nube en la Mac:** Supabase local (`cd cloud && npx supabase start`), `cloud/.env.local` (ignorado). Si la web del panel ocupa el puerto 3000, la nube arranca en el 3001. El agente del panel se prueba con `CLOUD_URL=http://localhost:3001 MQTT_URL= CLOUD_CREDENTIALS_PATH=data/cloud.env .venv/bin/python -m acceso.cloud` desde `panel/backend`.
 - **Python en la placa:** `constraints.txt` fija `anyio` 4.15.1, que pide Python ≥ 3.10; confirmar la versión de la placa antes de instalar.
 - **Pendientes del dueño en hardware:**
   - probar el teclado real;
   - instalar en la Orange Pi;
-  - correr `PRAGMA foreign_key_check` en la base de la placa antes de instalar el esquema v5.
+  - correr `PRAGMA foreign_key_check` en la base de la placa antes de instalar el esquema v5;
+  - generar un paquete nuevo e instalarlo con `install.sh` (trae el `RuntimeDirectory` del socket del daemon);
+  - probar "Probar" desde la web local y desde la nube, con el reloj de la placa sincronizado (NTP).
 - **Opcional ofrecido:** que `build_release.sh` no meta metadatos de macOS en el `.tar.gz`, que causan avisos inofensivos de `tar` en la placa.

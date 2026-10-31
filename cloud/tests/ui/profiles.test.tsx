@@ -254,7 +254,15 @@ describe("ProfilesManager", () => {
 describe("OutputsManager", () => {
   function montarSalidas(outputs: OutputRow[], panels = [PA, PB]) {
     const onSave = vi.fn(async (): Promise<ActionResult> => ok(undefined));
-    render(<OutputsManager panels={panels} outputs={outputs} onSave={onSave} />);
+    render(
+      <OutputsManager
+        panels={panels}
+        outputs={outputs}
+        onSave={onSave}
+        onTest={vi.fn(async () => ok({ commandId: "cmd-1" }))}
+        onStatus={vi.fn(async () => ok({ status: "ok" as const, detail: null }))}
+      />,
+    );
     return onSave;
   }
   const todas = (panel: string) => [0, 1, 2, 3].map((i) => salida(panel, i));

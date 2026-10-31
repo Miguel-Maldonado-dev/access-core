@@ -5,7 +5,8 @@ Sigue el contrato real de `/api/device/v1` (cloud/src/lib/device/{contract,chang
   hay más, o la del último cambio devuelto si `has_more`.
 - POST /changes: valida cada cambio como `pushItemSchema` (data estricta por tabla) y responde
   `{revision, results}`; un resultado que no es `applied` lleva `current` (`{data}` o null).
-- POST /logs valida como `logItemSchema`; GET /checksums, GET /snapshot y POST /alerts (204).
+- POST /logs valida como `logItemSchema` (una lista vacía solo marca la hora de la subida);
+  GET /checksums, GET /snapshot, POST /alerts (204) y POST /command-result (204).
 Guarda revisiones como `installations.revision`: cada escritura sube la revisión.
 """
 import json
@@ -130,7 +131,9 @@ class FakeCloud:
         self.requests = []      # (method, path, params, body)
         self.pushed = []        # cada lote de POST /changes
         self.logs = []
+        self.logs_uploads = 0
         self.alerts = []
+        self.command_results = []
         self.after_checksums = None  # callable() que corre después de responder /checksums
 
     # --- estado de la nube ------------------------------------------------------------------
@@ -200,6 +203,12 @@ class FakeCloud:
             assert body["type"] == "mass_delete_blocked" and body["table"] in ("holders", "cards")
             self.alerts.append(body)
             return httpx.Response(204)
+        if route == ("POST", "/command-result"):
+            assert set(body) == {"command_id", "ok", "detail"}
+            assert _uuid(body["command_id"]) and isinstance(body["ok"], bool)
+            assert body["detail"] is None or isinstance(body["detail"], str)
+            self.command_results.append(body)
+            return httpx.Response(204)
         return httpx.Response(404, json={"code": "not_found", "message": "Ruta desconocida"})
 
     def _changes(self, since, limit):
@@ -252,8 +261,10 @@ class FakeCloud:
         return {"revision": self.revision, "results": results}
 
     def _logs(self, logs):
-        assert 1 <= len(logs) <= 500
+        assert len(logs) <= 500
         for log in logs:
             check_log(log)
         self.logs.extend(logs)
-        return {"accepted": len(logs), "last_local_log_id": max(l["local_log_id"] for l in logs)}
+        self.logs_uploads += 1   # cada POST /logs, aunque venga vacío, actualiza logs_uploaded_at
+        last = max((l["local_log_id"] for l in logs), default=None)
+        return {"accepted": len(logs), "last_local_log_id": last}

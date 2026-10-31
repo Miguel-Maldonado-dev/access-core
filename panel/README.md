@@ -26,7 +26,10 @@ ADMIN_PASSWORD=cambia-esto
 SESSION_SECRET=una-cadena-larga-y-aleatoria
 DB_PATH=data/access_control.sqlite
 CORS_ORIGINS=http://localhost:3000
+DAEMON_SOCKET=data/daemon.sock
 ```
+
+`DAEMON_SOCKET` es el socket Unix del daemon (ver "Probar una salida"). En la Mac `/run/acceso` no existe, así que apúntalo a una ruta que puedas escribir, como `data/daemon.sock`; el daemon y la web deben usar la misma.
 
 Procesos (cada uno en su terminal, desde `panel/backend`):
 
@@ -141,6 +144,15 @@ Notas de la versión con preparación para la nube (esquema v6):
 - Las salidas tienen un **alias** opcional (hasta 40 caracteres), por ejemplo "Pluma vehicular", que se edita en la página Salidas.
 - Una pestaña del panel abierta antes de actualizar sigue funcionando: si no manda alias, la salida conserva el que tiene.
 
+## Probar una salida
+
+La página **Salidas** tiene un botón **Probar** en cada salida: activa ese relevador durante su duración configurada, sin validar titulares ni permisos. Sirve para revisar el cableado, y también funciona con salidas deshabilitadas. Avisa "Salida activada" o el error, y cada prueba queda en los logs con el origen **Prueba** (`credential_label` "Prueba — web local"). Una segunda prueba mientras la salida sigue activa se rechaza con "La salida ya se está probando".
+
+- **Cómo funciona:** el daemon es el único dueño del puerto serie, así que la web (`POST /api/outputs/{id}/test`) y el agente `acceso-cloud` (cuando la prueba se pide desde la plataforma) le piden la prueba por un **socket Unix**, `DAEMON_SOCKET` (`/run/acceso/daemon.sock` por omisión; modo 0600, dueño `acceso`). Lo crea el daemon al arrancar, en el directorio que systemd prepara con `RuntimeDirectory=acceso` en `acceso-daemon.service`.
+- **Si el daemon no corre**, la web responde 503 "El daemon no responde".
+- **Al actualizar una placa ya instalada** hay que reinstalar el paquete (`sudo ./deploy/install.sh`): el `RuntimeDirectory` viene en el servicio nuevo. Reiniciar los servicios con el paquete anterior no basta.
+- **Hora correcta:** las pruebas pedidas desde la nube caducan a los 10 s según el reloj del panel, así que debe estar sincronizado por NTP (`timedatectl`; `install.sh` lo habilita).
+
 ## Servicio `acceso-cloud` (plataforma en la nube)
 
 `acceso-cloud` es un servicio systemd aparte, que `install.sh` instala y arranca junto con `acceso-daemon` y `acceso-web`. Sincroniza la base del panel con la plataforma en la nube (`cloud/` del repositorio): se registra, se vincula a una instalación, sube los cambios que haces en el panel, baja los que se hacen en la nube y sube los logs de acceso. Escucha avisos por MQTT para sincronizar al instante y, si el broker no responde, sigue sincronizando por HTTPS cada 5 minutos. **El panel nunca depende de la nube para abrir**: el daemon y la autorización local no cambian, y con `acceso-cloud` detenido o sin internet todo funciona igual.
@@ -153,6 +165,7 @@ MQTT_URL=mqtts://mqtt.ejemplo.com:8883      # el broker EMQX (siempre con TLS)
 ```
 
 - En la primera instalación se pueden dar por entorno: `sudo CLOUD_URL=https://app.ejemplo.com MQTT_URL=mqtts://mqtt.ejemplo.com:8883 ./deploy/install.sh`. `install.sh` los guarda solo si `/etc/acceso/cloud.env` no existe; después se editan a mano (`sudo nano /etc/acceso/cloud.env`) y se reinicia: `sudo systemctl restart acceso-cloud`.
+- Además de sincronizar, el agente atiende dos órdenes de la nube por MQTT (`acc/<código>/cmd`): `upload_logs` (el botón "Actualizar logs": sube los logs pendientes al momento) y `test_output` (la prueba de una salida, que pasa al daemon por el socket y cuyo resultado informa por HTTPS a `/api/device/v1/command-result`).
 - Sin `CLOUD_URL` el agente queda inactivo y la página **Nube** lo indica en "Último error". Sin `MQTT_URL` sincroniza solo por el intervalo.
 - Para pruebas existe la variable opcional `SYNC_INTERVAL_S` (segundos entre sincronizaciones periódicas; 300 por omisión). No hace falta en producción.
 
@@ -201,4 +214,5 @@ timedatectl                        # zona America/Mexico_City y reloj sincroniza
 - [ ] 6. Presionar el botón de salida: el log aparece sin ningún comando.
 - [ ] 7. Ejecutar `systemctl stop acceso-web`: las tarjetas siguen abriendo.
 - [ ] 8. Desconectar y reconectar la PCB: el daemon se recupera solo.
-- [ ] 9. Reiniciar la placa: los dos servicios arrancan solos.
+- [ ] 9. Reiniciar la placa: los tres servicios (`acceso-daemon`, `acceso-web` y `acceso-cloud`) arrancan solos.
+- [ ] 10. Salidas → **Probar**: el relevador abre y el log aparece con el origen "Prueba".

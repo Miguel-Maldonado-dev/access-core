@@ -39,6 +39,9 @@ GUARDED_TABLES = (("holders", "titulares"), ("cards", "tarjetas"))
 RELATED_MISSING = "relacionado no existe"
 # Rechazo por llave única. En el alta de un titular es su PIN: se quita el PIN y se reintenta.
 DUPLICATE = "duplicado"
+# Rechazo informativo: la nube fusionó el botón nuevo con uno vivo del mismo titular. El panel
+# borra su copia (`current: null`) y recibe el de la nube en el siguiente pull; no es un error.
+MERGED = "fusionado"
 DUPLICATE_PIN_MESSAGE = ("La nube rechazó el titular nuevo «%s»: su PIN ya lo usa otro titular. Se quitó el"
                          " PIN en el panel y el titular se sube sin PIN; asígnale otro.")
 _NAME_MAX = 60
@@ -191,8 +194,11 @@ class SyncEngine:
                 item, entry = items[change_id], entries[change_id]
                 if result.get("status") == "rejected":
                     reason = str(result.get("reason") or "sin motivo")[:_REASON_MAX]
-                    set_state(conn, "last_error",
-                              "La nube rechazó un cambio de %s: %s" % (item["table"], reason))
+                    if reason == MERGED:
+                        log.info("La nube fusionó un cambio de %s con un registro existente", item["table"])
+                    else:
+                        set_state(conn, "last_error",
+                                  "La nube rechazó un cambio de %s: %s" % (item["table"], reason))
                     if reason == RELATED_MISSING:
                         _requeue(conn, entry["table_name"], entry["op"], entry["row_uuid"], entry["updated_at"])
                         continue
@@ -395,8 +401,12 @@ class SyncEngine:
 
     # --- logs ---------------------------------------------------------------------------------
 
-    def upload_logs(self) -> int:
-        """Sube los logs nuevos desde `last_log_uploaded` en lotes de LOG_BATCH. Devuelve cuántos."""
+    def upload_logs(self, *, always_post: bool = False) -> int:
+        """Sube los logs nuevos desde `last_log_uploaded` en lotes de LOG_BATCH. Devuelve cuántos.
+
+        Con `always_post` (orden «Actualizar logs» de la nube) y sin logs pendientes, envía una lista
+        vacía: así la nube sabe que el panel ya respondió y actualiza la hora de su última subida.
+        """
         total = 0
         with self._connect() as conn:
             while True:
@@ -415,6 +425,8 @@ class SyncEngine:
                 total += len(rows)
                 if len(rows) < LOG_BATCH:
                     break
+        if always_post and total == 0:
+            self._api.post_logs([])
         return total
 
     @staticmethod

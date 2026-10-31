@@ -13,6 +13,11 @@ en cualquier llamada autenticada es una revocación: se borran las credenciales,
 vinculación y se vuelve a `unlinked` sin tocar los datos locales. Un 401 sin ese código no viene de la
 nube (proxy, portal cautivo): se trata como un error de red.
 
+Órdenes de la nube por MQTT: `upload_logs` sube los logs en el siguiente tick (sin push ni pull; varias
+órdenes seguidas dan una sola subida) y `test_output` pasa al worker de órdenes, que corre en su propio
+hilo con su propia CloudApi (CloudApi no es segura entre hilos). El worker se crea al tener credencial y
+se detiene al revocar o al cerrar.
+
 Los errores se registran sin tumbar el proceso y nunca con secretos: de una excepción inesperada solo
 se registra su tipo, y los mensajes de CloudError, SyncBlocked e InvalidChange ya están en español y
 sin datos sensibles.
@@ -23,6 +28,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
+from functools import partial
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
@@ -92,20 +98,24 @@ def _is_revocation(exc: BaseException) -> bool:
 class Runner:
     def __init__(self, settings: CloudSettings, db_path: Union[str, Path], api: CloudApi,
                  engine_factory: Callable[[Path, CloudApi], Any],
-                 mqtt_factory: Callable[[CloudSettings, str, str, Callable[[int], None]], Any],
+                 mqtt_factory: Callable[..., Any],
                  clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
-                 wall: Callable[[], float] = time.time):
+                 wall: Callable[[], float] = time.time,
+                 command_worker_factory: Optional[Callable[[CloudApi], Any]] = None):
         self._settings = settings
         self._db_path = Path(db_path)
         self._api = api
         self._engine_factory = engine_factory
         self._mqtt_factory = mqtt_factory
+        self._command_worker_factory = command_worker_factory
         self._clock = clock
         self._sleep = sleep
         self._wall = wall
         self._engine = None  # type: Optional[Any]
         self._link = None  # type: Optional[Any]
+        self._worker = None  # type: Optional[Any]
+        self._worker_api = None  # type: Optional[CloudApi]
         self._credentials = None  # type: Optional[Tuple[str, str]]
         self._state = UNLINKED
         self._adopted = False
@@ -113,8 +123,10 @@ class Runner:
         self._next_sync = _NEVER
         self._next_outbox_check = _NEVER
         self._next_mqtt = _NEVER
+        self._next_worker = _NEVER
         self._outbox_seen = 0
         self._notice = 0
+        self._logs_requested = False
         self._notice_lock = threading.Lock()
 
     # --- ciclo de vida -----------------------------------------------------------------------
@@ -151,6 +163,7 @@ class Runner:
 
     def close(self) -> None:
         self._stop_link()
+        self._stop_worker()
 
     def tick(self) -> None:
         """Hace lo que esté vencido. Nunca lanza: un error se registra y se anota en `last_error`."""
@@ -172,6 +185,7 @@ class Runner:
                 self._note_error("Falta configurar CLOUD_URL en %s." % self._settings.credentials_path)
             return
         self._ensure_link(now)
+        self._ensure_worker(now)
         if self._state == UNLINKED:
             self._unlinked(now)
         elif self._state == STAGING:
@@ -239,6 +253,7 @@ class Runner:
     def _revoke(self) -> None:
         log.warning("La plataforma desvinculó este panel: se regresa a «sin vincular» con un código nuevo")
         self._stop_link()
+        self._stop_worker()
         try:
             clear_credentials(self._settings.credentials_path)
         except ConfigError as exc:
@@ -362,8 +377,12 @@ class Runner:
             self._adopted = True
             self._put("last_reconcile_at", str(int(self._wall())))  # adoptar cuenta como reconciliar
             self._next_sync = _NEVER
+        logs_requested = self._take_logs_request()
         if self._cycle_due(now):
-            self._run_cycle()
+            # El ciclo ya sube los logs: la orden solo hace que avise aunque no haya pendientes.
+            self._run_cycle(always_post=logs_requested)
+        elif logs_requested:
+            self._upload_logs_now()
 
     def _cycle_due(self, now: float) -> bool:
         due = now >= self._next_sync
@@ -387,8 +406,11 @@ class Runner:
         with self._db() as conn:
             return conn.execute("SELECT COALESCE(MAX(seq), 0) FROM sync_outbox").fetchone()[0]
 
-    def _run_cycle(self) -> None:
-        """push -> pull -> (reconcile si toca) -> upload_logs. Cada paso con su manejo de errores."""
+    def _run_cycle(self, always_post: bool = False) -> None:
+        """push -> pull -> (reconcile si toca) -> upload_logs. Cada paso con su manejo de errores.
+
+        `always_post` (orden «Actualizar logs») hace que la subida de logs avise a la nube aunque no
+        haya logs pendientes."""
         # Lo que ya estaba en la bandeja no cuenta como "nuevo": una entrada atascada no repite el ciclo.
         # La marca se renueva justo después del push (ver abajo) para que tampoco cuenten las entradas
         # que el propio push vuelve a encolar («relacionado no existe»): se reintentan en el siguiente
@@ -399,21 +421,17 @@ class Runner:
         steps = [("Subida de cambios", engine.push, "push"), ("Descarga de cambios", engine.pull, None)]
         if self._reconcile_due():
             steps.append(("Reconciliación", engine.reconcile, "reconcile"))
-        steps.append(("Subida de logs", engine.upload_logs, None))
+        upload = partial(engine.upload_logs, always_post=True) if always_post else engine.upload_logs
+        steps.append(("Subida de logs", upload, None))
         errors = []  # type: List[str]
         for label, step, kind in steps:
             try:
                 step()
-            except CloudError as exc:
-                if exc.status == 409 and exc.code == "not_active":
-                    self._resync_state()  # el panel dejó de estar activo en la nube
-                    return
-                if _is_revocation(exc):
-                    self._revoke()
-                    return
-                errors.append(_describe(label, exc))
             except Exception as exc:
-                errors.append(_describe(label, exc))
+                text = self._cloud_step_failed(label, exc)
+                if text is None:
+                    return
+                errors.append(text)
             else:
                 if kind == "reconcile":
                     self._put("last_reconcile_at", str(int(self._wall())))
@@ -424,6 +442,30 @@ class Runner:
             for text in errors:
                 log.warning("%s", text)
             self._merge_error(errors)
+
+    def _upload_logs_now(self) -> None:
+        """Orden «Actualizar logs» de la nube fuera del ciclo: solo la subida de logs, con el mismo
+        manejo de errores y revocación que el ciclo. No borra `last_error` del último ciclo."""
+        try:
+            self._engine.upload_logs(always_post=True)
+        except Exception as exc:
+            text = self._cloud_step_failed("Subida de logs", exc)
+            if text is not None:
+                log.warning("%s", text)
+                self._merge_error([text])
+
+    def _cloud_step_failed(self, label: str, exc: BaseException) -> Optional[str]:
+        """Manejo común de la falla de un paso del ciclo activo. Un 409 `not_active` (el panel dejó de
+        estar activo en la nube) consulta link_state y un 401 de la nube revoca: en ambos casos
+        devuelve None y el llamador abandona lo que hacía. Si no, devuelve el texto del error."""
+        if isinstance(exc, CloudError):
+            if exc.status == 409 and exc.code == "not_active":
+                self._resync_state()
+                return None
+            if _is_revocation(exc):
+                self._revoke()
+                return None
+        return _describe(label, exc)
 
     def _reconcile_due(self) -> bool:
         """Vence según la hora de pared guardada (sobrevive a reinicios). Sin registro, o con un
@@ -450,13 +492,30 @@ class Runner:
         with self._notice_lock:
             self._notice = max(self._notice, revision)
 
+    def _take_logs_request(self) -> bool:
+        with self._notice_lock:
+            requested, self._logs_requested = self._logs_requested, False
+        return requested
+
+    def _command(self, body: Dict[str, Any]) -> None:
+        """Orden de la nube (hilo de MQTT). `upload_logs` solo levanta una bandera que atiende el
+        siguiente tick; `test_output` va al worker, y solo con el panel activo."""
+        kind = body.get("type")
+        if kind == "upload_logs":
+            with self._notice_lock:
+                self._logs_requested = True
+        elif kind == "test_output":
+            worker = self._worker
+            if self._state == ACTIVE and worker is not None:
+                worker.submit(body)
+
     def _ensure_link(self, now: float) -> None:
         if (self._state == UNLINKED or self._credentials is None or self._link is not None
                 or not self._settings.mqtt_url or now < self._next_mqtt):
             return
         code, token = self._credentials
         try:
-            link = self._mqtt_factory(self._settings, code, token, self._notify)
+            link = self._mqtt_factory(self._settings, code, token, self._notify, on_command=self._command)
             link.start()
         except ConfigError as exc:
             self._next_mqtt = now + SYNC_INTERVAL_S
@@ -477,3 +536,34 @@ class Runner:
             link.stop()
         except Exception as exc:
             log.warning("No se pudo cerrar el enlace MQTT (%s)", type(exc).__name__)
+
+    # --- worker de órdenes ---------------------------------------------------------------------
+
+    def _ensure_worker(self, now: float) -> None:
+        """Crea el worker con una CloudApi propia, autenticada con la credencial vigente."""
+        # Las órdenes solo llegan por MQTT: sin MQTT_URL no hace falta el worker.
+        if (self._command_worker_factory is None or self._state == UNLINKED or self._credentials is None
+                or not self._settings.mqtt_url or self._worker is not None or now < self._next_worker):
+            return
+        api = CloudApi(self._settings.cloud_url)
+        try:
+            api.authenticate(*self._credentials)
+            worker = self._command_worker_factory(api)
+            worker.start()
+        except Exception as exc:
+            api.close()
+            self._next_worker = now + SYNC_INTERVAL_S
+            log.warning("No se pudo iniciar el worker de órdenes de la nube (%s)", type(exc).__name__)
+            return
+        self._worker, self._worker_api = worker, api
+
+    def _stop_worker(self) -> None:
+        worker, self._worker = self._worker, None
+        api, self._worker_api = self._worker_api, None
+        if worker is not None:
+            try:
+                worker.stop()
+            except Exception as exc:
+                log.warning("No se pudo detener el worker de órdenes (%s)", type(exc).__name__)
+        if api is not None:
+            api.close()

@@ -83,7 +83,7 @@ def settings(mqtt_url="mqtts://mqtt.example.com:8883"):
     return CloudSettings("https://nube.example.com", mqtt_url, Path("/tmp/no-se-usa.env"))
 
 
-def make_link(on_sync=None, mqtt_url="mqtts://mqtt.example.com:8883"):
+def make_link(on_sync=None, mqtt_url="mqtts://mqtt.example.com:8883", on_command=None):
     clients = []
 
     def factory(*args, **kwargs):
@@ -91,7 +91,8 @@ def make_link(on_sync=None, mqtt_url="mqtts://mqtt.example.com:8883"):
         return clients[-1]
 
     received = []
-    link = MqttLink(settings(mqtt_url), CODE, TOKEN, on_sync or received.append, client_factory=factory)
+    link = MqttLink(settings(mqtt_url), CODE, TOKEN, on_sync or received.append, on_command=on_command,
+                    client_factory=factory)
     return link, clients, received
 
 
@@ -179,6 +180,55 @@ def test_other_messages_are_ignored(message):
     link.start()
     clients[0].on_message(clients[0], None, message)
     assert received == []
+
+
+TEST_OUTPUT = {"type": "test_output", "command_id": "8f0c2a5e-1d2b-4c3d-9e4f-5a6b7c8d9e0f", "output": 1,
+               "requested_by": "ana@example.com", "expires_at": "2027-01-15T08:00:10.000Z"}
+
+
+@pytest.mark.parametrize("payload", [{"type": "upload_logs"}, TEST_OUTPUT])
+def test_command_messages_reach_on_command_with_their_body(payload):
+    commands = []
+    link, clients, received = make_link(on_command=commands.append)
+    link.start()
+    clients[0].on_message(clients[0], None, FakeMessage(CMD, payload))
+    assert commands == [payload] and received == []
+
+
+def test_unknown_types_do_not_reach_on_command_and_sync_still_reaches_on_sync():
+    commands = []
+    link, clients, received = make_link(on_command=commands.append)
+    link.start()
+    for payload in ({"type": "open_door", "output": 1}, {"type": 5}, {"output": 1},
+                    {"type": "sync", "revision": 9}):
+        clients[0].on_message(clients[0], None, FakeMessage(CMD, payload))
+    assert commands == [] and received == [9]
+
+
+def test_command_messages_are_ignored_without_on_command():
+    link, clients, received = make_link()
+    link.start()
+    clients[0].on_message(clients[0], None, FakeMessage(CMD, {"type": "upload_logs"}))
+    assert received == []
+
+
+def test_command_messages_on_another_topic_are_ignored():
+    commands = []
+    link, clients, _ = make_link(on_command=commands.append)
+    link.start()
+    clients[0].on_message(clients[0], None, FakeMessage("acc/PNL-9999-9999/cmd", {"type": "upload_logs"}))
+    assert commands == []
+
+
+def test_a_failing_on_command_only_logs_the_exception_type(caplog):
+    def explode(body):
+        raise RuntimeError("detalle con %s" % TOKEN)
+
+    link, clients, _ = make_link(on_command=explode)
+    link.start()
+    with caplog.at_level(logging.DEBUG):
+        clients[0].on_message(clients[0], None, FakeMessage(CMD, {"type": "upload_logs"}))
+    assert "RuntimeError" in caplog.text and TOKEN not in caplog.text
 
 
 def test_a_failing_on_sync_does_not_break_the_mqtt_thread(caplog):

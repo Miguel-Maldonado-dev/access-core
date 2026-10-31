@@ -90,11 +90,16 @@ export async function requireHolder(supabase: SupabaseClient, installationId: st
 interface ErrorBase {
   code?: string;
   message?: string;
+  details?: string | null;
 }
 
-/** Choque de la restricción de unicidad con ese nombre (23505). */
+/**
+ * Choque de la restricción de unicidad con ese nombre (23505). Un índice único lo nombra en
+ * el mensaje; un trigger que lanza unique_violation lo pone en `details`, porque PostgREST
+ * no expone el campo `constraint`.
+ */
 export function isUniqueViolation(error: ErrorBase | null, restriccion: string): boolean {
-  return error?.code === "23505" && (error.message ?? "").includes(restriccion);
+  return error?.code === "23505" && [error.message, error.details].some((t) => (t ?? "").includes(restriccion));
 }
 
 /** Una fila viva apuntaba a un titular o control borrado entre la comprobación y la escritura (23503). */

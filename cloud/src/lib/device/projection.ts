@@ -17,8 +17,10 @@ import type {
 
 /**
  * Proyección de las tablas de la nube a las tablas locales de UN panel:
- * - holders, cards, controls → igual (el PIN se descifra);
- * - control_buttons → `output_id` = `output_index`;
+ * - holders y cards → igual (el PIN se descifra);
+ * - control_buttons → solo los botones vivos con vínculo vivo con ESE panel, con
+ *   `output_id` = `output_index` de ese vínculo;
+ * - controls → solo los visibles para ESE panel (ver `visibleToPanel`);
  * - access_profiles + la regla viva de ESE panel → permissions (`id` = id del perfil;
  *   sin regla, todas las máscaras en 0);
  * - holder_profiles → holder_permissions (`permission_id` = `local_permission_id`);
@@ -32,6 +34,7 @@ export type SourceTable =
   | "cards"
   | "controls"
   | "control_buttons"
+  | "control_button_panels"
   | "access_profiles"
   | "profile_panel_rules"
   | "holder_profiles"
@@ -63,6 +66,10 @@ export interface ControlButtonRow {
   control_id: string;
   button: number;
   rf_code: number;
+}
+export interface ButtonLinkRow {
+  id: string;
+  button_id: string;
   output_index: number | null;
 }
 export interface ProfileRow {
@@ -101,7 +108,8 @@ export const SOURCE_COLUMNS: Readonly<Record<SourceTable, string>> = {
   holders: "id, kind, name, department, address, notes, pin_ciphertext",
   cards: "id, card_code, holder_id, description",
   controls: "id, holder_id, description",
-  control_buttons: "id, control_id, button, rf_code, output_index",
+  control_buttons: "id, control_id, button, rf_code",
+  control_button_panels: "id, button_id, output_index",
   access_profiles: "id, name, local_permission_id",
   profile_panel_rules:
     "id, profile_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, weekday_mask, start_minute, end_minute",
@@ -110,7 +118,11 @@ export const SOURCE_COLUMNS: Readonly<Record<SourceTable, string>> = {
 };
 
 /** Tablas de origen con filas por panel (se filtran también por `panel_id`). */
-export const PANEL_SOURCES: ReadonlySet<SourceTable> = new Set(["profile_panel_rules", "outputs"]);
+export const PANEL_SOURCES: ReadonlySet<SourceTable> = new Set([
+  "profile_panel_rules",
+  "outputs",
+  "control_button_panels",
+]);
 
 // ---------------------------------------------------------------------------
 // Proyección de una fila (funciones puras)
@@ -135,12 +147,13 @@ export function projectControl(row: ControlRow): ControlData {
   return { holder_id: row.holder_id, description: row.description };
 }
 
-export function projectControlButton(row: ControlButtonRow): ControlButtonData {
+/** Botón para un panel: `outputIndex` es la salida de su vínculo con ese panel. */
+export function projectControlButton(row: ControlButtonRow, outputIndex: number | null): ControlButtonData {
   return {
     control_id: row.control_id,
     button: row.button,
     rf_code: row.rf_code,
-    output_id: row.output_index,
+    output_id: outputIndex,
   };
 }
 
@@ -230,6 +243,73 @@ export interface PermissionContext {
   rulesByProfile: Map<string, RuleRow>;
 }
 
+/**
+ * Lo que hace falta para decidir qué controles y botones recibe un panel: los controles y
+ * los botones vivos (de la instalación o de un control) y la salida de cada vínculo vivo
+ * de esos botones con ESE panel.
+ */
+export interface ControlContext {
+  controls: Map<string, ControlRow>;
+  buttons: Map<string, ControlButtonRow>;
+  buttonsByControl: Map<string, ControlButtonRow[]>;
+  outputByButton: Map<string, number | null>;
+}
+
+function buildControlContext(
+  controles: ControlRow[],
+  botones: ControlButtonRow[],
+  vinculos: ButtonLinkRow[],
+): ControlContext {
+  const buttonsByControl = new Map<string, ControlButtonRow[]>();
+  for (const b of botones) {
+    const lista = buttonsByControl.get(b.control_id);
+    if (lista) lista.push(b);
+    else buttonsByControl.set(b.control_id, [b]);
+  }
+  return {
+    controls: new Map(controles.map((c) => [c.id, c])),
+    buttons: new Map(botones.map((b) => [b.id, b])),
+    buttonsByControl,
+    outputByButton: new Map(vinculos.map((v) => [v.button_id, v.output_index])),
+  };
+}
+
+/** Controles y botones vivos de la instalación, con los vínculos vivos del panel. */
+export async function loadControlContext(admin: SupabaseClient, panel: Panel): Promise<ControlContext> {
+  const [controles, botones, vinculos] = await Promise.all([
+    fetchSourceRows<ControlRow>(admin, panel, "controls"),
+    fetchSourceRows<ControlButtonRow>(admin, panel, "control_buttons"),
+    fetchSourceRows<ButtonLinkRow>(admin, panel, "control_button_panels"),
+  ]);
+  return buildControlContext(controles, botones, vinculos);
+}
+
+/** El control no tiene botones vivos. */
+export function hasNoLiveButtons(ctx: ControlContext, controlId: string): boolean {
+  return (ctx.buttonsByControl.get(controlId) ?? []).length === 0;
+}
+
+/**
+ * El panel recibe el control: está vivo y tiene algún botón vivo vinculado al panel, o no
+ * tiene ningún botón vivo (spec §3.2).
+ */
+export function isControlVisible(ctx: ControlContext, controlId: string): boolean {
+  if (!ctx.controls.has(controlId)) return false;
+  const botones = ctx.buttonsByControl.get(controlId) ?? [];
+  return botones.length === 0 || botones.some((b) => ctx.outputByButton.has(b.id));
+}
+
+/**
+ * El botón para el panel, o `null` si no lo recibe: debe estar vivo, tener vínculo vivo con
+ * el panel y su control vivo (las lecturas del contexto no son atómicas entre tablas: un
+ * control borrado entre lecturas no deja al panel con un botón sin padre).
+ */
+export function buttonForPanel(ctx: ControlContext, buttonId: string): ControlButtonData | null {
+  const boton = ctx.buttons.get(buttonId);
+  if (!boton || !ctx.outputByButton.has(buttonId) || !ctx.controls.has(boton.control_id)) return null;
+  return projectControlButton(boton, ctx.outputByButton.get(buttonId) ?? null);
+}
+
 /** Todos los perfiles de la instalación del panel (también los borrados), por id. */
 export async function loadProfiles(admin: SupabaseClient, panel: Panel): Promise<Map<string, ProfileRow>> {
   const perfiles = await fetchSourceRows<ProfileRow>(admin, panel, "access_profiles", { includeDeleted: true });
@@ -273,6 +353,58 @@ async function fetchSourceRow<T>(
   return data;
 }
 
+/**
+ * El vínculo vivo de un botón con el panel (con su salida), o `null` si el panel no lo
+ * recibe.
+ */
+async function fetchButtonLink(
+  admin: SupabaseClient,
+  panel: Panel,
+  buttonId: string,
+): Promise<{ output_index: number | null } | null> {
+  const { data, error } = await admin
+    .from("control_button_panels")
+    .select("output_index")
+    .eq("installation_id", panel.installation_id)
+    .eq("panel_id", panel.id)
+    .eq("button_id", buttonId)
+    .is("deleted_at", null)
+    .maybeSingle<{ output_index: number | null }>();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * El panel recibe ese control: está vivo y tiene algún botón vivo con vínculo vivo con el
+ * panel, o no tiene ningún botón vivo. Misma regla que el snapshot y el feed.
+ */
+export async function visibleToPanel(admin: SupabaseClient, panel: Panel, controlId: string): Promise<boolean> {
+  const control = await fetchSourceRow<ControlRow>(admin, panel, "controls", controlId);
+  if (!control) return false;
+  const { data: botones, error } = await admin
+    .from("control_buttons")
+    .select(SOURCE_COLUMNS.control_buttons)
+    .eq("installation_id", panel.installation_id)
+    .eq("control_id", controlId)
+    .is("deleted_at", null)
+    .overrideTypes<ControlButtonRow[], { merge: false }>();
+  if (error) throw error;
+  let vinculos: ButtonLinkRow[] = [];
+  if (botones.length > 0) {
+    const r = await admin
+      .from("control_button_panels")
+      .select(SOURCE_COLUMNS.control_button_panels)
+      .eq("installation_id", panel.installation_id)
+      .eq("panel_id", panel.id)
+      .in("button_id", botones.map((b) => b.id))
+      .is("deleted_at", null)
+      .overrideTypes<ButtonLinkRow[], { merge: false }>();
+    if (r.error) throw r.error;
+    vinculos = r.data;
+  }
+  return isControlVisible(buildControlContext([control], botones, vinculos), controlId);
+}
+
 /** Perfil leído con `SOURCE_COLUMNS` (sin `deleted_at`). */
 type PerfilVivo = Omit<ProfileRow, "deleted_at">;
 
@@ -311,11 +443,14 @@ export async function liveRow(
     }
     case "controls": {
       const fila = await fetchSourceRow<ControlRow>(admin, panel, "controls", id);
-      return fila && projectControl(fila);
+      return fila && (await visibleToPanel(admin, panel, id)) ? projectControl(fila) : null;
     }
     case "control_buttons": {
+      // Sin vínculo vivo con el panel, el botón no existe para él.
       const fila = await fetchSourceRow<ControlButtonRow>(admin, panel, "control_buttons", id);
-      return fila && projectControlButton(fila);
+      if (!fila) return null;
+      const vinculo = await fetchButtonLink(admin, panel, id);
+      return vinculo && projectControlButton(fila, vinculo.output_index);
     }
     case "permissions": {
       const perfil = await fetchSourceRow<PerfilVivo>(admin, panel, "access_profiles", id);
@@ -340,6 +475,8 @@ const porId = (a: ContractRow, b: ContractRow) => (a.id < b.id ? -1 : a.id > b.i
 
 /**
  * Proyección viva de una tabla local para un panel (snapshot y checksum), ordenada por id.
+ * `controls` y `control_buttons`: solo lo que recibe el panel (`isControlVisible` y
+ * `buttonForPanel`), con la salida del vínculo de cada botón con el panel.
  * `permissions`: una fila por perfil vivo, con la regla viva de ese panel o máscaras en 0.
  * `holder_permissions`: los holder_profiles vivos.
  */
@@ -358,18 +495,22 @@ export async function liveRows(admin: SupabaseClient, panel: Panel, table: Table
         data: projectCard(r),
       }));
       break;
-    case "controls":
-      filas = (await fetchSourceRows<ControlRow>(admin, panel, "controls")).map((r) => ({
-        id: r.id,
-        data: projectControl(r),
-      }));
+    case "controls": {
+      const ctx = await loadControlContext(admin, panel);
+      filas = [...ctx.controls.values()]
+        .filter((c) => isControlVisible(ctx, c.id))
+        .map((c) => ({ id: c.id, data: projectControl(c) }));
       break;
-    case "control_buttons":
-      filas = (await fetchSourceRows<ControlButtonRow>(admin, panel, "control_buttons")).map((r) => ({
-        id: r.id,
-        data: projectControlButton(r),
-      }));
+    }
+    case "control_buttons": {
+      const ctx = await loadControlContext(admin, panel);
+      filas = [];
+      for (const id of ctx.buttons.keys()) {
+        const data = buttonForPanel(ctx, id);
+        if (data) filas.push({ id, data });
+      }
       break;
+    }
     case "permissions": {
       const c = await loadPermissionContext(admin, panel);
       filas = [...c.profiles.values()]

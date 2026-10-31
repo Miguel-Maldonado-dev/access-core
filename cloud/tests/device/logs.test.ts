@@ -115,6 +115,16 @@ describe("logs, alertas y confirmación de borrados", () => {
     return data;
   }
 
+  async function subidaDe(panel: PanelPrueba): Promise<string | null> {
+    const { data, error } = await admin
+      .from("panels")
+      .select("logs_uploaded_at")
+      .eq("id", panel.id)
+      .single<{ logs_uploaded_at: string | null }>();
+    if (error) throw error;
+    return data.logs_uploaded_at;
+  }
+
   const enviar = (panel: PanelPrueba, logs: unknown[]) => postLogs(peticion("logs", panel, { logs }));
   const alerta = (panel: PanelPrueba, cuerpo: unknown) => postAlerts(peticion("alerts", panel, cuerpo));
 
@@ -288,9 +298,8 @@ describe("logs, alertas y confirmación de borrados", () => {
       expect((await filasDe(panelA)).some((f) => f.local_log_id === 5000)).toBe(false);
     });
 
-    it("rechaza con 400 un lote vacío, tipos o rangos inválidos y fechas que no son ISO-8601", async () => {
+    it("rechaza con 400 tipos o rangos inválidos y fechas que no son ISO-8601", async () => {
       const malos: unknown[][] = [
-        [],
         [log(70, { timestamp: "ayer" })],
         [log(70, { timestamp: "2026-10-01" })],
         [log(70, { allowed: 1 })],
@@ -324,8 +333,45 @@ describe("logs, alertas y confirmación de borrados", () => {
       expect(res2.status).toBe(400);
     });
 
+    it("una lista vacía responde {accepted: 0} y marca logs_uploaded_at sin guardar filas", async () => {
+      const { error } = await admin.from("panels").update({ logs_uploaded_at: null }).eq("id", panelA2.id);
+      if (error) throw error;
+      const filasAntes = (await filasDe(panelA2)).length;
+      const antes = Date.now();
+      const res = await enviar(panelA2, []);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ accepted: 0, last_local_log_id: 0 });
+      const subida = await subidaDe(panelA2);
+      expect(subida).not.toBeNull();
+      expect(Date.parse(subida!)).toBeGreaterThanOrEqual(antes - 1000);
+      expect(Date.parse(subida!)).toBeLessThanOrEqual(Date.now() + 1000);
+      expect(await filasDe(panelA2)).toHaveLength(filasAntes);
+    });
+
+    it("cada lote con logs también actualiza logs_uploaded_at", async () => {
+      const { error } = await admin
+        .from("panels")
+        .update({ logs_uploaded_at: "2026-01-01T00:00:00.000Z" })
+        .eq("id", panelA.id);
+      if (error) throw error;
+      const antes = Date.now();
+      expect((await enviar(panelA, [log(90)])).status).toBe(200);
+      expect(Date.parse((await subidaDe(panelA))!)).toBeGreaterThanOrEqual(antes - 1000);
+    });
+
+    it("un log de prueba de salida (source 5) se guarda", async () => {
+      const res = await enviar(panelA, [
+        log(95, { source: 5, reason: 0, holder_id: null, holder_name: null, holder_kind: null,
+                  credential_label: "Prueba — tecnico@test.local", code: null, device_id: null, output_id: 2 }),
+      ]);
+      expect(res.status).toBe(200);
+      const f = (await filasDe(panelA)).find((x) => x.local_log_id === 95)!;
+      expect(f).toMatchObject({ source: 5, reason: 0, credential_label: "Prueba — tecnico@test.local", output_index: 2 });
+    });
+
     it("sin credencial responde 401 y con un panel que no está activo responde 409", async () => {
       expect((await postLogs(peticion("logs", undefined, { logs: [log(1)] }))).status).toBe(401);
+      expect((await postLogs(peticion("logs", undefined, { logs: [] }))).status).toBe(401);
       const res = await enviar(panelS, [log(1)]);
       expect(res.status).toBe(409);
       expect((await res.json()).code).toBe("not_active");

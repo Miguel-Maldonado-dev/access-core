@@ -1,12 +1,13 @@
 """Enlace MQTT del agente acceso-cloud: recibe avisos de la nube (`acc/<panel_code>/cmd`).
 
-MQTT es solo un aviso para sincronizar antes: si no conecta, la sincronización periódica sigue
-funcionando. Usuario MQTT = panel_code y contraseña = device_token (los verifica la nube por HTTP).
+Tipos de mensaje: `sync` (sincronizar antes) va a `on_sync`; `upload_logs` y `test_output` (órdenes)
+van a `on_command` con el cuerpo completo; cualquier otro se ignora. Si MQTT no conecta, la
+sincronización periódica sigue funcionando. Usuario MQTT = panel_code y contraseña = device_token (los verifica la nube por HTTP).
 El token nunca se registra. La conexión es siempre TLS (`mqtts://`).
 """
 import json
 import logging
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlsplit
 
 import paho.mqtt.client as paho
@@ -22,6 +23,7 @@ RECONNECT_S = 10
 PUBLISH_WAIT_S = 2.0
 # Aviso sin revisión válida: nunca se considera viejo.
 UNKNOWN_REVISION = 2 ** 63 - 1
+COMMAND_TYPES = frozenset(("upload_logs", "test_output"))
 
 
 def _parse_url(mqtt_url: str):
@@ -38,11 +40,13 @@ def _parse_url(mqtt_url: str):
 class MqttLink:
     def __init__(self, settings: CloudSettings, panel_code: str, token: str,
                  on_sync: Callable[[int], None],
+                 on_command: Optional[Callable[[Dict[str, Any]], None]] = None,
                  client_factory: Callable[..., Any] = paho.Client):
         self._host, self._port = _parse_url(settings.mqtt_url)
         self._panel_code = panel_code
         self._token = token
         self._on_sync = on_sync
+        self._on_command = on_command
         self._factory = client_factory
         self._client = None  # type: Optional[Any]
         self._connected = False
@@ -106,12 +110,16 @@ class MqttLink:
             body = json.loads(message.payload)
         except ValueError:  # incluye UnicodeDecodeError
             return
-        if not isinstance(body, dict) or body.get("type") != "sync":
+        if not isinstance(body, dict):
             return
-        revision = body.get("revision")
-        if isinstance(revision, bool) or not isinstance(revision, int):
-            revision = UNKNOWN_REVISION
+        kind = body.get("type")
         try:
-            self._on_sync(revision)
+            if kind == "sync":
+                revision = body.get("revision")
+                if isinstance(revision, bool) or not isinstance(revision, int):
+                    revision = UNKNOWN_REVISION
+                self._on_sync(revision)
+            elif isinstance(kind, str) and kind in COMMAND_TYPES and self._on_command is not None:
+                self._on_command(body)
         except Exception as exc:  # una falla del aviso no debe tumbar el hilo de MQTT
             log.warning("Falló el manejo de un aviso MQTT (%s)", type(exc).__name__)

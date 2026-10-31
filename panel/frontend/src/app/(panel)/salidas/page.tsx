@@ -29,6 +29,17 @@ export default function OutputsPage() {
     }
   }
 
+  async function test(id: number) {
+    setSaved("");
+    try {
+      const { detail } = await apiFetch<{ detail: string }>(`/api/outputs/${id}/test`, { method: "POST" });
+      setError("");
+      setSaved(detail);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ocurrió un error inesperado.");
+    }
+  }
+
   return (
     <div className="grid gap-6">
       <h1 className="text-2xl font-semibold">Salidas</h1>
@@ -44,7 +55,7 @@ export default function OutputsPage() {
       )}
       <div className="grid gap-4 lg:grid-cols-2">
         {outputs.map((o) => (
-          <OutputForm key={o.output_id} output={o} onSubmit={(p) => save(o.output_id, p)} />
+          <OutputForm key={o.output_id} output={o} onSubmit={(p) => save(o.output_id, p)} onTest={() => test(o.output_id)} />
         ))}
       </div>
     </div>

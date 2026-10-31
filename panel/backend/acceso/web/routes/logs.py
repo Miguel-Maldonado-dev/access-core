@@ -16,7 +16,7 @@ def list_(
     date_to: Optional[date] = None,
     holder_id: Optional[int] = None,
     allowed: Optional[bool] = None,
-    source: Optional[int] = Query(None, ge=0, le=3),
+    source: Optional[int] = Query(None, ge=0, le=5),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     conn=Depends(get_conn),

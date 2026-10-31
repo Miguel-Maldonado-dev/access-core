@@ -36,6 +36,39 @@ export function outputLabel(index: number | null): string {
   return index === null ? "Sin asignar" : `S${index + 1}`;
 }
 
+/** "Ninguna": el botón no tiene vínculo con ese panel (el panel no lo recibe). */
+export const NO_OUTPUT_LABEL = "Ninguna";
+/**
+ * "Sin salida": el panel tiene el botón pero no abre nada (vínculo con salida nula, lo crea
+ * un panel). En la interfaz solo se ofrece para conservar un vínculo así que ya existe.
+ */
+export const KEEP_NO_OUTPUT = "sin_salida";
+export const KEEP_NO_OUTPUT_LABEL = "Sin salida";
+
+/** Opción de salida en el selector de un panel: "S1" o "S1 · Pluma vehicular" si tiene alias. */
+export function outputOptionLabel(index: number, alias?: string | null): string {
+  const a = alias?.trim();
+  return a ? `${outputLabel(index)} · ${a}` : outputLabel(index);
+}
+
+/**
+ * Resumen de un botón de control en la lista: "Botón 1: 2001 → PNL-XXXX S1, PNL-YYYY —".
+ * Un panel sin vínculo muestra "—"; uno con vínculo sin salida, "sin salida".
+ */
+export function controlButtonSummary(
+  b: { button: number; rf_code: number; outputs: Record<string, number | null> },
+  panels: { id: string; panel_code: string }[],
+): string {
+  const base = `Botón ${b.button + 1}: ${b.rf_code}`;
+  if (panels.length === 0) return base;
+  const salidas = panels.map((p) => {
+    const o = b.outputs[p.id];
+    const salida = o === undefined ? "—" : o === null ? KEEP_NO_OUTPUT_LABEL.toLowerCase() : outputLabel(o);
+    return `${p.panel_code} ${salida}`;
+  });
+  return `${base} → ${salidas.join(", ")}`;
+}
+
 function cuenta(n: number, uno: string, varios: string): string {
   return `${n} ${n === 1 ? uno : varios}`;
 }

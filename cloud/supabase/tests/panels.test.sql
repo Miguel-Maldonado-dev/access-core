@@ -40,7 +40,8 @@ select ok((select relrowsecurity from pg_class where oid = 'public.panel_claim_a
 select columns_are('public', 'panels',
   array['id', 'panel_code', 'claim_code_hash', 'panel_secret_hash', 'device_token_hash', 'installation_id',
         'tenant_id', 'status', 'online', 'last_seen_at', 'software_version', 'schema_version',
-        'synced_revision', 'last_sync_at', 'sync_blocked', 'confirm_deletions_until', 'created_at', 'online_event_at'],
+        'synced_revision', 'last_sync_at', 'sync_blocked', 'confirm_deletions_until', 'created_at', 'online_event_at',
+        'logs_uploaded_at'],
   'panels tiene exactamente las columnas del contrato');
 select fk_ok('public', 'outputs', array['panel_id'], 'public', 'panels', array['id'],
   'outputs.panel_id es FK hacia panels(id)');

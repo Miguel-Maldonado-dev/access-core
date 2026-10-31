@@ -11,7 +11,11 @@ import { z } from "zod";
 /** Máximo de logs por lote de `POST /logs`. */
 export const LOG_BATCH = 500;
 
-/** Tamaño máximo de una página de `GET /changes` (y de un lote de `POST /changes`). */
+/**
+ * Tamaño máximo de una página de `GET /changes` (y de un lote de `POST /changes`). En
+ * `GET /changes`, `limit` cuenta cambios de origen: `changes` puede traer más entradas
+ * (el control auxiliar que precede a un botón, o el que sigue a su `delete`).
+ */
 export const CHANGES_PAGE = 500;
 
 /** Tablas replicadas, con los nombres locales del panel. */
@@ -248,7 +252,8 @@ export type SnapshotTables = { [T in TableName]: ContractRow<T>[] };
 /**
  * Un log de acceso del panel (`POST /logs`), con los nombres del log local. Los rangos
  * de `source` y `reason` son amplios a propósito: un motivo nuevo del panel no debe
- * atascar el lote con un 400 eterno. `output_id` es el `output_index` de la nube.
+ * atascar el lote con un 400 eterno (`source` 5 es "Prueba", la prueba de una salida).
+ * `output_id` es el `output_index` de la nube.
  */
 export const logItemSchema = z.object({
   local_log_id: z.int().min(1).max(Number.MAX_SAFE_INTEGER),
@@ -268,9 +273,12 @@ export const logItemSchema = z.object({
 
 export type LogItem = z.infer<typeof logItemSchema>;
 
-/** Cuerpo de `POST /logs`: de 1 a `LOG_BATCH` logs. */
+/**
+ * Cuerpo de `POST /logs`: de 0 a `LOG_BATCH` logs. La lista vacía es la respuesta del
+ * panel a "Actualizar logs" cuando no tiene logs pendientes: solo marca la hora de subida.
+ */
 export const logsRequestSchema = z.object({
-  logs: z.array(logItemSchema).min(1).max(LOG_BATCH),
+  logs: z.array(logItemSchema).max(LOG_BATCH),
 });
 
 /** Cuerpo de `POST /alerts`: el panel bloqueó un borrado masivo en `holders` o `cards`. */
@@ -280,3 +288,15 @@ export const alertRequestSchema = z.object({
   would_delete: z.int().min(0),
   total: z.int().min(0),
 });
+
+/**
+ * Cuerpo de `POST /command-result`: el resultado de una orden de la nube (`test_output`).
+ * `detail` es el error del panel (o nulo si salió bien).
+ */
+export const commandResultSchema = z.strictObject({
+  command_id: uuidSchema,
+  ok: z.boolean(),
+  detail: texto.max(200).nullable().optional(),
+});
+
+export type CommandResult = z.infer<typeof commandResultSchema>;

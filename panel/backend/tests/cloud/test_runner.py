@@ -98,6 +98,7 @@ class FakeEngine:
         self.calls = calls
         self.script = {name: Seq(None) for name in self.NAMES}
         self.hooks = {}
+        self.always_post = []   # el argumento de cada upload_logs
 
     def _run(self, name):
         self.calls.append(name)
@@ -108,21 +109,43 @@ class FakeEngine:
     push = lambda self: self._run("push")  # noqa: E731
     pull = lambda self: self._run("pull")  # noqa: E731
     reconcile = lambda self: self._run("reconcile")  # noqa: E731
-    upload_logs = lambda self: self._run("upload_logs")  # noqa: E731
+    def upload_logs(self, always_post=False):
+        self.always_post.append(always_post)
+        return self._run("upload_logs")
+
     adopt_cloud = lambda self: self._run("adopt_cloud")  # noqa: E731
 
 
 class FakeMqtt:
-    def __init__(self, calls, settings, panel_code, token, on_sync):
+    def __init__(self, calls, settings, panel_code, token, on_sync, on_command=None):
         self.calls = calls
         self.args = (settings, panel_code, token)
         self.on_sync = on_sync
+        self.on_command = on_command
 
     def start(self):
         self.calls.append("mqtt.start")
 
     def stop(self):
         self.calls.append("mqtt.stop")
+
+
+class FakeWorker:
+    """Registra aparte (no en `calls`) para no alterar el orden que verifican las demás pruebas."""
+
+    def __init__(self, api):
+        self.api = api
+        self.events = []
+        self.submitted = []
+
+    def start(self):
+        self.events.append("start")
+
+    def stop(self):
+        self.events.append("stop")
+
+    def submit(self, body):
+        self.submitted.append(body)
 
 
 class Stop:
@@ -148,6 +171,7 @@ class Harness:
         self.api = FakeApi(self.calls)
         self.engine = FakeEngine(self.calls)
         self.links = []
+        self.workers = []
         self.mqtt_error = None
         self.engine_factory_args = []
 
@@ -155,17 +179,23 @@ class Harness:
         self.engine_factory_args.append((db_path, api))
         return self.engine
 
-    def mqtt_factory(self, settings, panel_code, token, on_sync):
+    def mqtt_factory(self, settings, panel_code, token, on_sync, on_command=None):
         if self.mqtt_error is not None:
             self.calls.append("mqtt.factory-error")
             raise self.mqtt_error
-        link = FakeMqtt(self.calls, settings, panel_code, token, on_sync)
+        link = FakeMqtt(self.calls, settings, panel_code, token, on_sync, on_command)
         self.links.append(link)
         return link
 
+    def worker_factory(self, api):
+        worker = FakeWorker(api)
+        self.workers.append(worker)
+        return worker
+
     def runner(self, engine_factory=None):
         return Runner(self.settings, self.db_path, self.api, engine_factory or self.engine_factory,
-                      self.mqtt_factory, clock=self.clock, sleep=self.clock.sleep, wall=self.clock)
+                      self.mqtt_factory, clock=self.clock, sleep=self.clock.sleep, wall=self.clock,
+                      command_worker_factory=self.worker_factory)
 
     def started(self, engine_factory=None):
         runner = self.runner(engine_factory)
@@ -807,6 +837,166 @@ def test_the_link_is_stopped_on_revocation_and_recreated_on_the_next_activation(
     assert h.calls.count("mqtt.start") == 2 and len(h.links) == 2
 
 
+# --- órdenes de la nube (upload_logs y test_output) ---------------------------------------------
+
+TEST_ORDER = {"type": "test_output", "command_id": "8f0c2a5e-1d2b-4c3d-9e4f-5a6b7c8d9e0f", "output": 1,
+              "requested_by": "ana@example.com", "expires_at": "2027-01-15T08:00:10.000Z"}
+
+
+def test_the_link_receives_on_command(h):
+    h.preset_active()
+    runner = h.started()
+    h.run_for(runner, 1)
+    assert h.links[0].on_command is not None
+
+
+def test_upload_logs_order_uploads_on_the_next_tick_without_push_or_pull(h):
+    h.preset_active()
+    runner = h.started()
+    h.run_for(runner, 3)
+    h.calls.clear()
+    h.links[0].on_command({"type": "upload_logs"})
+    runner.tick()
+    assert h.calls == ["upload_logs"] and h.engine.always_post[-1] is True
+    h.run_for(runner, 5)
+    assert h.calls == ["upload_logs"]   # la bandera se bajó: no se repite
+
+
+def test_many_upload_logs_orders_before_a_tick_upload_once(h):
+    h.preset_active()
+    runner = h.started()
+    h.run_for(runner, 3)
+    h.calls.clear()
+    for _ in range(5):
+        h.links[0].on_command({"type": "upload_logs"})
+    h.run_for(runner, 3)
+    assert h.calls == ["upload_logs"]
+
+
+def test_upload_logs_order_during_a_due_cycle_uploads_once_with_always_post(h):
+    h.preset_active()
+    runner = h.started()
+    h.run_for(runner, 3)
+    h.calls.clear()
+    h.clock.now += SYNC_INTERVAL_S   # ya toca el ciclo
+    h.links[0].on_command({"type": "upload_logs"})
+    runner.tick()
+    assert h.calls == CYCLE and h.engine.always_post[-1] is True
+    h.run_for(runner, 3)
+    assert h.calls == CYCLE
+
+
+def test_upload_logs_order_failure_is_noted_and_does_not_break_the_runner(h):
+    h.preset_active()
+    runner = h.started()
+    h.run_for(runner, 3)
+    h.engine.script["upload_logs"] = Seq(CloudError(0, "network_error", "ConnectError"), None)
+    h.links[0].on_command({"type": "upload_logs"})
+    runner.tick()
+    assert "Subida de logs" in h.state("last_error") and h.state() == "active"
+
+
+def test_upload_logs_order_with_a_401_revokes(h):
+    h.preset_active()
+    runner = h.started()
+    h.run_for(runner, 3)
+    h.engine.script["upload_logs"] = Seq(CloudError(401, "unauthorized"))
+    h.links[0].on_command({"type": "upload_logs"})
+    runner.tick()
+    assert h.state() == "unlinked" and load_credentials(h.env_path) is None
+
+
+def test_upload_logs_order_not_active_resyncs_the_state(h):
+    h.preset_active()
+    runner = h.started()
+    h.run_for(runner, 3)
+    h.calls.clear()
+    h.engine.script["upload_logs"] = Seq(CloudError(409, "not_active"))
+    h.api.link_result = Seq("staging")
+    h.links[0].on_command({"type": "upload_logs"})
+    runner.tick()
+    assert h.calls == ["upload_logs", "link_state"] and h.state() == "staging"
+
+
+def test_test_output_order_in_active_is_submitted_to_the_worker(h):
+    h.preset_active()
+    runner = h.started()
+    h.run_for(runner, 2)
+    h.links[0].on_command(TEST_ORDER)
+    assert h.workers[0].submitted == [TEST_ORDER]
+    h.run_for(runner, 3)
+    assert h.cycles() == 1 and h.count("upload_logs") == 1   # no dispara un ciclo ni una subida
+
+
+def test_test_output_order_outside_active_is_not_submitted(h):
+    ensure_identity(h.conn)
+    save_credentials(h.env_path, CODE, TOKEN)
+    h.api.import_result = Seq("awaiting_review")
+    runner = h.started()
+    h.run_for(runner, 2)
+    assert h.state() == "awaiting_review"
+    h.links[0].on_command(TEST_ORDER)
+    assert h.workers[0].submitted == []
+
+
+def test_the_worker_gets_its_own_authenticated_api_and_starts_once(h):
+    h.preset_active()
+    runner = h.started()
+    h.run_for(runner, 10)
+    (worker,) = h.workers
+    assert worker.events == ["start"]
+    assert worker.api is not h.api
+    assert worker.api._authorization == "Device %s.%s" % (CODE, TOKEN)
+    runner.close()
+    assert worker.events == ["start", "stop"]
+
+
+def test_the_worker_is_stopped_on_revocation_and_recreated_with_the_new_credential(h):
+    h.preset_active()
+    h.engine.script["pull"] = Seq(CloudError(401, "unauthorized"))
+    runner = h.started()
+    h.run_for(runner, 2)
+    assert h.workers[0].events == ["start", "stop"]
+    h.api.activate_result = Seq("token")
+    h.engine.script["pull"] = Seq(None)
+    h.run_for(runner, 15)
+    assert len(h.workers) == 2 and h.workers[1].events == ["start"]
+
+
+def test_without_mqtt_url_no_worker_is_created(tmp_path, conn):
+    h = Harness(tmp_path, conn, mqtt_url="")
+    h.preset_active()
+    runner = h.started()
+    h.run_for(runner, 5)
+    assert h.workers == [] and h.cycles() == 1
+    runner.close()
+
+
+def test_without_a_worker_factory_a_test_output_order_is_ignored(h):
+    h.preset_active()
+    runner = Runner(h.settings, h.db_path, h.api, h.engine_factory, h.mqtt_factory,
+                    clock=h.clock, sleep=h.clock.sleep, wall=h.clock)
+    runner.start()
+    h.run_for(runner, 2)
+    h.links[0].on_command(TEST_ORDER)   # no lanza
+    runner.close()
+
+
+def test_a_failing_worker_factory_does_not_break_the_runner(h, caplog):
+    h.preset_active()
+
+    def explode(api):
+        raise RuntimeError("fallo con %s" % TOKEN)
+
+    runner = Runner(h.settings, h.db_path, h.api, h.engine_factory, h.mqtt_factory,
+                    clock=h.clock, sleep=h.clock.sleep, wall=h.clock, command_worker_factory=explode)
+    runner.start()
+    with caplog.at_level(logging.DEBUG):
+        h.run_for(runner, 3)
+    assert h.cycles() == 1 and TOKEN not in caplog.text
+    runner.close()
+
+
 # --- bucle y arranque del proceso ---------------------------------------------------------------
 
 def test_run_stops_when_asked_and_closes_the_link(h):
@@ -844,6 +1034,31 @@ def test_main_migrates_before_starting_the_runner(tmp_path, monkeypatch):
     monkeypatch.setattr(entry.Runner, "run", fake_run)
     entry.main()
     assert started == [1]
+
+
+def test_main_builds_the_command_worker_with_the_daemon_socket_and_its_own_api(tmp_path, monkeypatch):
+    from acceso.cloud import __main__ as entry
+    from acceso.cloud.api import CloudApi
+    from acceso.cloud.commands import CommandWorker
+
+    for key, value in {"ACCESO_ENV_FILE": str(tmp_path / "ninguno.env"),
+                       "DB_PATH": str(tmp_path / "p.sqlite"), "CLOUD_URL": CLOUD_URL,
+                       "CLOUD_CREDENTIALS_PATH": str(tmp_path / "cloud.env"),
+                       "DAEMON_SOCKET": str(tmp_path / "daemon.sock")}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(entry.signal, "signal", lambda *a: None)
+    built = []
+
+    def fake_run(self, stop):
+        api = CloudApi(CLOUD_URL)
+        built.append((self._command_worker_factory(api), api))
+
+    monkeypatch.setattr(entry.Runner, "run", fake_run)
+    entry.main()
+    (worker, api), = built
+    assert isinstance(worker, CommandWorker)
+    assert worker._socket_path == str(tmp_path / "daemon.sock")
+    assert worker._post_result == api.post_command_result
 
 
 def test_main_reports_an_invalid_configuration_in_spanish(tmp_path, monkeypatch, caplog):

@@ -34,7 +34,9 @@ def exit_frame(button):
 
 @pytest.fixture
 def settings(tmp_path):
-    return load_settings({"UART_PORT": "/dev/fake", "DB_PATH": str(tmp_path / "d.sqlite")})
+    # Socket en una carpeta inexistente: el daemon sigue sin él y nunca toca /run/acceso.
+    return load_settings({"UART_PORT": "/dev/fake", "DB_PATH": str(tmp_path / "d.sqlite"),
+                          "DAEMON_SOCKET": str(tmp_path / "sin-carpeta" / "d.sock")})
 
 
 @pytest.fixture
@@ -116,7 +118,8 @@ def pty_pair():
 
 
 def pty_daemon(settings, uart_port):
-    settings = load_settings({"UART_PORT": uart_port, "DB_PATH": str(settings.db_path)})
+    settings = load_settings({"UART_PORT": uart_port, "DB_PATH": str(settings.db_path),
+                              "DAEMON_SOCKET": settings.daemon_socket})
     opened = threading.Event()
 
     def open_serial(port, baud):
@@ -273,3 +276,60 @@ def test_invalid_frames_never_log_pin_digits(settings, db, caplog):
     assert port.written[0] == build_relay_command(0, 3000)
     assert "Trama inválida descartada" in caplog.text
     assert "0102030405" not in caplog.text and "090708" not in caplog.text
+
+
+@pytest.fixture
+def sock_dir():
+    # En macOS la ruta de un socket Unix no puede pasar de ~104 bytes y tmp_path suele pasarse.
+    import shutil
+    import tempfile
+    folder = tempfile.mkdtemp(dir="/tmp")
+    yield folder
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_socket_test_output_writes_relay_command(settings, db, sock_dir):
+    from acceso.daemon_socket import request_daemon
+    sock_path = os.path.join(sock_dir, "d.sock")
+    settings = load_settings({"UART_PORT": "/dev/fake", "DB_PATH": str(settings.db_path),
+                              "DAEMON_SOCKET": sock_path})
+    reading = threading.Event()
+
+    class ReadingSerial(FakeSerial):
+        def read(self, size):
+            reading.set()  # el daemon ya publicó su send en el RelayLink
+            return super().read(size)
+
+    port = ReadingSerial()
+    stop, thread = start_daemon(settings, open_serial=lambda p, b: port)
+    assert reading.wait(2)
+    reply = request_daemon(sock_path, {"op": "test_output", "output": 1,
+                                       "requested_by": "web local"})
+    assert reply == {"ok": True}
+    assert port.written == [build_relay_command(1, 3000)]
+    row = db.execute("SELECT source, allowed, reason, credential_label, output_id"
+                     " FROM access_logs").fetchone()
+    assert tuple(row) == (5, 1, 0, "Prueba — web local", 1)
+    stop.set()
+    thread.join(2)
+    assert not thread.is_alive()
+    assert not os.path.exists(sock_path)
+
+
+def test_daemon_sigue_sin_socket(settings, db, caplog):
+    import logging
+
+    def failing_factory(path, handler):
+        raise OSError("No such file or directory")
+
+    add_card(db, 111, add_holder(db), "Llavero")
+    port = FakeSerial([card_frame(2, 111)])
+    caplog.set_level(logging.WARNING)
+    stop, thread = start_daemon(settings, open_serial=lambda p, b: port,
+                                socket_server_factory=failing_factory)
+    assert wait_for(lambda: port.written)
+    stop.set()
+    thread.join(2)
+    assert not thread.is_alive()
+    assert port.written == [build_relay_command(1, 3000)]
+    assert "No se pudo crear el socket" in caplog.text

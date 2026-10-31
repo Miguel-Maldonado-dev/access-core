@@ -98,4 +98,11 @@ def test_source_filter_accepts_pin(client, db):
     log(db, 1_790_000_001, source=0)
     body = client.get("/api/logs?source=3").json()
     assert body["total"] == 1 and body["items"][0]["source"] == 3
-    assert client.get("/api/logs?source=4").status_code == 422
+    assert client.get("/api/logs?source=6").status_code == 422
+
+
+def test_logs_filtra_origen_5(client, db):
+    log(db, 1_790_000_000, source=5)
+    log(db, 1_790_000_001, source=0)
+    body = client.get("/api/logs?source=5").json()
+    assert body["total"] == 1 and body["items"][0]["source"] == 5

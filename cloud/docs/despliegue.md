@@ -26,7 +26,16 @@ Reglas que valen en todos los pasos: **nunca** subas secretos al repositorio (es
    supabase db push
    ```
 
-   Aplica los 7 archivos de `cloud/supabase/migrations/` por orden de nombre: `org`, `replicated`, `panels`, `sync`, `notify`, `tenant_admin_guard` y `conflicts_review`. `sync` programa con `pg_cron` el borrado de logs con más de 12 meses; `notify` crea el trigger que avisa los cambios de revisión. Comprueba con `supabase migration list` que las 7 están aplicadas en local y en remoto.
+   Aplica los 10 archivos de `cloud/supabase/migrations/` por orden de nombre: `org`, `replicated`, `panels`, `sync`, `notify`, `tenant_admin_guard`, `conflicts_review`, `claim_panel_neutral_author`, `control_button_panels` y `panel_commands`. `sync` programa con `pg_cron` el borrado de logs con más de 12 meses; `notify` crea el trigger que avisa los cambios de revisión. Comprueba con `supabase migration list` que las 10 están aplicadas en local y en remoto.
+
+   **Si el proyecto ya tenía las anteriores** (por ejemplo Access-Core-DEV), `npx supabase db push` aplica solo las que faltan. Las dos más recientes son:
+
+   - `control_button_panels` (controles por panel): crea `control_button_panels`, quita `output_index` de `control_buttons` y cambia el push, el feed de cambios y la importación para que cada panel reciba solo los botones vinculados a él. **Al aplicarse, vincula cada botón vivo a los paneles reclamados, importando, en revisión o activos de su instalación (no a los revocados ni a los pendientes), con su salida actual**, así que ningún control deja de funcionar. Un panel que se agregue después no recibe vínculos automáticos: se configuran en la ficha del control.
+   - `panel_commands` (actualizar logs y prueba de salidas): crea `panel_commands` y las columnas `panels.logs_uploaded_at` e `installations.logs_requested_at`.
+
+   Las dos van con pruebas pgTAP (`npm run test:db`).
+
+   **Orden obligatorio al actualizar un proyecto en uso:** (1) `npx supabase db push` de las migraciones nuevas y (2) **enseguida**, el despliegue en Vercel de la versión que las acompaña. Entre los dos pasos la aplicación vieja falla, porque ya no existe `control_buttons.output_index`; la aplicación nueva sobre la base vieja también fallaría, por eso no se invierte el orden. Mientras tanto los paneles reintentan solos y el agente viejo de los paneles sigue siendo compatible.
 4. **Vault** (SQL Editor del proyecto). Sin estos dos secretos el trigger de avisos no hace nada (las escrituras siguen funcionando y los paneles sincronizan solo por el intervalo):
 
    ```sql
@@ -142,7 +151,9 @@ Comprobaciones de seguridad del broker: otro usuario no puede suscribirse a `acc
    ```
 
    `MQTT_URL` siempre empieza con `mqtts://` (el agente no acepta conexiones sin TLS) y `CLOUD_URL` con `https://`. El certificado del broker debe ser de una autoridad que el sistema del panel conozca (Let's Encrypt lo es).
-2. En la placa, el reloj debe estar sincronizado (`timedatectl`): si la hora del panel se adelanta más de 5 minutos, la nube ajusta esas marcas a su propia hora y lo registra como conflicto.
+2. En la placa, el reloj debe estar sincronizado por NTP (`timedatectl` debe decir `System clock synchronized: yes`; `install.sh` habilita NTP). Dos cosas dependen de la hora: si la hora del panel se adelanta más de 5 minutos, la nube ajusta esas marcas a su propia hora y lo registra como conflicto; y la orden **Probar** de la nube (apertura remota de una salida) lleva un `expires_at` de 10 s que el panel compara con **su propio reloj**: con la hora mal, el panel descarta la orden como caducada o la ejecuta tarde.
+   - **Actualizar un panel ya instalado:** reinstala el paquete nuevo (`sudo ./deploy/install.sh`), no basta con reiniciar. El daemon ahora crea el socket `/run/acceso/daemon.sock` por el que la web y el agente le piden probar una salida, y eso necesita `RuntimeDirectory=acceso` en `acceso-daemon.service`, que solo instala el paquete nuevo. Sin él, el daemon no puede crear el socket y "Probar" responde "El daemon no responde".
+   - **EMQX no cambia.** Las órdenes nuevas (`upload_logs` y `test_output`) viajan por el mismo tema `acc/<código>/cmd`, y el resultado vuelve por HTTPS (`POST /api/device/v1/command-result`), no por MQTT. No hay que tocar las reglas ni el compose del servidor.
 3. Abre la página **Nube** del panel (`http://<ip>:8080`): muestra el identificador `PNL-XXXX-XXXX` y el código de vinculación. En la plataforma, un `admin` del tenant: instalación → Paneles → **Vincular panel**, captura los dos datos y, si la instalación ya tenía datos, revisa y confirma la importación.
 4. Diagnóstico: `journalctl -u acceso-cloud -f`.
 

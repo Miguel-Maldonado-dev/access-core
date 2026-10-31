@@ -19,6 +19,7 @@ const SOURCES: Record<number, string> = {
   1: "Control RF",
   2: "Botón de salida",
   3: "PIN",
+  5: "Prueba",
 };
 
 export function reasonLabel(reason: number): string {
@@ -51,6 +52,7 @@ export function mediumLabel(log: LogItem): string {
   if (log.source === 3) {
     return device === null ? "PIN" : `PIN · Reader${device + 1}`;
   }
+  if (log.source === 5) return log.credential_label ?? "Prueba";
   return device === null ? "Botón de salida" : `Botón de salida ${device + 1}`;
 }
 

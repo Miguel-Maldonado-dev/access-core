@@ -68,6 +68,7 @@ export default function LogFilters({ value, holders, onChange }: Props) {
           <option value="1">Control RF</option>
           <option value="2">Botón de salida</option>
           <option value="3">PIN</option>
+          <option value="5">Prueba</option>
         </select>
       </label>
     </div>

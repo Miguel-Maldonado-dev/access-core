@@ -1,15 +1,17 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import ControlForm from "@/components/access/ControlForm";
+import ControlForm, { type ControlPanel } from "@/components/access/ControlForm";
 import Notices, { type Notice } from "@/components/Notices";
-import { outputLabel } from "@/lib/access-view";
+import { controlButtonSummary } from "@/lib/access-view";
 import type { ActionResult } from "@/lib/actions";
 import type { ControlInput, ControlRow } from "@/lib/controls";
 
 interface Props {
   controls: ControlRow[];
   holders: { id: string; name: string }[];
+  /** Paneles vinculados de la instalación, con los alias de sus salidas. */
+  panels: ControlPanel[];
   /** `controlId` null crea; con id edita. */
   onSave: (controlId: string | null, input: ControlInput) => Promise<ActionResult<{ id: string }>>;
   onDelete: (controlId: string) => Promise<ActionResult>;
@@ -17,8 +19,8 @@ interface Props {
 
 type Editing = { control?: ControlRow } | null;
 
-/** Pestaña Controles: controles RF con hasta 4 botones, cada uno con su código y su salida. */
-export default function ControlsManager({ controls, holders, onSave, onDelete }: Props) {
+/** Pestaña Controles: controles RF con sus botones; cada botón tiene su código y su salida en cada panel. */
+export default function ControlsManager({ controls, holders, panels, onSave, onDelete }: Props) {
   const [filter, setFilter] = useState("");
   const [editing, setEditing] = useState<Editing>(null);
   const [notice, setNotice] = useState<Notice>(null);
@@ -71,6 +73,7 @@ export default function ControlsManager({ controls, holders, onSave, onDelete }:
             key={editing.control?.id ?? "nuevo"}
             control={editing.control}
             holders={holders}
+            panels={panels}
             error={formError}
             pending={pendiente}
             onSubmit={guardar}
@@ -116,9 +119,7 @@ export default function ControlsManager({ controls, holders, onSave, onDelete }:
                     ) : (
                       <ul className="grid gap-0.5 tabular-nums">
                         {c.buttons.map((b) => (
-                          <li key={b.button}>
-                            Botón {b.button + 1}: {b.rf_code} → {outputLabel(b.output_index)}
-                          </li>
+                          <li key={b.id}>{controlButtonSummary(b, panels)}</li>
                         ))}
                       </ul>
                     )}

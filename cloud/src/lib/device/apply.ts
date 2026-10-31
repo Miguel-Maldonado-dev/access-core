@@ -50,8 +50,9 @@ function isClockSkewed(updatedAt: string, now = Date.now()): boolean {
 
 /**
  * `data` del contrato → columnas de la nube. El PIN se cifra y se calcula su
- * `pin_lookup`; `output_id` pasa a `output_index`. permissions y holder_permissions van
- * tal cual: la función SQL los traduce al perfil y a la regla de ese panel.
+ * `pin_lookup`; en outputs, `output_id` pasa a `output_index`. control_buttons,
+ * permissions y holder_permissions van tal cual: la función SQL lleva `output_id` al
+ * vínculo del botón con ese panel, y los permisos al perfil y a la regla de ese panel.
  */
 function cloudData(panel: Panel, item: Upsert): Record<string, unknown> {
   switch (item.table) {
@@ -63,7 +64,6 @@ function cloudData(panel: Panel, item: Upsert): Record<string, unknown> {
         pin_lookup: pin === null ? null : pinLookup(panel.installation_id, pin),
       };
     }
-    case "control_buttons":
     case "outputs": {
       const { output_id, ...resto } = item.data;
       return { ...resto, output_index: output_id };

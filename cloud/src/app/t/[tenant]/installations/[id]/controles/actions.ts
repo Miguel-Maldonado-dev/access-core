@@ -9,7 +9,7 @@ import { createServerSupabase } from "@/lib/supabase/server";
 
 const texto = z.string();
 
-/** Crea (`controlId` null) o edita un control con sus 4 botones. */
+/** Crea (`controlId` null) o edita un control con sus botones y su salida por panel. */
 export async function saveControl(
   tenantId: string,
   installationId: string,

@@ -9,4 +9,10 @@ import type { TenantRole } from "@/lib/auth/guards";
 export const TENANT_SECTIONS: { segment: string; label: string; minRole: TenantRole }[] = [
   { segment: "installations", label: "Instalaciones", minRole: "tecnico" },
   { segment: "users", label: "Usuarios", minRole: "admin" },
+  { segment: "api", label: "API", minRole: "admin" },
 ];
+
+/** Secciones que ve un rol: el técnico, las de `minRole` técnico; el admin, todas. */
+export function sectionsFor(role: TenantRole) {
+  return TENANT_SECTIONS.filter((s) => s.minRole === "tecnico" || role === "admin");
+}

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { requirePlatformAdmin, requireTenantRole, requireUser } from "@/lib/auth/guards";
+import { guardPage, requirePlatformAdmin, requireTenantRole, requireUser } from "@/lib/auth/guards";
 import { HttpError } from "@/lib/errors";
 import { createLocalUser, localAdmin, requireLocalSupabase, signInLocal } from "../helpers/supabase-local";
 
@@ -181,5 +181,15 @@ describe("guardas y páginas protegidas (N11)", () => {
       estado.sesion = superAdmin;
       expect(await resultado(abrir)).toBe("ok");
     });
+  });
+});
+
+describe("guardPage", () => {
+  it("un 404 muestra no encontrado y los demás errores se propagan", async () => {
+    expect(await resultado(() => guardPage(Promise.reject(new HttpError(404, "La instalación no existe."))))).toBe(
+      "NEXT_HTTP_ERROR_FALLBACK;404",
+    );
+    expect(await resultado(() => guardPage(Promise.reject(new HttpError(403, "x"))))).toBe(PROHIBIDO);
+    await expect(guardPage(Promise.reject(new HttpError(409, "Conflicto.")))).rejects.toMatchObject({ status: 409 });
   });
 });

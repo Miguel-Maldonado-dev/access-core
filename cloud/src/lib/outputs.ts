@@ -1,6 +1,6 @@
 import "server-only";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import { autoria, type DataClient } from "@/lib/auth/guards";
 import { esUuid, fetchAll, requireInstallationAccess } from "@/lib/access-data";
 import { HttpError } from "@/lib/errors";
 import { DURATION_MESSAGE, NAME_MAX, OUTPUT_MAX_MS } from "@/lib/profile-view";
@@ -40,7 +40,7 @@ const esquema = z.strictObject({
 
 /** Salidas vivas de la instalación, por panel y número (cualquier miembro). */
 export async function listOutputsAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
 ): Promise<OutputRow[]> {
@@ -60,13 +60,14 @@ export async function listOutputsAs(
 
 /** Edita una salida; si nada cambió no escribe (cada escritura sube la revisión y avisa al panel). */
 export async function updateOutputAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   outputId: string,
   entrada: unknown,
 ): Promise<void> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const noExiste = new HttpError(404, NO_EXISTE);
   if (!esUuid(outputId)) throw noExiste;
   const r = esquema.safeParse(entrada);
@@ -92,8 +93,9 @@ export async function updateOutputAs(
   }
   const { data, error: errorEscritura } = await cliente
     .from("outputs")
-    .update(nuevo)
+    .update({ ...nuevo, ...autoria(acceso) })
     .eq("id", outputId)
+    .eq("installation_id", installationId)
     .is("deleted_at", null)
     .select("id");
   if (errorEscritura) throw errorEscritura;

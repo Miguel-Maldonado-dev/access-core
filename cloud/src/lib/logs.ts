@@ -1,5 +1,5 @@
 import "server-only";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { DataClient } from "@/lib/auth/guards";
 import { fetchAll, holderNames, requireInstallationAccess } from "@/lib/access-data";
 import { LOG_PAGE_SIZE, localDayStartUtc, nextDay, type LogFilters, type LogRow } from "@/lib/log-view";
 
@@ -44,7 +44,7 @@ const RANGO_FUERA = "PGRST103";
 
 /** Una página de logs, del más reciente al más viejo (orden total `ts desc, id desc`). */
 export async function listLogsAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   filtros: LogFilters,
@@ -113,7 +113,7 @@ export async function listLogsAs(
 
 /** Paneles de la instalación y titulares vivos (por nombre) para los selectores de filtro. */
 export async function listLogFilterOptionsAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
 ): Promise<LogFilterOptions> {

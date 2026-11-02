@@ -16,7 +16,7 @@ export default async function PanelsPage({ params, searchParams }: PageProps<"/t
   const [acceso, instalacion, paneles] = await Promise.all([
     guardPage(requireTenantRole(tenant, "tecnico", supabase)),
     getInstallationForPage(tenant, id),
-    guardPage(listPanelsAs(supabase, id)),
+    guardPage(listPanelsAs(supabase, tenant, id)),
   ]);
 
   return (

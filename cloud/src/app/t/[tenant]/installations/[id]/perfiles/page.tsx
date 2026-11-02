@@ -20,7 +20,7 @@ export default async function ProfilesPage({ params }: PageProps<"/t/[tenant]/in
     getInstallationForPage(tenant, id),
     guardPage(listProfilesAs(supabase, tenant, id)),
     guardPage(listHolderOptionsAs(supabase, tenant, id)),
-    guardPage(listPanelsAs(supabase, id)),
+    guardPage(listPanelsAs(supabase, tenant, id)),
     guardPage(listOutputsAs(supabase, tenant, id)),
   ]);
 

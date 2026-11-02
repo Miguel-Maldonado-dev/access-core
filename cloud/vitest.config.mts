@@ -15,6 +15,9 @@ export default defineConfig({
     // Por omisión, Node; las pruebas de componentes declaran `@vitest-environment jsdom`.
     environment: "node",
     include: ["tests/**/*.test.{ts,tsx}"],
+    // Muchas pruebas usan el mismo Supabase local: con un worker por núcleo (8) algunas
+    // agotan su tiempo de 5 s por la carga en la base. Con 3 la corrida completa es estable.
+    maxWorkers: 3,
     // Exporta la URL y las llaves del Supabase LOCAL a process.env (ver el archivo).
     globalSetup: ["./tests/global-setup.ts"],
     // `forbidden()` de Next exige `experimental.authInterrupts` (next.config.ts); en la

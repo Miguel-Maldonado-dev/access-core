@@ -60,6 +60,16 @@ export function pinLookup(installationId: string, pin: string): string {
     .digest("hex");
 }
 
+/**
+ * Huella de una petición para `api_idempotency.request_hash`: HMAC-SHA256 con una clave
+ * derivada de PIN_LOOKUP_KEY (HMAC de "api-idempotency"). Con sal secreta, un PIN enviado en
+ * el cuerpo no se puede recuperar por fuerza bruta a partir de la huella guardada.
+ */
+export function idempotencyHash(peticion: string): string {
+  const clave = createHmac("sha256", leerClave("PIN_LOOKUP_KEY")).update("api-idempotency").digest();
+  return createHmac("sha256", clave).update(peticion).digest("hex");
+}
+
 export function sha256Hex(s: string): string {
   return createHash("sha256").update(s).digest("hex");
 }

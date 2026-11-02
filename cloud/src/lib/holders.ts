@@ -1,6 +1,6 @@
 import "server-only";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import { autoria, type DataClient } from "@/lib/auth/guards";
 import {
   esUuid,
   fetchAll,
@@ -72,7 +72,7 @@ function parseInput(entrada: unknown): HolderInput {
 
 /** Titulares vivos con sus conteos de tarjetas y controles, por nombre (cualquier miembro). */
 export async function listHoldersAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
 ): Promise<HolderRow[]> {
@@ -116,6 +116,42 @@ export async function listHoldersAs(
   }));
 }
 
+/** Un titular vivo con sus conteos de tarjetas y controles (cualquier miembro). 404 si no existe. */
+export async function getHolderAs(
+  supabase: DataClient,
+  tenantId: string,
+  installationId: string,
+  holderId: string,
+): Promise<HolderRow> {
+  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const noExiste = new HttpError(404, "El titular no existe.");
+  if (!esUuid(holderId)) throw noExiste;
+  const conteo = async (tabla: "cards" | "controls") => {
+    const { count, error } = await cliente
+      .from(tabla)
+      .select("id", { count: "exact", head: true })
+      .eq("installation_id", installationId)
+      .eq("holder_id", holderId)
+      .is("deleted_at", null);
+    if (error) throw error;
+    return count ?? 0;
+  };
+  const [{ data, error }, tarjetas, controles] = await Promise.all([
+    cliente
+      .from("holders")
+      .select(COLUMNAS)
+      .eq("id", holderId)
+      .eq("installation_id", installationId)
+      .is("deleted_at", null)
+      .maybeSingle<Omit<HolderRow, "card_count" | "control_count">>(),
+    conteo("cards"),
+    conteo("controls"),
+  ]);
+  if (error) throw error;
+  if (!data) throw noExiste;
+  return { ...data, card_count: tarjetas, control_count: controles };
+}
+
 /** Columnas de PIN a escribir y comprobación de unicidad (solo si cambia el PIN). */
 async function pinColumns(
   installationId: string,
@@ -146,17 +182,18 @@ function traducir(error: { code?: string; message?: string }): never {
 
 /** Crea un titular (cualquier miembro). */
 export async function createHolderAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   entrada: HolderInput,
 ): Promise<{ id: string }> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const { pin, ...datos } = parseInput(entrada);
   const columnas = await pinColumns(installationId, null, pin);
   const { data, error } = await cliente
     .from("holders")
-    .insert({ installation_id: installationId, ...datos, ...columnas })
+    .insert({ installation_id: installationId, ...datos, ...columnas, ...autoria(acceso) })
     .select("id")
     .single<{ id: string }>();
   if (error) traducir(error);
@@ -165,20 +202,49 @@ export async function createHolderAs(
 
 /** Edita un titular (cualquier miembro). `pin: keep` no toca el PIN. 404 si no existe. */
 export async function updateHolderAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   holderId: string,
   entrada: HolderInput,
 ): Promise<void> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const noExiste = new HttpError(404, "El titular no existe.");
   if (!esUuid(holderId)) throw noExiste;
   const { pin, ...datos } = parseInput(entrada);
   const columnas = await pinColumns(installationId, holderId, pin);
   const { data, error } = await cliente
     .from("holders")
-    .update({ ...datos, ...columnas })
+    .update({ ...datos, ...columnas, ...autoria(acceso) })
+    .eq("id", holderId)
+    .eq("installation_id", installationId)
+    .is("deleted_at", null)
+    .select("id");
+  if (error) traducir(error);
+  if (data.length === 0) throw noExiste;
+}
+
+/**
+ * Pone o quita solo el PIN de un titular (no reescribe los demás campos, así no pisa una
+ * edición simultánea). Firma con `autoria`. 404 si no existe; 409 si el PIN ya está en uso.
+ */
+export async function setHolderPinAs(
+  supabase: DataClient,
+  tenantId: string,
+  installationId: string,
+  holderId: string,
+  cambio: { mode: "set"; pin: string } | { mode: "clear" },
+): Promise<void> {
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const noExiste = new HttpError(404, "El titular no existe.");
+  if (!esUuid(holderId)) throw noExiste;
+  const validado = esquema.shape.pin.safeParse(cambio);
+  if (!validado.success) throw new HttpError(400, validado.error.issues[0]?.message ?? PIN_MESSAGE);
+  const columnas = await pinColumns(installationId, holderId, validado.data);
+  const { data, error } = await acceso.supabase
+    .from("holders")
+    .update({ ...columnas, ...autoria(acceso) })
     .eq("id", holderId)
     .eq("installation_id", installationId)
     .is("deleted_at", null)
@@ -189,17 +255,18 @@ export async function updateHolderAs(
 
 /** Borrado lógico del titular; el trigger lo extiende a sus tarjetas, controles y botones. */
 export async function deleteHolderAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   holderId: string,
 ): Promise<void> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const noExiste = new HttpError(404, "El titular no existe.");
   if (!esUuid(holderId)) throw noExiste;
   const { data, error } = await cliente
     .from("holders")
-    .update({ deleted_at: new Date().toISOString() })
+    .update({ deleted_at: new Date().toISOString(), ...autoria(acceso) })
     .eq("id", holderId)
     .eq("installation_id", installationId)
     .is("deleted_at", null)
@@ -213,7 +280,7 @@ export async function deleteHolderAs(
  * comprueba ANTES de usar la llave secreta para leer y descifrar.
  */
 export async function getHolderPinAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   holderId: string,

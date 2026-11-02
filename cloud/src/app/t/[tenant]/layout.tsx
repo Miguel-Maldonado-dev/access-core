@@ -4,7 +4,7 @@ import { guardPage, requireTenantRole } from "@/lib/auth/guards";
 import { getViewer } from "@/lib/auth/viewer";
 import { ROLE_LABEL } from "@/lib/roles";
 import { createServerSupabase } from "@/lib/supabase/server";
-import { TENANT_SECTIONS } from "./sections";
+import { sectionsFor } from "./sections";
 
 export const instant = false;
 
@@ -26,9 +26,10 @@ export default async function TenantLayout({ params, children }: LayoutProps<"/t
     .single<{ name: string }>();
   if (error) throw error;
 
-  const secciones = TENANT_SECTIONS.filter((s) => s.minRole === "tecnico" || acceso.role === "admin").map(
-    (s) => ({ href: `/t/${tenant}/${s.segment}`, label: s.label }),
-  );
+  const secciones = sectionsFor(acceso.role).map((s) => ({
+    href: `/t/${tenant}/${s.segment}`,
+    label: s.label,
+  }));
 
   return (
     <>

@@ -1,6 +1,6 @@
 import "server-only";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import { autoria, type DataClient } from "@/lib/auth/guards";
 import {
   esUuid,
   fetchAll,
@@ -38,7 +38,7 @@ function aviso(r: { success: false; error: z.ZodError }): never {
 }
 
 /** Tarjetas vivas con el nombre de su titular, por código (cualquier miembro). */
-export async function listCardsAs(supabase: SupabaseClient, tenantId: string, installationId: string): Promise<CardRow[]> {
+export async function listCardsAs(supabase: DataClient, tenantId: string, installationId: string): Promise<CardRow[]> {
   const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
   const [tarjetas, nombres] = await Promise.all([
     fetchAll<Omit<CardRow, "holder_name">>((desde, hasta) =>
@@ -56,14 +56,38 @@ export async function listCardsAs(supabase: SupabaseClient, tenantId: string, in
   return tarjetas.map((c) => ({ ...c, holder_name: nombres.get(c.holder_id) ?? "" }));
 }
 
+/** Una tarjeta viva por id, con el nombre de su titular; 404 si no existe o es de otra instalación. */
+export async function getCardAs(
+  supabase: DataClient,
+  tenantId: string,
+  installationId: string,
+  cardId: string,
+): Promise<CardRow> {
+  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const noExiste = new HttpError(404, "La tarjeta no existe.");
+  if (!esUuid(cardId)) throw noExiste;
+  const { data, error } = await cliente
+    .from("cards")
+    .select("id, card_code, holder_id, description")
+    .eq("id", cardId)
+    .eq("installation_id", installationId)
+    .is("deleted_at", null)
+    .maybeSingle<Omit<CardRow, "holder_name">>();
+  if (error) throw error;
+  if (!data) throw noExiste;
+  const nombres = await holderNames(cliente, installationId, [data.holder_id]);
+  return { ...data, holder_name: nombres.get(data.holder_id) ?? "" };
+}
+
 /** Crea una tarjeta. 409 con el titular que ya la tiene si el código está registrado. */
 export async function createCardAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   entrada: CardInput,
 ): Promise<{ id: string }> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const cod = codigo.safeParse(entrada?.card_code);
   if (!cod.success) aviso(cod);
   const holderId = await requireHolder(cliente, installationId, entrada.holder_id);
@@ -84,7 +108,7 @@ export async function createCardAs(
 
   const { data, error } = await cliente
     .from("cards")
-    .insert({ installation_id: installationId, card_code: cod.data, holder_id: holderId, description: desc })
+    .insert({ installation_id: installationId, card_code: cod.data, holder_id: holderId, description: desc, ...autoria(acceso) })
     .select("id")
     .single<{ id: string }>();
   if (error) {
@@ -100,19 +124,20 @@ export async function createCardAs(
 
 /** Cambia titular y descripción (el código no se edita, como en el panel local). */
 export async function updateCardAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   cardId: string,
   entrada: Pick<CardInput, "holder_id" | "description">,
 ): Promise<void> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const noExiste = new HttpError(404, "La tarjeta no existe.");
   if (!esUuid(cardId)) throw noExiste;
   const holderId = await requireHolder(cliente, installationId, entrada?.holder_id);
   const { data, error } = await cliente
     .from("cards")
-    .update({ holder_id: holderId, description: descripcion.parse(entrada.description) })
+    .update({ holder_id: holderId, description: descripcion.parse(entrada.description), ...autoria(acceso) })
     .eq("id", cardId)
     .eq("installation_id", installationId)
     .is("deleted_at", null)
@@ -126,17 +151,18 @@ export async function updateCardAs(
 
 /** Borrado lógico de la tarjeta (libera su código). */
 export async function deleteCardAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   cardId: string,
 ): Promise<void> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const noExiste = new HttpError(404, "La tarjeta no existe.");
   if (!esUuid(cardId)) throw noExiste;
   const { data, error } = await cliente
     .from("cards")
-    .update({ deleted_at: new Date().toISOString() })
+    .update({ deleted_at: new Date().toISOString(), ...autoria(acceso) })
     .eq("id", cardId)
     .eq("installation_id", installationId)
     .is("deleted_at", null)

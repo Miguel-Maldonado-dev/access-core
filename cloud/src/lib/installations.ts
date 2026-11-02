@@ -1,9 +1,8 @@
 import "server-only";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
 import { cache } from "react";
 import { z } from "zod";
-import { guardPage, requireTenantRole } from "@/lib/auth/guards";
+import { guardPage, requireTenantRole, type DataClient } from "@/lib/auth/guards";
 import { HttpError } from "@/lib/errors";
 import { createServerSupabase } from "@/lib/supabase/server";
 
@@ -31,7 +30,7 @@ function parseName(name: string): string {
 }
 
 /** Instalaciones del tenant (miembro; 403 si no lo es), por nombre. */
-export async function listInstallationsAs(supabase: SupabaseClient, tenantId: string): Promise<Installation[]> {
+export async function listInstallationsAs(supabase: DataClient, tenantId: string): Promise<Installation[]> {
   const { supabase: cliente } = await requireTenantRole(tenantId, "tecnico", supabase);
   const { data, error } = await cliente
     .from("installations")
@@ -44,7 +43,7 @@ export async function listInstallationsAs(supabase: SupabaseClient, tenantId: st
 
 /** Una instalación del tenant, o `null` si no existe o es de otro tenant. */
 export async function getInstallationAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
 ): Promise<Installation | null> {
@@ -62,7 +61,7 @@ export async function getInstallationAs(
 
 /** Crea una instalación (solo `admin` del tenant). */
 export async function createInstallationAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   name: string,
 ): Promise<{ id: string }> {
@@ -78,7 +77,7 @@ export async function createInstallationAs(
 
 /** Cambia el nombre de una instalación (cualquier miembro). 404 si no es del tenant. */
 export async function renameInstallationAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   name: string,

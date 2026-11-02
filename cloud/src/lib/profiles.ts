@@ -1,6 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import { autoria, type DataClient } from "@/lib/auth/guards";
 import {
   esUuid,
   fetchAll,
@@ -86,7 +87,7 @@ const ahora = () => new Date().toISOString();
 
 /** Perfiles vivos con sus titulares y reglas, por número de permiso (cualquier miembro). */
 export async function listProfilesAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
 ): Promise<ProfileRow[]> {
@@ -129,9 +130,52 @@ export async function listProfilesAs(
   return perfiles.map((p) => ({ ...p, holder_ids: titularesDe.get(p.id) ?? [], rules: reglasDe.get(p.id) ?? [] }));
 }
 
+/** Un perfil vivo por id con sus reglas y titulares; 404 si no existe o es de otra instalación. */
+export async function getProfileAs(
+  supabase: DataClient,
+  tenantId: string,
+  installationId: string,
+  profileId: string,
+): Promise<ProfileRow> {
+  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  if (!esUuid(profileId)) throw new HttpError(404, NO_EXISTE);
+  const { data, error } = await cliente
+    .from("access_profiles")
+    .select("id, name, local_permission_id")
+    .eq("id", profileId)
+    .eq("installation_id", installationId)
+    .is("deleted_at", null)
+    .maybeSingle<{ id: string; name: string; local_permission_id: number }>();
+  if (error) throw error;
+  if (!data) throw new HttpError(404, NO_EXISTE);
+  const [reglas, asignaciones] = await Promise.all([
+    fetchAll<RuleRow>((desde, hasta) =>
+      cliente
+        .from("profile_panel_rules")
+        .select(REGLA_COLUMNAS)
+        .eq("installation_id", installationId)
+        .eq("profile_id", profileId)
+        .is("deleted_at", null)
+        .order("id")
+        .range(desde, hasta),
+    ),
+    fetchAll<{ holder_id: string }>((desde, hasta) =>
+      cliente
+        .from("holder_profiles")
+        .select("holder_id")
+        .eq("installation_id", installationId)
+        .eq("profile_id", profileId)
+        .is("deleted_at", null)
+        .order("id")
+        .range(desde, hasta),
+    ),
+  ]);
+  return { ...data, holder_ids: asignaciones.map((a) => a.holder_id), rules: reglas };
+}
+
 /** Titulares vivos (id y nombre, por nombre) para elegir a quién se asigna un perfil. */
 export async function listHolderOptionsAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
 ): Promise<{ id: string; name: string }[]> {
@@ -162,12 +206,13 @@ async function requireProfile(cliente: SupabaseClient, installationId: string, p
  * se queda con el mismo número, el índice único la rechaza: se recalcula y se reintenta.
  */
 export async function createProfileAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   nombre: unknown,
 ): Promise<{ id: string; local_permission_id: number }> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const name = parseName(nombre);
 
   for (let intento = 0; intento < 3; intento++) {
@@ -184,7 +229,7 @@ export async function createProfileAs(
 
     const { data, error: errorAlta } = await cliente
       .from("access_profiles")
-      .insert({ installation_id: installationId, name, local_permission_id: libre })
+      .insert({ installation_id: installationId, name, local_permission_id: libre, ...autoria(acceso) })
       .select("id, local_permission_id")
       .single<{ id: string; local_permission_id: number }>();
     if (!errorAlta) return data;
@@ -195,20 +240,22 @@ export async function createProfileAs(
 
 /** Cambia el nombre (el número de permiso no cambia). */
 export async function renameProfileAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   profileId: string,
   nombre: unknown,
 ): Promise<void> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const name = parseName(nombre);
   const perfil = await requireProfile(cliente, installationId, profileId);
   if (perfil.name === name) return;
   const { data, error } = await cliente
     .from("access_profiles")
-    .update({ name })
+    .update({ name, ...autoria(acceso) })
     .eq("id", perfil.id)
+    .eq("installation_id", installationId)
     .is("deleted_at", null)
     .select("id");
   if (error) throw error;
@@ -217,16 +264,17 @@ export async function renameProfileAs(
 
 /** Borrado lógico del perfil; el trigger lo extiende a sus asignaciones y reglas y libera el número. */
 export async function deleteProfileAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   profileId: string,
 ): Promise<void> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   if (!esUuid(profileId)) throw new HttpError(404, NO_EXISTE);
   const { data, error } = await cliente
     .from("access_profiles")
-    .update({ deleted_at: ahora() })
+    .update({ deleted_at: ahora(), ...autoria(acceso) })
     .eq("id", profileId)
     .eq("installation_id", installationId)
     .is("deleted_at", null)
@@ -249,13 +297,14 @@ function traducirRegla(error: { code?: string; message?: string }): never {
  * mitad deja aplicados los paneles anteriores.
  */
 export async function saveProfileRulesAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   profileId: string,
   entrada: PanelRuleInput[],
 ): Promise<void> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const perfil = await requireProfile(cliente, installationId, profileId);
 
   if (!Array.isArray(entrada)) throw new HttpError(400, REGLA_INVALIDA);
@@ -284,6 +333,7 @@ export async function saveProfileRulesAs(
   const { data: vigentes, error: errorVigentes } = await cliente
     .from("profile_panel_rules")
     .select(REGLA_COLUMNAS)
+    .eq("installation_id", installationId)
     .eq("profile_id", perfil.id)
     .is("deleted_at", null);
   if (errorVigentes) throw errorVigentes;
@@ -295,17 +345,23 @@ export async function saveProfileRulesAs(
       if (!actual) continue;
       const { error } = await cliente
         .from("profile_panel_rules")
-        .update({ deleted_at: ahora() })
+        .update({ deleted_at: ahora(), ...autoria(acceso) })
         .eq("id", actual.id)
+        .eq("installation_id", installationId)
         .is("deleted_at", null);
       if (error) traducirRegla(error);
     } else if (!actual) {
       const { error } = await cliente
         .from("profile_panel_rules")
-        .insert({ installation_id: installationId, profile_id: perfil.id, panel_id: panelId, ...regla });
+        .insert({ installation_id: installationId, profile_id: perfil.id, panel_id: panelId, ...regla, ...autoria(acceso) });
       if (error) traducirRegla(error);
     } else if (CAMPOS_REGLA.some((c) => actual[c] !== regla[c])) {
-      const { error } = await cliente.from("profile_panel_rules").update(regla).eq("id", actual.id).is("deleted_at", null);
+      const { error } = await cliente
+        .from("profile_panel_rules")
+        .update({ ...regla, ...autoria(acceso) })
+        .eq("id", actual.id)
+        .eq("installation_id", installationId)
+        .is("deleted_at", null);
       if (error) traducirRegla(error);
     }
   }
@@ -316,13 +372,14 @@ export async function saveProfileRulesAs(
  * que ya no están y da de alta a los nuevos; los que siguen no se tocan.
  */
 export async function setProfileHoldersAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   profileId: string,
   holderIds: unknown,
 ): Promise<void> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const perfil = await requireProfile(cliente, installationId, profileId);
   if (!Array.isArray(holderIds) || !holderIds.every(esUuid)) throw new HttpError(400, "Datos inválidos.");
   const deseados = new Set<string>(holderIds);
@@ -334,6 +391,7 @@ export async function setProfileHoldersAs(
     cliente
       .from("holder_profiles")
       .select("id, holder_id")
+      .eq("installation_id", installationId)
       .eq("profile_id", perfil.id)
       .is("deleted_at", null)
       .order("id")
@@ -344,13 +402,19 @@ export async function setProfileHoldersAs(
   const altas = [...deseados].filter((id) => !tienen.has(id));
 
   for (const grupo of trozos(bajas, 100)) {
-    const { error } = await cliente.from("holder_profiles").update({ deleted_at: ahora() }).in("id", grupo);
+    const { error } = await cliente
+      .from("holder_profiles")
+      .update({ deleted_at: ahora(), ...autoria(acceso) })
+      .eq("installation_id", installationId)
+      .in("id", grupo);
     if (error) throw error;
   }
   for (const grupo of trozos(altas, 500)) {
     const { error } = await cliente
       .from("holder_profiles")
-      .insert(grupo.map((holder_id) => ({ installation_id: installationId, holder_id, profile_id: perfil.id })));
+      .insert(
+        grupo.map((holder_id) => ({ installation_id: installationId, holder_id, profile_id: perfil.id, ...autoria(acceso) })),
+      );
     if (error) {
       if (isUniqueViolation(error, "holder_profiles_holder_profile_live_key")) throw new HttpError(409, CHOQUE);
       if (isMissingParent(error)) throw new HttpError(409, "El perfil o un titular ya no existe.");

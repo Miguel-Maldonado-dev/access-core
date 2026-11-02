@@ -1,5 +1,6 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { autoria, type DataClient } from "@/lib/auth/guards";
 import {
   esUuid,
   fetchAll,
@@ -223,6 +224,7 @@ async function checkRfFree(
     .from("controls")
     .select("holder_id")
     .eq("id", primero.control_id)
+    .eq("installation_id", installationId)
     .maybeSingle<{ holder_id: string }>();
   if (errorControl) throw errorControl;
   const nombre = control
@@ -255,7 +257,7 @@ const VINCULO_GONE = "El botón o el panel ya no existe. Recarga la página.";
 
 /** Controles vivos con titular, botones y salida por panel, por titular y descripción. */
 export async function listControlsAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
 ): Promise<ControlRow[]> {
@@ -314,6 +316,58 @@ export async function listControlsAs(
     .sort((a, b) => a.holder_name.localeCompare(b.holder_name, "es") || a.description.localeCompare(b.description, "es"));
 }
 
+/** Un control vivo por id con sus botones y salidas por panel; 404 si no existe o es de otra instalación. */
+export async function getControlAs(
+  supabase: DataClient,
+  tenantId: string,
+  installationId: string,
+  controlId: string,
+): Promise<ControlRow> {
+  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const noExiste = new HttpError(404, "El control no existe.");
+  if (!esUuid(controlId)) throw noExiste;
+  const { data: control, error } = await cliente
+    .from("controls")
+    .select("id, holder_id, description")
+    .eq("id", controlId)
+    .eq("installation_id", installationId)
+    .is("deleted_at", null)
+    .maybeSingle<{ id: string; holder_id: string; description: string }>();
+  if (error) throw error;
+  if (!control) throw noExiste;
+  const { data: botones, error: errorBotones } = await cliente
+    .from("control_buttons")
+    .select(BOTON_COLUMNAS)
+    .eq("installation_id", installationId)
+    .eq("control_id", controlId)
+    .is("deleted_at", null)
+    .order("button")
+    .order("id");
+  if (errorBotones) throw errorBotones;
+  const lista = botones as Boton[];
+  const salidas = new Map<string, Record<string, number | null>>();
+  if (lista.length > 0) {
+    const { data: vinculos, error: errorVinculos } = await cliente
+      .from("control_button_panels")
+      .select(VINCULO_COLUMNAS)
+      .eq("installation_id", installationId)
+      .in("button_id", lista.map((b) => b.id))
+      .is("deleted_at", null);
+    if (errorVinculos) throw errorVinculos;
+    for (const v of vinculos as Vinculo[]) {
+      const porPanel = salidas.get(v.button_id) ?? {};
+      porPanel[v.panel_id] = v.output_index;
+      salidas.set(v.button_id, porPanel);
+    }
+  }
+  const nombres = await holderNames(cliente, installationId, [control.holder_id]);
+  return {
+    ...control,
+    holder_name: nombres.get(control.holder_id) ?? "",
+    buttons: lista.map((b) => ({ id: b.id, button: b.button, rf_code: b.rf_code, outputs: salidas.get(b.id) ?? {} })),
+  };
+}
+
 /** Vínculos de un botón nuevo: solo los paneles con salida elegida ("Sin salida" no cabe: no hay vínculo). */
 function vinculosNuevos(p: Pedido): Map<string, number | null> {
   const links = new Map<string, number | null>();
@@ -324,17 +378,26 @@ function vinculosNuevos(p: Pedido): Map<string, number | null> {
   return links;
 }
 
-/** Inserta botones nuevos del control y sus vínculos. */
+/** Inserta botones nuevos del control y sus vínculos; `firma` son las columnas de `autoria()`. */
 async function insertarBotones(
   cliente: SupabaseClient,
   installationId: string,
   controlId: string,
   altas: Final[],
+  firma: Record<string, string>,
 ): Promise<void> {
   if (altas.length === 0) return;
   const { data, error } = await cliente
     .from("control_buttons")
-    .insert(altas.map((a) => ({ installation_id: installationId, control_id: controlId, button: a.button, rf_code: a.rf_code })))
+    .insert(
+      altas.map((a) => ({
+        installation_id: installationId,
+        control_id: controlId,
+        button: a.button,
+        rf_code: a.rf_code,
+        ...firma,
+      })),
+    )
     .select("id, rf_code");
   if (error) traducir(error, CONTROL_GONE);
   // El código es único entre los botones vivos: identifica a cada alta.
@@ -345,6 +408,7 @@ async function insertarBotones(
       button_id: idPorCodigo.get(a.rf_code),
       panel_id: panelId,
       output_index,
+      ...firma,
     })),
   );
   if (filas.length === 0) return;
@@ -354,12 +418,14 @@ async function insertarBotones(
 
 /** Crea un control con sus botones; un botón sin salida en ningún panel no se crea. */
 export async function createControlAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   entrada: ControlInput,
 ): Promise<{ id: string }> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
+  const firma = autoria(acceso);
   const holderId = await requireHolder(cliente, installationId, entrada?.holder_id);
   const pedidos = parseButtons(entrada.buttons);
   if (pedidos.some((p) => p.id !== null)) throw new HttpError(400, DATOS_INVALIDOS);
@@ -373,15 +439,24 @@ export async function createControlAs(
 
   const { data: control, error } = await cliente
     .from("controls")
-    .insert({ installation_id: installationId, holder_id: holderId, description: descripcionDe(entrada.description) })
+    .insert({
+      installation_id: installationId,
+      holder_id: holderId,
+      description: descripcionDe(entrada.description),
+      ...firma,
+    })
     .select("id")
     .single<{ id: string }>();
   if (error) traducir(error);
   try {
-    await insertarBotones(cliente, installationId, control.id, altas);
+    await insertarBotones(cliente, installationId, control.id, altas, firma);
   } catch (e) {
     // No dejar un control vivo sin sus botones (la cascada lógica borra lo que sí se creó).
-    const { error: errorCompensa } = await cliente.from("controls").update({ deleted_at: ahora() }).eq("id", control.id);
+    const { error: errorCompensa } = await cliente
+      .from("controls")
+      .update({ deleted_at: ahora(), ...firma })
+      .eq("id", control.id)
+      .eq("installation_id", installationId);
     if (errorCompensa) {
       console.error("No se pudo borrar el control a medias tras un alta fallida:", control.id, errorCompensa.message);
     }
@@ -399,13 +474,15 @@ export async function createControlAs(
  * Los botones nuevos se crean con sus vínculos. Botones y paneles que no vienen no se tocan.
  */
 export async function updateControlAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   controlId: string,
   entrada: ControlInput,
 ): Promise<void> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
+  const firma = autoria(acceso);
   const noExiste = new HttpError(404, "El control no existe.");
   if (!esUuid(controlId)) throw noExiste;
   const holderId = await requireHolder(cliente, installationId, entrada?.holder_id);
@@ -424,6 +501,7 @@ export async function updateControlAs(
   const { data: actuales, error: errorActuales } = await cliente
     .from("control_buttons")
     .select(BOTON_COLUMNAS)
+    .eq("installation_id", installationId)
     .eq("control_id", controlId)
     .is("deleted_at", null);
   if (errorActuales) throw errorActuales;
@@ -433,6 +511,7 @@ export async function updateControlAs(
     const { data, error } = await cliente
       .from("control_button_panels")
       .select(VINCULO_COLUMNAS)
+      .eq("installation_id", installationId)
       .in("button_id", [...botones.keys()])
       .is("deleted_at", null);
     if (error) throw error;
@@ -509,7 +588,7 @@ export async function updateControlAs(
 
   const { data: filas, error: errorControl } = await cliente
     .from("controls")
-    .update({ holder_id: holderId, description: descripcionDe(entrada.description) })
+    .update({ holder_id: holderId, description: descripcionDe(entrada.description), ...firma })
     .eq("id", controlId)
     .eq("installation_id", installationId)
     .is("deleted_at", null)
@@ -519,7 +598,11 @@ export async function updateControlAs(
 
   const borrarBoton = async (ids: string[]) => {
     if (ids.length === 0) return;
-    const { error } = await cliente.from("control_buttons").update({ deleted_at: ahora() }).in("id", ids);
+    const { error } = await cliente
+      .from("control_buttons")
+      .update({ deleted_at: ahora(), ...firma })
+      .eq("installation_id", installationId)
+      .in("id", ids);
     if (error) throw error;
   };
   await borrarBoton(borrarBotones);
@@ -542,7 +625,12 @@ export async function updateControlAs(
       continue;
     }
     const [c] = pendientes.splice(i, 1);
-    const { error } = await cliente.from("control_buttons").update({ rf_code: c.despues }).eq("id", c.id).is("deleted_at", null);
+    const { error } = await cliente
+      .from("control_buttons")
+      .update({ rf_code: c.despues, ...firma })
+      .eq("id", c.id)
+      .eq("installation_id", installationId)
+      .is("deleted_at", null);
     if (error) traducir(error, CONTROL_GONE);
     ocupados.delete(c.antes);
     ocupados.add(c.despues);
@@ -554,7 +642,8 @@ export async function updateControlAs(
   if (borrar.length > 0) {
     const { error } = await cliente
       .from("control_button_panels")
-      .update({ deleted_at: ahora() })
+      .update({ deleted_at: ahora(), ...firma })
+      .eq("installation_id", installationId)
       .in("id", borrar)
       .is("deleted_at", null);
     if (error) throw error;
@@ -562,8 +651,9 @@ export async function updateControlAs(
   for (const v of cambiarVinculos.filter(vigente)) {
     const { error } = await cliente
       .from("control_button_panels")
-      .update({ output_index: v.output_index })
+      .update({ output_index: v.output_index, ...firma })
       .eq("id", v.id)
+      .eq("installation_id", installationId)
       .is("deleted_at", null);
     if (error) throw error;
   }
@@ -571,25 +661,26 @@ export async function updateControlAs(
   if (insertar.length > 0) {
     const { error } = await cliente
       .from("control_button_panels")
-      .insert(insertar.map((v) => ({ installation_id: installationId, ...v })));
+      .insert(insertar.map((v) => ({ installation_id: installationId, ...v, ...firma })));
     if (error) traducir(error, VINCULO_GONE);
   }
-  await insertarBotones(cliente, installationId, controlId, altas);
+  await insertarBotones(cliente, installationId, controlId, altas, firma);
 }
 
 /** Borrado lógico del control; el trigger lo extiende a sus botones y vínculos (libera los RF). */
 export async function deleteControlAs(
-  supabase: SupabaseClient,
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   controlId: string,
 ): Promise<void> {
-  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const cliente = acceso.supabase;
   const noExiste = new HttpError(404, "El control no existe.");
   if (!esUuid(controlId)) throw noExiste;
   const { data, error } = await cliente
     .from("controls")
-    .update({ deleted_at: ahora() })
+    .update({ deleted_at: ahora(), ...autoria(acceso) })
     .eq("id", controlId)
     .eq("installation_id", installationId)
     .is("deleted_at", null)

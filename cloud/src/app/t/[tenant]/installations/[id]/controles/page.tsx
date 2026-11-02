@@ -22,7 +22,7 @@ export default async function ControlsPage({ params }: PageProps<"/t/[tenant]/in
     getInstallationForPage(tenant, id),
     guardPage(listControlsAs(supabase, tenant, id)),
     guardPage(listHoldersAs(supabase, tenant, id)),
-    guardPage(listPanelsAs(supabase, id)),
+    guardPage(listPanelsAs(supabase, tenant, id)),
     guardPage(listOutputsAs(supabase, tenant, id)),
   ]);
   const alias = new Map(salidas.map((o) => [`${o.panel_id}:${o.output_index}`, o.alias.trim() || null]));

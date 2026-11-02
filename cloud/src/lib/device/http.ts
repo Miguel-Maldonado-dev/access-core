@@ -2,6 +2,7 @@ import "server-only";
 import { unstable_rethrow } from "next/navigation";
 import type { z } from "zod";
 import { HttpError } from "@/lib/errors";
+import { CODIGO_POR_ESTADO, resumenDeError } from "@/lib/http-errors";
 
 /**
  * Respuestas y errores de la API de dispositivos (`/api/device/v1`).
@@ -60,28 +61,6 @@ export function readQuery<T>(req: Request, schema: z.ZodType<T>): T {
     throw new DeviceApiError(400, "invalid_query", `El parámetro ${campo} no es válido.`);
   }
   return resultado.data;
-}
-
-/** `code` de un `HttpError` genérico (no de dispositivo), según su estado. */
-const CODIGO_POR_ESTADO: Readonly<Record<number, string>> = {
-  400: "bad_request",
-  401: "unauthorized",
-  403: "forbidden",
-  404: "not_found",
-  409: "conflict",
-  410: "gone",
-  429: "too_many_requests",
-};
-
-function resumenDeError(error: unknown) {
-  if (error instanceof Error) {
-    // Solo nombre, código y mensaje: `details` de Postgres puede traer la fila completa.
-    return { name: error.name, code: (error as { code?: unknown }).code, message: error.message };
-  }
-  if (error && typeof error === "object" && "message" in error) {
-    return { code: (error as { code?: unknown }).code, message: (error as { message: unknown }).message };
-  }
-  return { message: String(error) };
 }
 
 /**

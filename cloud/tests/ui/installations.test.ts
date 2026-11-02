@@ -101,10 +101,12 @@ describe("instalaciones y paneles de un tenant (N12)", () => {
       .select("id")
       .single();
     if (error) throw error;
-    const paneles = await listPanelsAs(adminB, instB);
+    const paneles = await listPanelsAs(adminB, tenantB, instB);
     expect(paneles).toHaveLength(1);
     expect(paneles[0]).not.toHaveProperty("panel_secret_hash");
-    expect(await listPanelsAs(adminA, instB)).toEqual([]);
+    // De otro tenant: 404 por la instalación (antes, lista vacía por RLS); sin membresía, 403.
+    expect(await fallo(listPanelsAs(adminA, tenantA, instB))).toBe(404);
+    expect(await fallo(listPanelsAs(adminA, tenantB, instB))).toBe(403);
     await admin.from("panels").delete().eq("id", panel.id);
   });
 });

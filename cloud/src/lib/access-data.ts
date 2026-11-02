@@ -1,13 +1,21 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
-import { requireTenantRole, type TenantAccess, type TenantRole } from "@/lib/auth/guards";
+import {
+  requireTenantRole,
+  type DataClient,
+  type TenantAccess,
+  type TenantRole,
+  type UserTenantAccess,
+} from "@/lib/auth/guards";
 import { HttpError } from "@/lib/errors";
 
 /**
  * Base común de titulares, tarjetas y controles: guarda de acceso a la instalación,
  * lectura de nombres de titulares y traducción de errores de la base. Todo con el cliente
  * de la sesión (RLS); solo la lectura/escritura del PIN usa la llave secreta, en `holders.ts`.
+ * Con un actor de API todo va con la llave secreta (sin RLS): por eso cada consulta se filtra
+ * explícitamente por `installation_id` o por un padre ya verificado en la instalación.
  */
 
 export const esUuid = (s: unknown): s is string => z.guid().safeParse(s).success;
@@ -18,10 +26,23 @@ export interface InstallationAccess extends TenantAccess {
 
 /**
  * Miembro del tenant con el rol pedido (403) y la instalación debe ser de ese tenant (404).
- * El tenant sale de la URL; la instalación se comprueba con RLS.
+ * El tenant sale de la URL; la instalación se comprueba con RLS (o, con un actor de API,
+ * con la llave secreta y el filtro por tenant).
  */
 export async function requireInstallationAccess(
   supabase: SupabaseClient,
+  tenantId: string,
+  installationId: string,
+  role: TenantRole,
+): Promise<InstallationAccess & UserTenantAccess>;
+export async function requireInstallationAccess(
+  supabase: DataClient,
+  tenantId: string,
+  installationId: string,
+  role: TenantRole,
+): Promise<InstallationAccess>;
+export async function requireInstallationAccess(
+  supabase: DataClient,
   tenantId: string,
   installationId: string,
   role: TenantRole,

@@ -26,16 +26,18 @@ Reglas que valen en todos los pasos: **nunca** subas secretos al repositorio (es
    supabase db push
    ```
 
-   Aplica los 10 archivos de `cloud/supabase/migrations/` por orden de nombre: `org`, `replicated`, `panels`, `sync`, `notify`, `tenant_admin_guard`, `conflicts_review`, `claim_panel_neutral_author`, `control_button_panels` y `panel_commands`. `sync` programa con `pg_cron` el borrado de logs con más de 12 meses; `notify` crea el trigger que avisa los cambios de revisión. Comprueba con `supabase migration list` que las 10 están aplicadas en local y en remoto.
+   Aplica los 11 archivos de `cloud/supabase/migrations/` por orden de nombre: `org`, `replicated`, `panels`, `sync`, `notify`, `tenant_admin_guard`, `conflicts_review`, `claim_panel_neutral_author`, `control_button_panels`, `panel_commands` y `api_keys`. `sync` programa con `pg_cron` el borrado de logs con más de 12 meses; `notify` crea el trigger que avisa los cambios de revisión. Comprueba con `supabase migration list` que las 11 están aplicadas en local y en remoto.
 
-   **Si el proyecto ya tenía las anteriores** (por ejemplo Access-Core-DEV), `npx supabase db push` aplica solo las que faltan. Las dos más recientes son:
+   **Si el proyecto ya tenía las anteriores** (por ejemplo Access-Core-DEV), `npx supabase db push` aplica solo las que faltan. Las tres más recientes son:
 
    - `control_button_panels` (controles por panel): crea `control_button_panels`, quita `output_index` de `control_buttons` y cambia el push, el feed de cambios y la importación para que cada panel reciba solo los botones vinculados a él. **Al aplicarse, vincula cada botón vivo a los paneles reclamados, importando, en revisión o activos de su instalación (no a los revocados ni a los pendientes), con su salida actual**, así que ningún control deja de funcionar. Un panel que se agregue después no recibe vínculos automáticos: se configuran en la ficha del control.
    - `panel_commands` (actualizar logs y prueba de salidas): crea `panel_commands` y las columnas `panels.logs_uploaded_at` e `installations.logs_requested_at`.
 
-   Las dos van con pruebas pgTAP (`npm run test:db`).
+   - `api_keys` (API pública `/api/v1`, etapa 2A): archivo `20261102181107_api_keys.sql`. Crea las tablas `api_keys` (RLS: solo los admin del tenant leen las suyas), `api_requests` (límite de peticiones) y `api_idempotency` (respuestas idempotentes), estas dos solo para el servidor, y programa con `pg_cron` el trabajo `api-tables-cleanup` (cada hora borra las respuestas idempotentes de más de 24 h y los registros del límite de más de 10 min). **No hay variables de entorno nuevas**: usa las mismas de Vercel (la huella de `Idempotency-Key` se firma con una clave derivada de la `PIN_LOOKUP_KEY` que ya existe). Guía de uso en `cloud/docs/api.md`.
 
-   **Orden obligatorio al actualizar un proyecto en uso:** (1) `npx supabase db push` de las migraciones nuevas y (2) **enseguida**, el despliegue en Vercel de la versión que las acompaña. Entre los dos pasos la aplicación vieja falla, porque ya no existe `control_buttons.output_index`; la aplicación nueva sobre la base vieja también fallaría, por eso no se invierte el orden. Mientras tanto los paneles reintentan solos y el agente viejo de los paneles sigue siendo compatible.
+   Las tres van con pruebas pgTAP (`npm run test:db`).
+
+   **Orden obligatorio al actualizar un proyecto en uso: primero la base y después Vercel.** (1) `npx supabase db push` de las migraciones nuevas y (2) **enseguida**, el despliegue en Vercel de la versión que las acompaña. Entre los dos pasos la aplicación vieja falla, porque ya no existe `control_buttons.output_index`; la aplicación nueva sobre la base vieja también fallaría, por eso no se invierte el orden. Mientras tanto los paneles reintentan solos y el agente viejo de los paneles sigue siendo compatible.
 4. **Vault** (SQL Editor del proyecto). Sin estos dos secretos el trigger de avisos no hace nada (las escrituras siguen funcionando y los paneles sincronizan solo por el intervalo):
 
    ```sql

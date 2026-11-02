@@ -18,7 +18,7 @@ export default async function OutputsPage({ params }: PageProps<"/t/[tenant]/ins
   const [instalacion, salidas, paneles] = await Promise.all([
     getInstallationForPage(tenant, id),
     guardPage(listOutputsAs(supabase, tenant, id)),
-    guardPage(listPanelsAs(supabase, id)),
+    guardPage(listPanelsAs(supabase, tenant, id)),
   ]);
 
   return (

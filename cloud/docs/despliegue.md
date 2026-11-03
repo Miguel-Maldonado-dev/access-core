@@ -23,21 +23,31 @@ Reglas que valen en todos los pasos: **nunca** subas secretos al repositorio (es
    cd cloud
    supabase login
    supabase link --project-ref <ref-del-proyecto>
-   supabase db push
+   supabase db push --remote
    ```
 
-   Aplica los 11 archivos de `cloud/supabase/migrations/` por orden de nombre: `org`, `replicated`, `panels`, `sync`, `notify`, `tenant_admin_guard`, `conflicts_review`, `claim_panel_neutral_author`, `control_button_panels`, `panel_commands` y `api_keys`. `sync` programa con `pg_cron` el borrado de logs con más de 12 meses; `notify` crea el trigger que avisa los cambios de revisión. Comprueba con `supabase migration list` que las 11 están aplicadas en local y en remoto.
+   Aplica los 12 archivos de `cloud/supabase/migrations/` por orden de nombre: `org`, `replicated`, `panels`, `sync`, `notify`, `tenant_admin_guard`, `conflicts_review`, `claim_panel_neutral_author`, `control_button_panels`, `panel_commands`, `api_keys` y `remote_open`. `sync` programa con `pg_cron` el borrado de logs con más de 12 meses; `notify` crea el trigger que avisa los cambios de revisión. Comprueba con `supabase migration list` que las 12 están aplicadas en local y en remoto.
 
-   **Si el proyecto ya tenía las anteriores** (por ejemplo Access-Core-DEV), `npx supabase db push` aplica solo las que faltan. Las tres más recientes son:
+   **Ojo:** las versiones recientes de la CLI aplican al Supabase **local** por omisión (`Target: local stack`). Para el proyecto en la nube hay que pasar `--remote` en `db push` y en `migration list`.
+
+   **Si el proyecto ya tenía las anteriores** (por ejemplo Access-Core-DEV), `npx supabase db push --remote` aplica solo las que faltan. Las más recientes son:
 
    - `control_button_panels` (controles por panel): crea `control_button_panels`, quita `output_index` de `control_buttons` y cambia el push, el feed de cambios y la importación para que cada panel reciba solo los botones vinculados a él. **Al aplicarse, vincula cada botón vivo a los paneles reclamados, importando, en revisión o activos de su instalación (no a los revocados ni a los pendientes), con su salida actual**, así que ningún control deja de funcionar. Un panel que se agregue después no recibe vínculos automáticos: se configuran en la ficha del control.
    - `panel_commands` (actualizar logs y prueba de salidas): crea `panel_commands` y las columnas `panels.logs_uploaded_at` e `installations.logs_requested_at`.
 
    - `api_keys` (API pública `/api/v1`, etapa 2A): archivo `20261102181107_api_keys.sql`. Crea las tablas `api_keys` (RLS: solo los admin del tenant leen las suyas), `api_requests` (límite de peticiones) y `api_idempotency` (respuestas idempotentes), estas dos solo para el servidor, y programa con `pg_cron` el trabajo `api-tables-cleanup` (cada hora borra las respuestas idempotentes de más de 24 h y los registros del límite de más de 10 min). **No hay variables de entorno nuevas**: usa las mismas de Vercel (la huella de `Idempotency-Key` se firma con una clave derivada de la `PIN_LOOKUP_KEY` que ya existe). Guía de uso en `cloud/docs/api.md`.
 
-   Las tres van con pruebas pgTAP (`npm run test:db`).
+   - `remote_open` (apertura remota, etapa 3): archivo `20261102225408_remote_open.sql`. Agrega `profile_panel_rules.allow_remote` (`false` por omisión), y en `panel_commands` el tipo `remote_open` con las columnas `holder_id` (obligatorio en ese tipo) y `reason`; redefine `push_permission` e `import_rows` para que un panel v6, que no envía `allow_remote`, conserve el valor de la nube. **No hay variables de entorno nuevas.** Se activa a propósito, por perfil y por panel (casilla "Permitir apertura remota" en las reglas del perfil); el permiso por omisión la trae apagada. Uso en `cloud/docs/api.md` (`POST /api/v1/installations/{installationId}/outputs/{outputId}/open`).
 
-   **Orden obligatorio al actualizar un proyecto en uso: primero la base y después Vercel.** (1) `npx supabase db push` de las migraciones nuevas y (2) **enseguida**, el despliegue en Vercel de la versión que las acompaña. Entre los dos pasos la aplicación vieja falla, porque ya no existe `control_buttons.output_index`; la aplicación nueva sobre la base vieja también fallaría, por eso no se invierte el orden. Mientras tanto los paneles reintentan solos y el agente viejo de los paneles sigue siendo compatible.
+   Todas van con pruebas pgTAP (`npm run test:db`).
+
+   **Orden obligatorio de la etapa 3 (apertura remota): primero la nube y después los paneles.** (1) `cd cloud && npx supabase db push --remote`, (2) **enseguida** Vercel, y (3) el paquete del panel en cada placa (`bash panel/deploy/build_release.sh` y `sudo ./deploy/install.sh` en la placa). La nube nueva acepta paneles v6 y v7. **Un panel v7 con la nube vieja no puede subir cambios ni vincularse** hasta que se actualiza la nube (la nube vieja rechaza `allow_remote`), y su reconciliación devuelve `allow_remote` a 0. **Para revertir la nube, primero hay que regresar los paneles a v6.**
+
+   **Aviso: un panel v6 con la nube nueva** sigue funcionando, pero en cada reconciliación diaria reemplaza sus permisos, porque la suma de verificación no cuadra (la nube siempre proyecta `allow_remote` y el panel v6 no lo conoce). Actualizarlo a v7 lo resuelve.
+
+   **Aviso: volver a un paquete v6** después de migrar el panel a v7 exige restaurar `access_control_backup_v6.sqlite` (ver `panel/README.md`), porque el código v6 rechaza una base v7.
+
+   **Orden obligatorio al actualizar un proyecto en uso: primero la base y después Vercel.** (1) `npx supabase db push --remote` de las migraciones nuevas y (2) **enseguida**, el despliegue en Vercel de la versión que las acompaña. Entre los dos pasos la aplicación vieja falla, porque ya no existe `control_buttons.output_index`; la aplicación nueva sobre la base vieja también fallaría, por eso no se invierte el orden. Mientras tanto los paneles reintentan solos y el agente viejo de los paneles sigue siendo compatible.
 4. **Vault** (SQL Editor del proyecto). Sin estos dos secretos el trigger de avisos no hace nada (las escrituras siguen funcionando y los paneles sincronizan solo por el intervalo):
 
    ```sql

@@ -85,6 +85,7 @@ export interface RuleRow {
   card_reader_mask: number;
   pin_reader_mask: number;
   allow_rf: boolean;
+  allow_remote: boolean;
   weekday_mask: number;
   start_minute: number;
   end_minute: number;
@@ -112,7 +113,7 @@ export const SOURCE_COLUMNS: Readonly<Record<SourceTable, string>> = {
   control_button_panels: "id, button_id, output_index",
   access_profiles: "id, name, local_permission_id",
   profile_panel_rules:
-    "id, profile_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, weekday_mask, start_minute, end_minute",
+    "id, profile_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, allow_remote, weekday_mask, start_minute, end_minute",
   holder_profiles: "id, holder_id, profile_id",
   outputs: "id, output_index, alias, duration_ms, reader_mask, enabled",
 };
@@ -160,7 +161,8 @@ export function projectControlButton(row: ControlButtonRow, outputIndex: number 
 /**
  * Permiso local de un perfil en un panel: el `name` y el `local_permission_id` del
  * perfil con la regla de ese panel. Sin regla (o con la regla borrada), todas las
- * máscaras en 0 y `allow_rf=false`: el perfil no da acceso en ese panel.
+ * máscaras en 0 y `allow_rf` y `allow_remote` en false: el perfil no da acceso en ese panel.
+ * `allow_remote` se proyecta siempre (entra en la suma de verificación del panel).
  */
 export function projectPermission(
   profile: Pick<ProfileRow, "name" | "local_permission_id">,
@@ -173,6 +175,7 @@ export function projectPermission(
     card_reader_mask: ruleForPanel?.card_reader_mask ?? 0,
     pin_reader_mask: ruleForPanel?.pin_reader_mask ?? 0,
     allow_rf: ruleForPanel?.allow_rf ?? false,
+    allow_remote: ruleForPanel?.allow_remote ?? false,
     weekday_mask: ruleForPanel?.weekday_mask ?? 0,
     start_minute: ruleForPanel?.start_minute ?? 0,
     end_minute: ruleForPanel?.end_minute ?? 0,

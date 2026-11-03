@@ -159,9 +159,9 @@ interface ImportPlan {
    * mismo titular); `output_index` es la salida que tenía en el panel.
    */
   control_button_links: ButtonLink[];
-  access_profiles: ({ id: string; name: string; local_permission_id: number } & Omit<
+  access_profiles: ({ id: string; name: string; local_permission_id: number; allow_remote: boolean } & Omit<
     PermissionData,
-    "permission_id" | "name"
+    "permission_id" | "name" | "allow_remote"
   >)[];
   holder_profiles: { id: string; holder_id: string; profile_id: string }[];
   outputs: {
@@ -549,6 +549,8 @@ function planPerfil(p: ContractRow<"permissions">, localPermissionId: number): I
     card_reader_mask: d.card_reader_mask,
     pin_reader_mask: d.pin_reader_mask,
     allow_rf: d.allow_rf,
+    // Un panel v6 no lo envía: sin apertura remota.
+    allow_remote: d.allow_remote ?? false,
     weekday_mask: d.weekday_mask,
     start_minute: d.start_minute,
     end_minute: d.end_minute,

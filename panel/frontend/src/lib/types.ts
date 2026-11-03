@@ -25,6 +25,7 @@ export interface Permission {
   start_minute: number;
   end_minute: number;
   allow_rf: boolean;
+  allow_remote: boolean;
 }
 
 export interface Output {

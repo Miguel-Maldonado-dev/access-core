@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { POST as revisionChanged } from "@/app/api/internal/revision-changed/route";
 import { POST as mqttAuth } from "@/app/api/mqtt/auth/route";
 import { POST as mqttEvents } from "@/app/api/mqtt/events/route";
-import { publishToPanel } from "@/lib/mqtt/publish";
+import { PublicacionNoEntregada, publishToPanel } from "@/lib/mqtt/publish";
 import { localAdmin, requireLocalSupabase } from "./helpers/supabase-local";
 
 // Sin broker: `fetch` simulado para la API de EMQX. Base de datos: Supabase LOCAL.
@@ -242,6 +242,19 @@ describe("mqtt", () => {
       const error = await publishToPanel("PNL-AAAA-BBBB", {}).catch((e: Error) => e);
       expect((error as Error).message).toMatch(/500/);
       expect((error as Error).message).not.toContain("secreto-api");
+      expect(error).toBeInstanceOf(PublicacionNoEntregada);
+    });
+
+    it("sin variables también es PublicacionNoEntregada: el mensaje no salió", async () => {
+      delete process.env.EMQX_API_URL;
+      expect(await publishToPanel("PNL-AAAA-BBBB", {}).catch((e: Error) => e)).toBeInstanceOf(PublicacionNoEntregada);
+    });
+
+    it("un error de red no es PublicacionNoEntregada: no se sabe si EMQX entregó el mensaje", async () => {
+      stubEmqx(vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+      const error = await publishToPanel("PNL-AAAA-BBBB", {}).catch((e: Error) => e);
+      expect(error).toBeInstanceOf(TypeError);
+      expect(error).not.toBeInstanceOf(PublicacionNoEntregada);
     });
   });
 

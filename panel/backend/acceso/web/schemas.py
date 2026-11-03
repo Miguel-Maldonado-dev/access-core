@@ -66,6 +66,7 @@ class PermissionBody(BaseModel):
     start_minute: int = Field(ge=0, le=1439)
     end_minute: int = Field(ge=0, le=1439)
     allow_rf: StrictBool = False
+    allow_remote: StrictBool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -79,6 +80,7 @@ class PermissionCreate(PermissionBody):
     card_reader_mask: StrictInt = Field(ge=0, le=15)
     pin_reader_mask: StrictInt = Field(ge=0, le=15)
     allow_rf: StrictBool
+    allow_remote: StrictBool
     permission_id: int = Field(ge=0, le=31)
 
 

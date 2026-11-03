@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS permissions (permission_id INTEGER PRIMARY KEY CHECK(
   weekday_mask INTEGER NOT NULL CHECK(weekday_mask BETWEEN 0 AND 127),
   start_minute INTEGER NOT NULL CHECK(start_minute BETWEEN 0 AND 1439), end_minute INTEGER NOT NULL CHECK(end_minute BETWEEN 0 AND 1439),
   allow_rf INTEGER NOT NULL DEFAULT 0 CHECK(allow_rf IN (0,1)),
-  uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local');
+  uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local',
+  allow_remote INTEGER NOT NULL DEFAULT 0 CHECK(allow_remote IN (0,1)));
 CREATE TABLE IF NOT EXISTS holder_permissions (
   holder_id INTEGER NOT NULL REFERENCES holders(holder_id) ON DELETE CASCADE,
   permission_id INTEGER NOT NULL REFERENCES permissions(permission_id) ON DELETE CASCADE,
@@ -88,12 +89,13 @@ def _sync_triggers() -> tuple:
 TRIGGER_STATEMENTS = _sync_triggers()
 
 DEFAULT_OUTPUTS = ((0, 3000, 3, 1), (1, 3000, 12, 1), (2, 3000, 0, 1), (3, 3000, 0, 1))
-# (id, nombre, salidas, lectores tarjeta, lectores PIN, días, inicio, fin, RF)
-DEFAULT_PERMISSION = (0, "Acceso total", 15, 15, 0, 127, 0, 0, 1)
+# (id, nombre, salidas, lectores tarjeta, lectores PIN, días, inicio, fin, RF, remota)
+# La apertura remota empieza apagada: se habilita a propósito.
+DEFAULT_PERMISSION = (0, "Acceso total", 15, 15, 0, 127, 0, 0, 1, 0)
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
-    """Crea el esquema v6 y los valores por defecto; es idempotente.
+    """Crea el esquema actual (SCHEMA_VERSION) y los valores por defecto; es idempotente.
 
     Los valores por defecto se insertan antes de crear los triggers: una base nueva empieza con
     la bandeja vacía (el alta inicial en la nube va por la importación del panel).
@@ -114,7 +116,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "INSERT INTO permissions(permission_id, name, output_mask,"
                 " card_reader_mask, pin_reader_mask, weekday_mask, start_minute, end_minute,"
-                " allow_rf, uuid, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " allow_rf, allow_remote, uuid, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 DEFAULT_PERMISSION + (str(uuid.uuid4()), stamp),
             )
         for statement in TRIGGER_STATEMENTS:

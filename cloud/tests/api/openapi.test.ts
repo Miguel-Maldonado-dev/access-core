@@ -3,6 +3,7 @@ import { join, relative, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GET } from "@/app/api/v1/openapi.json/route";
 import { openapi } from "@/lib/api/openapi";
+import { SOURCE_OPTIONS } from "@/lib/log-view";
 
 // El documento OpenAPI debe cubrir cada ruta de `src/app/api/v1` (salvo el propio openapi.json).
 
@@ -87,9 +88,16 @@ describe("documento OpenAPI", () => {
     }
   });
 
-  it("cada POST declara 201", () => {
+  it("cada POST de alta declara 201; la apertura remota (no es alta) declara 200", () => {
+    const apertura = "/installations/{installationId}/outputs/{outputId}/open";
     for (const [ruta, ops] of Object.entries(doc.paths)) {
-      if (ops.post) expect(ops.post.responses["201"], `POST ${ruta}`).toBeDefined();
+      if (!ops.post) continue;
+      if (ruta === apertura) {
+        expect(ops.post.responses["200"], `POST ${ruta}`).toBeDefined();
+        expect(ops.post.responses["201"], `POST ${ruta}`).toBeUndefined();
+      } else {
+        expect(ops.post.responses["201"], `POST ${ruta}`).toBeDefined();
+      }
     }
   });
 
@@ -101,6 +109,19 @@ describe("documento OpenAPI", () => {
         expect(o.responses["404"], `${metodo.toUpperCase()} ${ruta}`).toBeDefined();
       }
     }
+  });
+
+  it("allow_remote es obligatorio en la regla de respuesta y opcional en la de entrada; el log admite origen 4", () => {
+    const esquemas = (doc as unknown as { components: { schemas: Record<string, { required: string[]; properties: Record<string, { enum?: number[]; maximum?: number }> }> } }).components.schemas;
+    expect(esquemas.Regla.required).toContain("allow_remote");
+    expect(esquemas.ReglaEntrada.required).not.toContain("allow_remote");
+    expect(esquemas.ReglaEntrada.properties.allow_remote).toBeDefined();
+    expect(esquemas.Log.properties.source.enum).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(esquemas.Log.properties.reason.maximum).toBe(11);
+    const params = doc.paths["/installations/{installationId}/logs"].get as unknown as { parameters: { name?: string; schema?: { enum?: string[] } }[] };
+    const origen = params.parameters.find((p) => p.name === "origen");
+    expect(origen?.schema?.enum).toEqual(SOURCE_OPTIONS.map(String));
+    expect(esquemas.Log.properties.source.enum).toEqual([...SOURCE_OPTIONS]);
   });
 
   it("PUT y DELETE de PIN no declaran Idempotency-Key", () => {

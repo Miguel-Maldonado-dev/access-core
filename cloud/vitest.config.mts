@@ -18,6 +18,9 @@ export default defineConfig({
     // Muchas pruebas usan el mismo Supabase local: con un worker por núcleo (8) algunas
     // agotan su tiempo de 5 s por la carga en la base. Con 3 la corrida completa es estable.
     maxWorkers: 3,
+    // Con el Supabase local cargado por la corrida completa, algunas pruebas que hacen varias
+    // consultas pasan de los 5 s por omisión de Vitest aunque no fallen: se da más margen.
+    testTimeout: 15000,
     // Exporta la URL y las llaves del Supabase LOCAL a process.env (ver el archivo).
     globalSetup: ["./tests/global-setup.ts"],
     // `forbidden()` de Next exige `experimental.authInterrupts` (next.config.ts); en la

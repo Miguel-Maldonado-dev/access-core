@@ -252,6 +252,19 @@ El volumen de datos viaja por HTTPS. Por MQTT solo van avisos y órdenes pequeñ
   8. La API espera la confirmación hasta **5 s [decisión de Claude]** y responde abierto, denegado (con motivo) o "panel sin conexión".
 - **Cambios en el panel:** el permiso local suma la columna `allow_remote` y la cuadrícula del panel web local suma esa casilla, al lado de "Permitir control RF". El log local suma el origen `4` = "Remota".
 
+- **Ajustes al implementar (2026-11-02) [decisiones de Claude]:** reutiliza el canal de "Probar" (`panel_commands`, agente y socket del daemon; ver `docs/superpowers/specs/2026-10-30-controles-por-panel-logs-y-prueba-de-salidas-design.md`):
+  - **Ruta:** `POST /api/v1/installations/{installationId}/outputs/{outputId}/open`, con cuerpo `{holder_id, requested_by}`. El titular debe ser de la misma instalación; si no, responde 400.
+  - **Confirmación:** el agente no publica en `acc/<code>/evt`; confirma por la API de dispositivos (`POST /api/device/v1/command-result`), que suma un `reason` opcional con el motivo del daemon.
+  - **Espera:** la API espera la confirmación hasta **8 s**, porque la orden vence a los 10 s. Responde `{status: "opened" | "denied" | "failed" | "timeout", reason, detail}`. Si el panel está sin conexión, o si ya hay una orden pendiente en esa salida, responde 409.
+  - **Daemon:**
+    - el titular se busca por su uuid; si no existe, rechaza con el motivo nuevo `11` = "Titular desconocido";
+    - la salida debe estar habilitada (motivo 2);
+    - el permiso debe tener `allow_remote` (motivo 3);
+    - si la apertura procede, el log lleva origen `4`, la copia del titular y `credential_label` = solicitante.
+  - **Esquema local v7:** `ALTER TABLE permissions ADD COLUMN allow_remote`. En la nube se agrega `profile_panel_rules.allow_remote`.
+  - **Compatibilidad entre versiones:** si al panel le llega un permiso sin `allow_remote`, lo toma como `false`; la nube acepta un push sin ese campo. Así el orden de despliegue no rompe la sincronización.
+  - **La interfaz no tiene botón de apertura remota:** para probar ya existe "Probar". Solo se agregan la casilla "Permitir apertura remota" (en las reglas de la nube y en la cuadrícula local) y el origen "Remota" en los logs.
+
 ## 10. Códigos QR temporales (etapa 4)
 
 - **Lectura:** el lector QR envía el código por Wiegand, igual que una tarjeta.

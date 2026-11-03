@@ -7,7 +7,8 @@ import { createAdminSupabase } from "@/lib/supabase/admin";
 /**
  * Guarda el resultado que informa el panel de una orden de la nube (`panel_commands`).
  * Solo acepta órdenes de ESE panel: otra (o una que no existe) es 404 `not_found`.
- * - `pending` y vigente: queda `ok` o `error`, con `detail` y `finished_at`.
+ * - `pending` y vigente: queda `ok` o `error`, con `detail`, `reason` (solo `remote_open`)
+ *   y `finished_at`.
  * - `pending` ya caducada (resultado tardío): queda `expired`; el resultado se descarta.
  * - ya terminada (resultado repetido): no cambia nada.
  * Cada escritura exige `status = 'pending'`, así que dos resultados simultáneos no se pisan.
@@ -27,7 +28,12 @@ export async function recordCommandResult(panel: Panel, body: CommandResult): Pr
   const ahora = new Date();
   const vigente = Date.parse(orden.expires_at) >= ahora.getTime();
   const cambios = vigente
-    ? { status: body.ok ? "ok" : "error", detail: body.detail ?? null, finished_at: ahora.toISOString() }
+    ? {
+        status: body.ok ? "ok" : "error",
+        detail: body.detail ?? null,
+        reason: body.reason ?? null,
+        finished_at: ahora.toISOString(),
+      }
     : { status: "expired", finished_at: ahora.toISOString() };
   const { error: errorEscritura } = await admin
     .from("panel_commands")

@@ -60,6 +60,7 @@ const PERMISO: Omit<TableData["permissions"], "permission_id" | "name"> = {
   card_reader_mask: 1,
   pin_reader_mask: 2,
   allow_rf: true,
+  allow_remote: true,
   weekday_mask: 62,
   start_minute: 360,
   end_minute: 1320,
@@ -754,7 +755,18 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
       const boton = { id: randomUUID(), data: { control_id: control.id, button: 1, rf_code: 9001, output_id: 2 } };
       s.control_buttons.push(boton);
       const peatonal = permiso(3, "Peatonal");
-      s.permissions.push(peatonal);
+      // Un panel v6 no envía allow_remote: su regla queda en false.
+      const permisoV6 = {
+        output_mask: 1,
+        card_reader_mask: 2,
+        pin_reader_mask: 0,
+        allow_rf: false,
+        weekday_mask: 127,
+        start_minute: 0,
+        end_minute: 1439,
+      };
+      const vehicular = { id: randomUUID(), data: { permission_id: 4, name: "Vehicular", ...permisoV6 } };
+      s.permissions.push(peatonal, vehicular);
       const hp = asignacion(carla.id, 3);
       s.holder_permissions.push(hp);
       s.outputs.push(...salidasDelPanel());
@@ -793,6 +805,9 @@ describe("importación al vincular (POST /import-snapshot y confirmImport)", () 
       const reglas = await filasDe("profile_panel_rules", "profile_id", peatonal.id);
       expect(reglas).toHaveLength(1);
       expect(reglas[0]).toMatchObject({ ...comoPanel, panel_id: pVacio.id, ...PERMISO });
+      const reglasV6 = await filasDe("profile_panel_rules", "profile_id", vehicular.id);
+      expect(reglasV6).toHaveLength(1);
+      expect(reglasV6[0]).toMatchObject({ ...comoPanel, panel_id: pVacio.id, ...permisoV6, allow_remote: false });
       expect(await fila("holder_profiles", hp.id)).toMatchObject({
         ...comoPanel,
         holder_id: carla.id,

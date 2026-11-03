@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import pytest
 from helpers import NOW, add_card, add_control, add_holder, set_permission
 
-from acceso.access import PinLockout, authorize_card, authorize_rf, handle_event, permission_allows
+from acceso.access import METHOD_REMOTE, PinLockout, authorize_card, authorize_rf, handle_event, permission_allows
 from acceso.protocol import CardRead, ExitButton, PinRead, RfRead, build_relay_command
 
 LOG_COLUMNS = ("allowed, source, holder_name, holder_kind, credential_label, device_id,"
@@ -372,3 +372,35 @@ def test_rf_allowed_when_one_of_two_permissions_has_allow_rf(conn):
 def test_exit_button_unaffected_by_permissions(conn):
     set_permission(conn, 0, output_mask=0, card_reader_mask=0, pin_reader_mask=0, allow_rf=0)
     assert run(conn, ExitButton(0)).reason == 7
+
+
+@pytest.mark.parametrize("allow_rf, allow_remote, expected", [
+    (1, 0, False),
+    (0, 1, True),
+    (0, 0, False),
+])
+def test_permission_allows_remote_needs_allow_remote(conn, allow_rf, allow_remote, expected):
+    holder_id = add_holder(conn)
+    set_permission(conn, 0, output_mask=0b0010, card_reader_mask=15, pin_reader_mask=15,
+                   allow_rf=allow_rf, allow_remote=allow_remote)
+    assert permission_allows(conn, holder_id, 1, METHOD_REMOTE, None, NOW) is expected
+
+
+def test_permission_allows_remote_checks_output_day_and_time(conn):
+    holder_id = add_holder(conn)
+    set_permission(conn, 0, output_mask=0b0010, weekday_mask=0b0011111, start_minute=1320,
+                   end_minute=360, allow_rf=0, allow_remote=1)
+    assert permission_allows(conn, holder_id, 1, METHOD_REMOTE, None,
+                             NOW.replace(hour=23, minute=30)) is True
+    assert permission_allows(conn, holder_id, 1, METHOD_REMOTE, None, NOW) is False
+    assert permission_allows(conn, holder_id, 0, METHOD_REMOTE, None,
+                             NOW.replace(hour=23, minute=30)) is False
+    # Domingo, fuera de weekday_mask.
+    assert permission_allows(conn, holder_id, 1, METHOD_REMOTE, None,
+                             datetime(2026, 10, 4, 23, 30)) is False
+
+
+def test_allow_remote_does_not_open_rf(conn):
+    holder_id = add_holder(conn)
+    set_permission(conn, 0, output_mask=15, allow_rf=0, allow_remote=1)
+    assert permission_allows(conn, holder_id, 0, "rf", None, NOW) is False

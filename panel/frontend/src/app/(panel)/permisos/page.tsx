@@ -140,6 +140,7 @@ export default function PermissionsPage() {
               <th className="px-4 py-2 font-medium">Tarjeta</th>
               <th className="px-4 py-2 font-medium">PIN</th>
               <th className="px-4 py-2 font-medium">RF</th>
+              <th className="px-4 py-2 font-medium">Remota</th>
               <th className="px-4 py-2 font-medium">Días</th>
               <th className="px-4 py-2 font-medium">Horario</th>
               <th className="px-4 py-2" />
@@ -154,6 +155,7 @@ export default function PermissionsPage() {
                 <MaskCell mask={p.card_reader_mask} prefix="L" fullName={readerLabel} empty="—" />
                 <MaskCell mask={p.pin_reader_mask} prefix="L" fullName={readerLabel} empty="—" />
                 <td className="px-4 py-2">{p.allow_rf ? "Sí" : "—"}</td>
+                <td className="px-4 py-2">{p.allow_remote ? "Sí" : "—"}</td>
                 <td className="px-4 py-2">{daysText(p.weekday_mask)}</td>
                 <td className="px-4 py-2">{scheduleText(p)}</td>
                 <td className="whitespace-nowrap px-4 py-2 text-right">
@@ -168,7 +170,7 @@ export default function PermissionsPage() {
             ))}
             {loaded && permissions.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-6 text-center text-muted">
+                <td colSpan={10} className="px-4 py-6 text-center text-muted">
                   Aún no hay permisos. Crea el primero con Nuevo permiso.
                 </td>
               </tr>

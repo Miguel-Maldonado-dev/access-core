@@ -837,10 +837,13 @@ def test_the_link_is_stopped_on_revocation_and_recreated_on_the_next_activation(
     assert h.calls.count("mqtt.start") == 2 and len(h.links) == 2
 
 
-# --- órdenes de la nube (upload_logs y test_output) ---------------------------------------------
+# --- órdenes de la nube (upload_logs, test_output y remote_open)-----------------------------------------
 
 TEST_ORDER = {"type": "test_output", "command_id": "8f0c2a5e-1d2b-4c3d-9e4f-5a6b7c8d9e0f", "output": 1,
               "requested_by": "ana@example.com", "expires_at": "2027-01-15T08:00:10.000Z"}
+REMOTE_ORDER = {"type": "remote_open", "command_id": "8f0c2a5e-1d2b-4c3d-9e4f-5a6b7c8d9e10", "output": 2,
+                "holder_uuid": "3b1f6c2e-8a4d-4e5f-9c7b-1a2b3c4d5e6f", "requested_by": "app-vecinos",
+                "expires_at": "2027-01-15T08:00:10.000Z"}
 
 
 def test_the_link_receives_on_command(h):
@@ -918,24 +921,26 @@ def test_upload_logs_order_not_active_resyncs_the_state(h):
     assert h.calls == ["upload_logs", "link_state"] and h.state() == "staging"
 
 
-def test_test_output_order_in_active_is_submitted_to_the_worker(h):
+@pytest.mark.parametrize("body", [TEST_ORDER, REMOTE_ORDER])
+def test_worker_orders_in_active_are_submitted_to_the_worker(h, body):
     h.preset_active()
     runner = h.started()
     h.run_for(runner, 2)
-    h.links[0].on_command(TEST_ORDER)
-    assert h.workers[0].submitted == [TEST_ORDER]
+    h.links[0].on_command(body)
+    assert h.workers[0].submitted == [body]
     h.run_for(runner, 3)
     assert h.cycles() == 1 and h.count("upload_logs") == 1   # no dispara un ciclo ni una subida
 
 
-def test_test_output_order_outside_active_is_not_submitted(h):
+@pytest.mark.parametrize("body", [TEST_ORDER, REMOTE_ORDER])
+def test_worker_orders_outside_active_are_not_submitted(h, body):
     ensure_identity(h.conn)
     save_credentials(h.env_path, CODE, TOKEN)
     h.api.import_result = Seq("awaiting_review")
     runner = h.started()
     h.run_for(runner, 2)
     assert h.state() == "awaiting_review"
-    h.links[0].on_command(TEST_ORDER)
+    h.links[0].on_command(body)
     assert h.workers[0].submitted == []
 
 

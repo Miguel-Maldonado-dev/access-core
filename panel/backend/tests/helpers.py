@@ -50,16 +50,17 @@ def add_control(conn, holder_id, buttons, description="Control 1"):
 
 
 def set_permission(conn, permission_id, output_mask, card_reader_mask=15, pin_reader_mask=0,
-                   weekday_mask=127, start_minute=0, end_minute=0, name="p", allow_rf=1):
+                   weekday_mask=127, start_minute=0, end_minute=0, name="p", allow_rf=1,
+                   allow_remote=0):
     conn.execute(
         "INSERT INTO permissions(permission_id, name, output_mask, card_reader_mask,"
-        " pin_reader_mask, weekday_mask, start_minute, end_minute, allow_rf, uuid, updated_at,"
-        " origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        " pin_reader_mask, weekday_mask, start_minute, end_minute, allow_rf, allow_remote, uuid,"
+        " updated_at, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         " ON CONFLICT(permission_id) DO UPDATE SET name=excluded.name,"
         " output_mask=excluded.output_mask, card_reader_mask=excluded.card_reader_mask,"
         " pin_reader_mask=excluded.pin_reader_mask, weekday_mask=excluded.weekday_mask,"
         " start_minute=excluded.start_minute, end_minute=excluded.end_minute,"
-        " allow_rf=excluded.allow_rf",
+        " allow_rf=excluded.allow_rf, allow_remote=excluded.allow_remote",
         (permission_id, name, output_mask, card_reader_mask, pin_reader_mask, weekday_mask,
-         start_minute, end_minute, allow_rf) + stamp(),
+         start_minute, end_minute, allow_rf, allow_remote) + stamp(),
     )

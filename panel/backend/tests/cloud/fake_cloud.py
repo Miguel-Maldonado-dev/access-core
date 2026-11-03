@@ -59,7 +59,7 @@ DATA_SCHEMAS = {
                         "output_id": _nullable(_int(0, 3))},
     "permissions": {"permission_id": _int(0, 31), "name": _text, "output_mask": _mask,
                     "card_reader_mask": _mask, "pin_reader_mask": _mask, "allow_rf": _bool,
-                    "weekday_mask": _int(0, 127), "start_minute": _minute, "end_minute": _minute},
+                    "allow_remote": _bool, "weekday_mask": _int(0, 127), "start_minute": _minute, "end_minute": _minute},
     "holder_permissions": {"holder_id": _uuid, "permission_id": _int(0, 31)},
     "outputs": {"output_id": _int(0, 3), "alias": _text, "duration_ms": _int(0, 65535),
                 "reader_mask": _mask, "enabled": _bool},
@@ -204,8 +204,9 @@ class FakeCloud:
             self.alerts.append(body)
             return httpx.Response(204)
         if route == ("POST", "/command-result"):
-            assert set(body) == {"command_id", "ok", "detail"}
+            assert set(body) - {"reason"} == {"command_id", "ok", "detail"}
             assert _uuid(body["command_id"]) and isinstance(body["ok"], bool)
+            assert "reason" not in body or _int(0, 255)(body["reason"])
             assert body["detail"] is None or isinstance(body["detail"], str)
             self.command_results.append(body)
             return httpx.Response(204)

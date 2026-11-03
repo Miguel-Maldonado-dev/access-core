@@ -43,6 +43,7 @@ const REASONS: Record<number, string> = {
   8: "PIN desconocido",
   9: "PIN no permitido",
   10: "PIN bloqueado",
+  11: "Titular desconocido",
 };
 
 // Copiado de panel/frontend/src/lib/format.ts
@@ -51,11 +52,11 @@ const SOURCES: Record<number, string> = {
   1: "Control RF",
   2: "Botón de salida",
   3: "PIN",
-  // El 4 queda reservado para "Remota" (etapa 3).
+  4: "Remota",
   5: "Prueba",
 };
 
-export const SOURCE_OPTIONS = [0, 1, 2, 3, 5] as const;
+export const SOURCE_OPTIONS = [0, 1, 2, 3, 4, 5] as const;
 
 export const reasonLabel = (reason: number) => REASONS[reason] ?? `Motivo ${reason}`;
 export const sourceLabel = (source: number) => SOURCES[source] ?? `Origen ${source}`;
@@ -88,6 +89,8 @@ export function mediumLabel(log: MediumInput): string {
   if (log.source === 3) {
     return device === null ? "PIN" : `PIN · ${readerLabel(device)}`;
   }
+  // La etiqueta dice quién pidió la apertura remota (`requested_by`).
+  if (log.source === 4) return log.credential_label ?? "Remota";
   // La etiqueta dice quién pidió la prueba: "Prueba — web local" o "Prueba — <correo>".
   if (log.source === 5) return log.credential_label ?? "Prueba";
   return device === null ? "Botón de salida" : `Botón de salida ${device + 1}`;

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from acceso.db import connect
 from acceso.migrate import MigrationError, MigrationResult, migrate
 
 LEGACY_SQL = Path(__file__).parent / "fixtures" / "legacy_v2.sql"
@@ -15,8 +16,8 @@ V3_SQL = Path(__file__).parent / "fixtures" / "legacy_v3.sql"
 V4_SQL = Path(__file__).parent / "fixtures" / "legacy_v4.sql"
 V5_SQL = Path(__file__).parent / "fixtures" / "legacy_v5.sql"
 
-# Columnas que agrega v6; los volcados las omiten para comparar con el contenido anterior.
-V6_COLUMNS = ("alias", "uuid", "updated_at", "origin")
+# Columnas que agregan v6 y v7; los volcados las omiten para comparar con el contenido anterior.
+V6_COLUMNS = ("alias", "uuid", "updated_at", "origin", "allow_remote")
 
 
 def make_legacy(path):
@@ -44,7 +45,7 @@ def test_migrates_legacy_v2(tmp_path):
     result = migrate(db)
 
     assert result.from_version == 2
-    assert result.to_version == 6
+    assert result.to_version == 7
     assert result.backup_path.name == "access_control_backup_v2.sqlite"
     assert rows(result.backup_path, "SELECT COUNT(*) FROM users") == [(1,)]
 
@@ -58,7 +59,7 @@ def test_migrates_legacy_v2(tmp_path):
         db, "SELECT output_id IS NULL FROM control_buttons WHERE control_id=1 AND button=2"
     ) == [(1,)]
     assert rows(db, "SELECT COUNT(*) FROM cards") == [(2,)]
-    assert rows(db, "PRAGMA user_version") == [(6,)]
+    assert rows(db, "PRAGMA user_version") == [(7,)]
     assert rows(db, "SELECT pin FROM holders") == [(None,)]
     assert rows(db, "SELECT card_reader_mask, pin_reader_mask, allow_rf FROM permissions") == [
         (15, 0, 1)]
@@ -89,7 +90,7 @@ def test_second_run_is_noop(tmp_path):
 
     result = migrate(db)
 
-    assert result == MigrationResult(6, 6, None)
+    assert result == MigrationResult(7, 7, None)
     assert len(list(tmp_path.glob("*_backup_v2.sqlite"))) == 1
 
 
@@ -98,7 +99,7 @@ def test_missing_file_creates_fresh_schema(tmp_path):
 
     result = migrate(db)
 
-    assert result == MigrationResult(0, 6, None)
+    assert result == MigrationResult(0, 7, None)
     assert rows(db, "SELECT COUNT(*) FROM outputs") == [(4,)]
 
 
@@ -120,7 +121,7 @@ def test_concurrent_migrations_run_once(tmp_path):
     with multiprocessing.get_context("spawn").Pool(2) as pool:
         versions = pool.map(_migrate_worker, [str(db), str(db)])
 
-    assert set(versions) == {2, 6}
+    assert set(versions) == {2, 7}
     assert len(list(tmp_path.glob("*_backup_v2.sqlite"))) == 1
 
 
@@ -147,9 +148,9 @@ def test_failed_conversion_can_be_retried(tmp_path):
     conn.close()
     result = migrate(db)
 
-    assert result.from_version == 2 and result.to_version == 6
+    assert result.from_version == 2 and result.to_version == 7
     assert result.backup_path == first_backup
-    assert rows(db, "PRAGMA user_version") == [(6,)]
+    assert rows(db, "PRAGMA user_version") == [(7,)]
     kept = [p for p in tmp_path.glob("access_control_backup_v2.*.sqlite")]
     assert len(kept) == 1
     assert rows(kept[0], "SELECT name FROM users") == [("  ",)]
@@ -178,18 +179,18 @@ def _dump(path):
         conn.close()
 
 
-def test_migrates_v3_to_v6_preserving_rows(tmp_path):
+def test_migrates_v3_to_v7_preserving_rows(tmp_path):
     db = tmp_path / "access_control.sqlite"
     make_v3(db)
     before = _dump(db)
 
     result = migrate(db)
 
-    assert (result.from_version, result.to_version) == (3, 6)
+    assert (result.from_version, result.to_version) == (3, 7)
     assert result.backup_path.name == "access_control_backup_v3.sqlite"
     assert rows(result.backup_path, "PRAGMA user_version") == [(3,)]
     assert _dump(result.backup_path) == before
-    assert rows(db, "PRAGMA user_version") == [(6,)]
+    assert rows(db, "PRAGMA user_version") == [(7,)]
     after = _dump(db)
     for table, content in before.items():
         if table == "holders":
@@ -199,7 +200,7 @@ def test_migrates_v3_to_v6_preserving_rows(tmp_path):
         else:
             assert content == after[table]
     assert not list(tmp_path.glob("*.tmp"))
-    assert migrate(db) == MigrationResult(6, 6, None)
+    assert migrate(db) == MigrationResult(7, 7, None)
     assert len(list(tmp_path.glob("*_backup_v3*.sqlite"))) == 1
 
 
@@ -228,7 +229,7 @@ def _schema_shape(path):
         conn.close()
 
 
-def test_migrated_v3_and_fresh_v6_have_identical_schema(tmp_path):
+def test_migrated_v3_and_fresh_v7_have_identical_schema(tmp_path):
     migrated, fresh = tmp_path / "migrated.sqlite", tmp_path / "fresh.sqlite"
     make_v3(migrated)
     migrate(migrated)
@@ -276,7 +277,7 @@ def test_failed_v3_migration_keeps_v3_and_can_retry(tmp_path):
     conn.execute("DROP TABLE holders_pin")
     conn.commit()
     conn.close()
-    assert migrate(db).to_version == 6
+    assert migrate(db).to_version == 7
 
 
 def test_existing_v3_backup_is_rotated(tmp_path):
@@ -333,6 +334,17 @@ def make_v5(path):
     conn.close()
 
 
+def make_v6(path):
+    """Base v6 real: el fixture v5 convertido con el paso v5 -> v6 (esquema v6 congelado)."""
+    from acceso import migrate as m
+    make_v5(path)
+    conn = connect(path)
+    try:
+        m._convert_v5(conn)
+    finally:
+        conn.close()
+
+
 def test_v4_fixture_is_really_v4(tmp_path):
     db = tmp_path / "v4.sqlite"
     make_v4(db)
@@ -341,18 +353,18 @@ def test_v4_fixture_is_really_v4(tmp_path):
     assert rows(db, "PRAGMA user_version") == [(4,)]
 
 
-def test_migrates_v4_to_v6_preserving_every_row(tmp_path):
+def test_migrates_v4_to_v7_preserving_every_row(tmp_path):
     db = tmp_path / "access_control.sqlite"
     make_v4(db)
     before = _dump(db)
 
     result = migrate(db)
 
-    assert (result.from_version, result.to_version) == (4, 6)
+    assert (result.from_version, result.to_version) == (4, 7)
     assert result.backup_path.name == "access_control_backup_v4.sqlite"
     assert stat.S_IMODE(result.backup_path.stat().st_mode) == 0o600
     assert _dump(result.backup_path) == before
-    assert rows(db, "PRAGMA user_version") == [(6,)]
+    assert rows(db, "PRAGMA user_version") == [(7,)]
     after = _dump(db)
     for table, content in before.items():
         if table != "permissions":
@@ -367,7 +379,7 @@ def test_migrates_v4_to_v6_preserving_every_row(tmp_path):
     ]
     assert rows(db, "PRAGMA foreign_key_check") == []
     assert not list(tmp_path.glob("*.tmp"))
-    assert migrate(db) == MigrationResult(6, 6, None)
+    assert migrate(db) == MigrationResult(7, 7, None)
     assert len(list(tmp_path.glob("*_backup_v4*.sqlite"))) == 1
     # el borrado en cascada sigue funcionando tras la reconstrucción
     conn = sqlite3.connect(str(db))
@@ -378,8 +390,8 @@ def test_migrates_v4_to_v6_preserving_every_row(tmp_path):
     conn.close()
 
 
-@pytest.mark.parametrize("maker", [make_legacy, make_v3, make_v4, make_v5])
-def test_migrated_and_fresh_v6_have_identical_schema(tmp_path, maker):
+@pytest.mark.parametrize("maker", [make_legacy, make_v3, make_v4, make_v5, make_v6])
+def test_migrated_and_fresh_v7_have_identical_schema(tmp_path, maker):
     migrated, fresh = tmp_path / "migrated.sqlite", tmp_path / "fresh.sqlite"
     maker(migrated)
     migrate(migrated)
@@ -406,7 +418,7 @@ def test_failed_v4_migration_keeps_v4_and_can_retry(tmp_path):
     conn.execute("DROP TABLE permissions_v5")
     conn.commit()
     conn.close()
-    assert migrate(db).to_version == 6
+    assert migrate(db).to_version == 7
     assert _dump(db)["holder_permissions"] == before["holder_permissions"]
 
 
@@ -441,8 +453,8 @@ def test_v4_pre_existing_orphans_do_not_block_and_are_kept(tmp_path, orphan):
 
     result = migrate(db)
 
-    assert result.to_version == 6
-    assert rows(db, "PRAGMA user_version") == [(6,)]
+    assert result.to_version == 7
+    assert rows(db, "PRAGMA user_version") == [(7,)]
     assert _dump(db)["holder_permissions"] == before["holder_permissions"]
     assert orphan in _dump(db)["holder_permissions"]
 
@@ -466,7 +478,7 @@ def test_rebuild_that_loses_a_permission_aborts_and_keeps_v4(tmp_path, monkeypat
     assert _dump(db) == before
 
 
-# --- v5 -> v6 ---------------------------------------------------------------------------------
+# --- v5 -> v6 (y de ahí a v7) ---------------------------------------------------------------
 
 REPLICATED = ("holders", "cards", "controls", "control_buttons", "permissions",
               "holder_permissions", "outputs")
@@ -481,7 +493,7 @@ def test_v5_fixture_is_really_v5(tmp_path):
     assert "card_reader_mask" in [r[1] for r in rows(db, "PRAGMA table_info(permissions)")]
 
 
-def test_migrates_v5_to_v6_keeping_rows_with_unique_uuids_and_empty_outbox(tmp_path):
+def test_migrates_v5_to_v7_keeping_rows_with_unique_uuids_and_empty_outbox(tmp_path):
     db = tmp_path / "access_control.sqlite"
     make_v5(db)
     before = _dump(db)
@@ -489,12 +501,12 @@ def test_migrates_v5_to_v6_keeping_rows_with_unique_uuids_and_empty_outbox(tmp_p
 
     result = migrate(db)
 
-    assert (result.from_version, result.to_version) == (5, 6)
+    assert (result.from_version, result.to_version) == (5, 7)
     assert result.backup_path.name == "access_control_backup_v5.sqlite"
     assert stat.S_IMODE(result.backup_path.stat().st_mode) == 0o600
     assert _dump(result.backup_path) == before
     assert rows(result.backup_path, "PRAGMA user_version") == [(5,)]
-    assert rows(db, "PRAGMA user_version") == [(6,)]
+    assert rows(db, "PRAGMA user_version") == [(7,)]
     after = _dump(db)
     for table, content in before.items():
         assert content == after[table], table  # todas las filas, sin cambios (access_logs incluida)
@@ -517,11 +529,11 @@ def test_migrates_v5_to_v6_keeping_rows_with_unique_uuids_and_empty_outbox(tmp_p
     assert rows(db, "SELECT id, applying FROM sync_guard") == [(1, 0)]
     assert rows(db, "SELECT COUNT(*) FROM sync_state") == [(0,)]
     assert not list(tmp_path.glob("*.tmp"))
-    assert migrate(db) == MigrationResult(6, 6, None)
+    assert migrate(db) == MigrationResult(7, 7, None)
     assert len(list(tmp_path.glob("*_backup_v5*.sqlite"))) == 1
 
 
-def test_migrated_v6_tracks_changes_cascades_and_keeps_pin_rules(tmp_path):
+def test_migrated_v7_tracks_changes_cascades_and_keeps_pin_rules(tmp_path):
     db = tmp_path / "access_control.sqlite"
     make_v5(db)
     migrate(db)
@@ -560,7 +572,7 @@ def test_failed_v5_migration_keeps_v5_and_can_retry(tmp_path):
     conn.execute("DROP TABLE holders_v6")
     conn.commit()
     conn.close()
-    assert migrate(db).to_version == 6
+    assert migrate(db).to_version == 7
     after = _dump(db)
     assert {t: after[t] for t in before} == before
 
@@ -584,7 +596,7 @@ def test_v6_failure_after_legacy_step_leaves_v5_and_retry_finishes(tmp_path):
     conn.commit()
     conn.close()
     result = migrate(db)
-    assert (result.from_version, result.to_version) == (5, 6)
+    assert (result.from_version, result.to_version) == (5, 7)
     assert result.backup_path.name == "access_control_backup_v5.sqlite"
     assert rows(db, "SELECT COUNT(*) FROM cards WHERE uuid IS NOT NULL") == [(2,)]
 
@@ -593,7 +605,7 @@ def test_chained_migration_takes_only_the_origin_backup(tmp_path):
     db = tmp_path / "access_control.sqlite"
     make_v3(db)
     result = migrate(db)
-    assert (result.from_version, result.to_version) == (3, 6)
+    assert (result.from_version, result.to_version) == (3, 7)
     assert [p.name for p in tmp_path.glob("*_backup_*")] == ["access_control_backup_v3.sqlite"]
 
 
@@ -611,7 +623,7 @@ def test_v5_backup_rotates_and_prunes(tmp_path):
     assert len(list(tmp_path.glob("access_control_backup_v5.*.sqlite"))) == 3
 
 
-def test_migrated_and_fresh_v6_have_identical_triggers_and_indexes(tmp_path):
+def test_migrated_and_fresh_v7_have_identical_triggers_and_indexes(tmp_path):
     migrated, fresh = tmp_path / "migrated.sqlite", tmp_path / "fresh.sqlite"
     make_v5(migrated)
     migrate(migrated)
@@ -624,3 +636,115 @@ def test_migrated_and_fresh_v6_have_identical_triggers_and_indexes(tmp_path):
 
     assert objects(migrated) == objects(fresh)
     assert len([o for o in objects(fresh) if o[0] == "trigger"]) == 21
+
+
+# --- v6 -> v7 ---------------------------------------------------------------------------------
+
+def _full_dump(path):
+    """Todas las columnas de todas las tablas (uuid, updated_at y bandeja incluidos)."""
+    conn = sqlite3.connect(str(path))
+    try:
+        out = {}
+        for (table,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"):
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(%s)" % table)
+                    if r[1] != "allow_remote"]
+            out[table] = [tuple(r) for r in conn.execute(
+                "SELECT %s FROM %s ORDER BY 1, 2" % (", ".join(cols), table))]
+        return out
+    finally:
+        conn.close()
+
+
+def _v6_with_pending_changes(path):
+    make_v6(path)
+    conn = sqlite3.connect(str(path))
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("UPDATE cards SET description='pendiente', updated_at=4242 WHERE card_code=111")
+    conn.execute("INSERT INTO sync_state(key, value) VALUES ('installation_id', 'inst-1')")
+    conn.commit()
+    conn.close()
+
+
+def test_v6_helper_is_really_v6(tmp_path):
+    db = tmp_path / "v6.sqlite"
+    make_v6(db)
+    assert rows(db, "PRAGMA user_version") == [(6,)]
+    cols = [r[1] for r in rows(db, "PRAGMA table_info(permissions)")]
+    assert "uuid" in cols and "allow_remote" not in cols
+    assert rows(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'") == [(21,)]
+
+
+def test_migrates_v6_to_v7_keeping_rows_uuids_and_outbox(tmp_path):
+    db = tmp_path / "access_control.sqlite"
+    _v6_with_pending_changes(db)
+    before = _full_dump(db)
+    assert before["sync_outbox"] and before["sync_state"] == [("installation_id", "inst-1")]
+
+    result = migrate(db)
+
+    assert (result.from_version, result.to_version) == (6, 7)
+    assert result.backup_path.name == "access_control_backup_v6.sqlite"
+    assert stat.S_IMODE(result.backup_path.stat().st_mode) == 0o600
+    assert rows(result.backup_path, "PRAGMA user_version") == [(6,)]
+    assert _full_dump(result.backup_path) == before
+    assert rows(db, "PRAGMA user_version") == [(7,)]
+    assert _full_dump(db) == before  # filas, uuid, updated_at, bandeja y estado intactos
+    assert rows(db, "SELECT permission_id, allow_remote FROM permissions ORDER BY 1") == [
+        (0, 0), (1, 0), (2, 0)]
+    assert rows(db, "PRAGMA foreign_key_check") == []
+    assert rows(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'") == [(21,)]
+    assert not list(tmp_path.glob("*.tmp"))
+    assert migrate(db) == MigrationResult(7, 7, None)
+    assert len(list(tmp_path.glob("*_backup_v6*.sqlite"))) == 1
+
+
+def test_migrated_v7_tracks_allow_remote_changes(tmp_path):
+    db = tmp_path / "access_control.sqlite"
+    make_v6(db)
+    migrate(db)
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE permissions SET allow_remote=1, updated_at=5 WHERE permission_id=1")
+    assert [tuple(r) for r in conn.execute("SELECT table_name, op FROM sync_outbox")] == [
+        ("permissions", "upsert")]
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE permissions SET allow_remote=2")
+    conn.close()
+
+
+def test_failed_v7_step_rolls_back_and_keeps_v6(tmp_path, monkeypatch):
+    from acceso import migrate as m
+    db = tmp_path / "access_control.sqlite"
+    make_v6(db)
+    before = _full_dump(db)
+    monkeypatch.setattr(m, "_V7_ALTERS", m._V7_ALTERS + ("ALTER TABLE no_existe ADD COLUMN x",))
+
+    with pytest.raises(MigrationError) as exc:
+        migrate(db)
+    assert "sigue en v6" in str(exc.value)
+    assert rows(db, "PRAGMA user_version") == [(6,)]
+    assert "allow_remote" not in [r[1] for r in rows(db, "PRAGMA table_info(permissions)")]
+    assert _full_dump(db) == before
+
+    monkeypatch.undo()
+    result = migrate(db)
+    assert (result.from_version, result.to_version) == (6, 7)
+
+
+def test_v7_failure_after_v6_step_leaves_v6_and_retry_finishes(tmp_path, monkeypatch):
+    from acceso import migrate as m
+    db = tmp_path / "access_control.sqlite"
+    make_v5(db)
+    monkeypatch.setattr(m, "_V7_ALTERS", ("ALTER TABLE no_existe ADD COLUMN x",))
+
+    with pytest.raises(MigrationError) as exc:
+        migrate(db)
+    assert "sigue en v6" in str(exc.value)
+    assert rows(db, "PRAGMA user_version") == [(6,)]
+    assert (tmp_path / "access_control_backup_v5.sqlite").exists()
+
+    monkeypatch.undo()
+    result = migrate(db)
+    assert (result.from_version, result.to_version) == (6, 7)
+    assert result.backup_path.name == "access_control_backup_v6.sqlite"
+    assert rows(db, "SELECT COUNT(*) FROM permissions WHERE allow_remote = 0") == [(3,)]

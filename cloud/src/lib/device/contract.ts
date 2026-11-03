@@ -86,6 +86,8 @@ export const dataSchemas = {
     card_reader_mask: mascara4,
     pin_reader_mask: mascara4,
     allow_rf: z.boolean(),
+    // Opcional: un panel v6 no lo envía (la nube conserva su valor). La nube siempre lo proyecta.
+    allow_remote: z.boolean().optional(),
     weekday_mask: entero(0, 127),
     start_minute: minutoDelDia,
     end_minute: minutoDelDia,
@@ -290,13 +292,15 @@ export const alertRequestSchema = z.object({
 });
 
 /**
- * Cuerpo de `POST /command-result`: el resultado de una orden de la nube (`test_output`).
- * `detail` es el error del panel (o nulo si salió bien).
+ * Cuerpo de `POST /command-result`: el resultado de una orden de la nube (`test_output` o
+ * `remote_open`). `detail` es el texto del panel (o nulo); `reason` es el motivo de la
+ * decisión del daemon y solo llega en `remote_open`.
  */
 export const commandResultSchema = z.strictObject({
   command_id: uuidSchema,
   ok: z.boolean(),
   detail: texto.max(200).nullable().optional(),
+  reason: entero(0, 255).nullable().optional(),
 });
 
 export type CommandResult = z.infer<typeof commandResultSchema>;

@@ -35,6 +35,7 @@ describe("POST /command-result", () => {
   let panelA: PanelPrueba;
   let panelA2: PanelPrueba;
   let panelS: PanelPrueba; // en staging
+  let holderId: string;
   const paneles: string[] = [];
   let salida = 0;
 
@@ -56,15 +57,19 @@ describe("POST /command-result", () => {
     return { ...panel, id: data.id };
   }
 
-  /** Orden `pending` del panel; `venceEnMs` negativo la deja ya caducada. */
-  async function crearOrden(panel: PanelPrueba, venceEnMs = 10_000): Promise<string> {
+  /**
+   * Orden `pending` del panel; `venceEnMs` negativo la deja ya caducada. `remota` crea una
+   * `remote_open` (con su titular) en lugar de una `test_output`.
+   */
+  async function crearOrden(panel: PanelPrueba, venceEnMs = 10_000, remota = false): Promise<string> {
     const { data, error } = await admin
       .from("panel_commands")
       .insert({
         tenant_id: tenantId,
         installation_id: installationId,
         panel_id: panel.id,
-        kind: "test_output",
+        kind: remota ? "remote_open" : "test_output",
+        holder_id: remota ? holderId : null,
         // Cada orden en una salida distinta del ciclo 0..3 para no chocar con otra pendiente.
         output_index: salida++ % 4,
         requested_by: "tecnico@test.local",
@@ -79,9 +84,9 @@ describe("POST /command-result", () => {
   async function orden(id: string) {
     const { data, error } = await admin
       .from("panel_commands")
-      .select("status, detail, finished_at")
+      .select("status, detail, reason, finished_at")
       .eq("id", id)
-      .single<{ status: string; detail: string | null; finished_at: string | null }>();
+      .single<{ status: string; detail: string | null; reason: number | null; finished_at: string | null }>();
     if (error) throw error;
     return data;
   }
@@ -113,6 +118,13 @@ describe("POST /command-result", () => {
     panelA = await crearPanel();
     panelA2 = await crearPanel();
     panelS = await crearPanel("staging");
+    const h = await admin
+      .from("holders")
+      .insert({ installation_id: installationId, kind: "persona", name: "Ana", updated_by: "prueba", origin: "cloud" })
+      .select("id")
+      .single<{ id: string }>();
+    if (h.error) throw h.error;
+    holderId = h.data.id;
   });
 
   afterAll(async () => {
@@ -128,7 +140,7 @@ describe("POST /command-result", () => {
     expect(res.status).toBe(204);
     expect(res.headers.get("cache-control")).toContain("no-store");
     const o = await orden(id);
-    expect(o).toMatchObject({ status: "ok", detail: null });
+    expect(o).toMatchObject({ status: "ok", detail: null, reason: null });
     expect(Date.parse(o.finished_at!)).toBeGreaterThanOrEqual(antes - 1000);
   });
 
@@ -145,6 +157,29 @@ describe("POST /command-result", () => {
     const id = await crearOrden(panelA);
     expect((await postCommandResult(peticion(panelA, { command_id: id, ok: true }))).status).toBe(204);
     expect(await orden(id)).toMatchObject({ status: "ok", detail: null });
+  });
+
+  it("el resultado de una apertura remota guarda su motivo (reason)", async () => {
+    const negada = await crearOrden(panelA, 10_000, true);
+    const res = await postCommandResult(
+      peticion(panelA, { command_id: negada, ok: false, detail: "Sin permiso de apertura remota", reason: 3 }),
+    );
+    expect(res.status).toBe(204);
+    expect(await orden(negada)).toMatchObject({ status: "error", detail: "Sin permiso de apertura remota", reason: 3 });
+
+    const abierta = await crearOrden(panelA, 10_000, true);
+    const ok = await postCommandResult(
+      peticion(panelA, { command_id: abierta, ok: true, detail: "Salida abierta", reason: 0 }),
+    );
+    expect(ok.status).toBe(204);
+    expect(await orden(abierta)).toMatchObject({ status: "ok", detail: "Salida abierta", reason: 0 });
+  });
+
+  it("un resultado tardío de una apertura remota no guarda su motivo", async () => {
+    const id = await crearOrden(panelA, -1000, true);
+    const res = await postCommandResult(peticion(panelA, { command_id: id, ok: true, detail: null, reason: 0 }));
+    expect(res.status).toBe(204);
+    expect(await orden(id)).toMatchObject({ status: "expired", detail: null, reason: null });
   });
 
   it("el resultado de otro panel da 404 y no toca la orden", async () => {
@@ -197,6 +232,10 @@ describe("POST /command-result", () => {
       { command_id: id, detail: null },
       { command_id: id, ok: true, detail: "x".repeat(201) },
       { command_id: id, ok: true, detail: null, extra: 1 },
+      { command_id: id, ok: true, detail: null, reason: 256 },
+      { command_id: id, ok: true, detail: null, reason: -1 },
+      { command_id: id, ok: true, detail: null, reason: 1.5 },
+      { command_id: id, ok: true, detail: null, reason: "3" },
     ]) {
       const res = await postCommandResult(peticion(panelA, cuerpo));
       expect(res.status, JSON.stringify(cuerpo)).toBe(400);

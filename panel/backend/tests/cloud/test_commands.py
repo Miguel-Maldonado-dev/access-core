@@ -1,4 +1,5 @@
-"""Órdenes de la nube para el agente: `CommandWorker` (prueba de salida) y `post_command_result`.
+"""Órdenes de la nube para el agente: `CommandWorker` (prueba de salida y apertura remota) y
+`post_command_result`.
 
 El daemon y la nube son falsos: nunca se abre un socket real ni se llama a la red.
 """
@@ -40,8 +41,8 @@ class Results:
         self.error = error
         self.done = threading.Event()
 
-    def __call__(self, command_id, ok, detail):
-        self.items.append((command_id, ok, detail))
+    def __call__(self, command_id, ok, detail, reason):
+        self.items.append((command_id, ok, detail, reason))
         self.done.set()
         if self.error is not None:
             raise self.error
@@ -50,6 +51,16 @@ class Results:
 def order(**changes):
     body = {"type": "test_output", "command_id": str(uuid.uuid4()), "output": 1,
             "requested_by": "ana@example.com", "expires_at": VALID_UNTIL}
+    body.update(changes)
+    return body
+
+
+HOLDER = "3b1f6c2e-8a4d-4e5f-9c7b-1a2b3c4d5e6f"
+
+
+def remote(**changes):
+    body = {"type": "remote_open", "command_id": str(uuid.uuid4()), "output": 2,
+            "holder_uuid": HOLDER, "requested_by": "app-vecinos", "expires_at": VALID_UNTIL}
     body.update(changes)
     return body
 
@@ -75,15 +86,15 @@ def test_orden_valida_llama_al_daemon_e_informa():
     run(daemon, results, body)
     assert daemon.requests == [(SOCKET, {"op": "test_output", "output": 2,
                                          "requested_by": "ana@example.com"})]
-    assert results.items == [(body["command_id"], True, None)]
+    assert results.items == [(body["command_id"], True, None, None)]
 
 
 def test_el_error_del_daemon_se_informa_con_su_detalle():
-    daemon = FakeDaemon(reply={"ok": False, "detail": "La salida ya se está probando"})
+    daemon = FakeDaemon(reply={"ok": False, "detail": "La salida ya está en uso"})
     results = Results()
     body = order()
     run(daemon, results, body)
-    assert results.items == [(body["command_id"], False, "La salida ya se está probando")]
+    assert results.items == [(body["command_id"], False, "La salida ya está en uso", None)]
 
 
 def test_el_detalle_largo_se_recorta_a_200_caracteres():
@@ -93,7 +104,7 @@ def test_el_detalle_largo_se_recorta_a_200_caracteres():
     body = order()
     run(daemon, results, body)
     assert DETAIL_MAX == 200
-    assert results.items == [(body["command_id"], False, "x" * 200)]
+    assert results.items == [(body["command_id"], False, "x" * 200, None)]
 
 
 def test_orden_caducada_no_llama_al_daemon(caplog):
@@ -143,7 +154,7 @@ def test_daemon_caido_informa_false():
     daemon, results = FakeDaemon(error=DaemonUnavailable("El daemon no responde")), Results()
     body = order()
     run(daemon, results, body)
-    assert results.items == [(body["command_id"], False, "El daemon no responde")]
+    assert results.items == [(body["command_id"], False, "El daemon no responde", None)]
 
 
 @pytest.mark.parametrize("changes", [
@@ -243,6 +254,110 @@ def test_stop_sin_start_no_falla():
     CommandWorker(FakeDaemon(), SOCKET, Results()).stop()
 
 
+# --- remote_open ---------------------------------------------------------------------------------
+
+def test_remote_open_valida_llama_al_daemon_con_el_payload_exacto_e_informa_el_reason():
+    daemon = FakeDaemon(reply={"ok": True, "reason": 1, "detail": "Salida abierta"})
+    results = Results()
+    body = remote()
+    run(daemon, results, body)
+    assert daemon.requests == [(SOCKET, {"op": "remote_open", "output": 2, "holder_uuid": HOLDER,
+                                         "requested_by": "app-vecinos"})]
+    assert results.items == [(body["command_id"], True, "Salida abierta", 1)]
+
+
+def test_remote_open_denegada_informa_el_motivo_del_daemon():
+    daemon = FakeDaemon(reply={"ok": False, "reason": 3, "detail": "Sin permiso de apertura remota"})
+    results = Results()
+    body = remote()
+    run(daemon, results, body)
+    assert results.items == [(body["command_id"], False, "Sin permiso de apertura remota", 3)]
+
+
+@pytest.mark.parametrize("reply", [
+    {"ok": False, "detail": "Petición inválida"},     # INVALID_REQUEST no trae reason
+    {"ok": False, "reason": "3", "detail": "x"},
+    {"ok": False, "reason": True, "detail": "x"},
+    {"ok": False, "reason": None, "detail": "x"},
+])
+def test_remote_open_sin_reason_entero_informa_none(reply):
+    results = Results()
+    body = remote()
+    run(FakeDaemon(reply=reply), results, body)
+    assert results.items == [(body["command_id"], False, reply["detail"], None)]
+
+
+def test_remote_open_con_daemon_caido_informa_false_sin_reason():
+    daemon, results = FakeDaemon(error=DaemonUnavailable("El daemon no responde")), Results()
+    body = remote()
+    run(daemon, results, body)
+    assert results.items == [(body["command_id"], False, "El daemon no responde", None)]
+
+
+def test_test_output_ignora_el_reason_del_daemon():
+    results = Results()
+    body = order()
+    run(FakeDaemon(reply={"ok": True, "reason": 1}), results, body)
+    assert results.items == [(body["command_id"], True, None, None)]
+
+
+def test_holder_uuid_en_mayusculas_se_acepta_en_forma_canonica():
+    daemon, results = FakeDaemon(), Results()
+    run(daemon, results, remote(holder_uuid=HOLDER.upper()))
+    assert daemon.requests[0][1]["holder_uuid"] == HOLDER
+
+
+@pytest.mark.parametrize("changes", [
+    {"holder_uuid": None},
+    {"holder_uuid": "no-es-un-uuid"},
+    {"holder_uuid": 7},
+    {"holder_uuid": HOLDER.replace("-", "")},        # sin guiones: no es la forma canónica
+    {"holder_uuid": "{%s}" % HOLDER},
+    {"output": 4},
+    {"requested_by": ""},
+    {"expires_at": "mañana"},
+])
+def test_remote_open_con_campos_invalidos_se_descarta(changes):
+    daemon, results = FakeDaemon(), Results()
+    run(daemon, results, remote(**changes))
+    assert daemon.requests == [] and results.items == []
+
+
+def test_remote_open_sin_holder_uuid_se_descarta():
+    daemon, results = FakeDaemon(), Results()
+    body = remote()
+    del body["holder_uuid"]
+    run(daemon, results, body)
+    assert daemon.requests == [] and results.items == []
+
+
+@pytest.mark.parametrize("kind", [None, "upload_logs", "open_door", 5])
+def test_un_tipo_que_no_es_orden_del_worker_se_descarta(kind):
+    daemon, results = FakeDaemon(), Results()
+    run(daemon, results, remote(type=kind), order(type=kind))
+    assert daemon.requests == [] and results.items == []
+
+
+def test_remote_open_caducada_no_llama_al_daemon():
+    daemon, results = FakeDaemon(), Results()
+    run(daemon, results, remote(expires_at=EXPIRED_AT))
+    assert daemon.requests == [] and results.items == []
+
+
+def test_remote_open_repetida_se_ejecuta_una_vez():
+    daemon, results = FakeDaemon(), Results()
+    body = remote()
+    run(daemon, results, body, dict(body), dict(body))
+    assert len(daemon.requests) == 1 and len(results.items) == 1
+
+
+def test_la_deduplicacion_es_comun_a_los_dos_tipos():
+    daemon, results = FakeDaemon(), Results()
+    body = remote()
+    run(daemon, results, body, order(command_id=body["command_id"]))
+    assert [payload["op"] for _, payload in daemon.requests] == ["remote_open"]
+
+
 # --- API: POST /command-result ------------------------------------------------------------------
 
 def test_post_command_result_envia_el_contrato_con_la_credencial():
@@ -256,3 +371,17 @@ def test_post_command_result_envia_el_contrato_con_la_credencial():
         {"command_id": command_id, "ok": True, "detail": None},
     ]
     assert cloud.paths("POST") == ["/command-result", "/command-result"]
+
+
+def test_post_command_result_envia_reason_solo_si_no_es_none():
+    cloud = FakeCloud()
+    api = cloud.api()
+    command_id = str(uuid.uuid4())
+    api.post_command_result(command_id, False, "Sin permiso de apertura remota", 3)
+    api.post_command_result(command_id, True, "Salida abierta", reason=1)
+    api.post_command_result(command_id, False, "Petición inválida", None)
+    assert cloud.command_results == [
+        {"command_id": command_id, "ok": False, "detail": "Sin permiso de apertura remota", "reason": 3},
+        {"command_id": command_id, "ok": True, "detail": "Salida abierta", "reason": 1},
+        {"command_id": command_id, "ok": False, "detail": "Petición inválida"},
+    ]

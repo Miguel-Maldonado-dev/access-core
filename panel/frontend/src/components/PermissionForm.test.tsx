@@ -22,9 +22,16 @@ describe("PermissionForm", () => {
     const days = screen.getByLabelText("Lunes");
     expect(grid.compareDocumentPosition(rf) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(rf.compareDocumentPosition(days) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const remote = screen.getByLabelText("Permitir apertura remota");
+    expect(remote).not.toBeChecked();
+    expect(
+      screen.getByText("La app del fraccionamiento puede abrir estas salidas a nombre del titular."),
+    ).toBeInTheDocument();
+    expect(rf.compareDocumentPosition(remote) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(remote.compareDocumentPosition(days) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("envía las máscaras por método, el RF y el horario", async () => {
+  it("envía las máscaras por método, el RF, la apertura remota y el horario", async () => {
     const onSubmit = vi.fn();
     const user = userEvent.setup();
     render(<PermissionForm onSubmit={onSubmit} />);
@@ -37,6 +44,7 @@ describe("PermissionForm", () => {
     await user.click(screen.getByLabelText("PIN Reader1"));
     await user.click(screen.getByLabelText("PIN Reader3"));
     await user.click(screen.getByLabelText("Permitir control RF"));
+    await user.click(screen.getByLabelText("Permitir apertura remota"));
     for (const d of ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]) {
       await user.click(screen.getByLabelText(d));
     }
@@ -45,14 +53,14 @@ describe("PermissionForm", () => {
     await user.click(screen.getByRole("button", { name: "Guardar" }));
     expect(onSubmit).toHaveBeenCalledWith({
       permission_id: 3, name: "Oficina", output_mask: 3, card_reader_mask: 1, pin_reader_mask: 5,
-      weekday_mask: 31, start_minute: 480, end_minute: 1080, allow_rf: true,
+      weekday_mask: 31, start_minute: 480, end_minute: 1080, allow_rf: true, allow_remote: true,
     });
   });
 
   it("refleja el permiso editado", () => {
     const p = {
       permission_id: 1, name: "x", output_mask: 1, card_reader_mask: 2, pin_reader_mask: 8,
-      weekday_mask: 1, start_minute: 0, end_minute: 0, allow_rf: true,
+      weekday_mask: 1, start_minute: 0, end_minute: 0, allow_rf: true, allow_remote: true,
     };
     render(<PermissionForm permission={p} onSubmit={vi.fn()} />);
     expect(screen.getByLabelText("Tarjeta Reader2")).toBeChecked();
@@ -60,5 +68,15 @@ describe("PermissionForm", () => {
     expect(screen.getByLabelText("PIN Reader4")).toBeChecked();
     expect(screen.getByLabelText("PIN Reader2")).not.toBeChecked();
     expect(screen.getByLabelText("Permitir control RF")).toBeChecked();
+    expect(screen.getByLabelText("Permitir apertura remota")).toBeChecked();
+  });
+
+  it("sin marcar la casilla, envía la apertura remota apagada", async () => {
+    const onSubmit = vi.fn();
+    const user = userEvent.setup();
+    render(<PermissionForm onSubmit={onSubmit} />);
+    await user.type(screen.getByLabelText("Nombre"), "Visitas");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ allow_remote: false }));
   });
 });

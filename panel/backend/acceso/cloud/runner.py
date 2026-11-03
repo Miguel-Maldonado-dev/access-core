@@ -14,7 +14,7 @@ vinculación y se vuelve a `unlinked` sin tocar los datos locales. Un 401 sin es
 nube (proxy, portal cautivo): se trata como un error de red.
 
 Órdenes de la nube por MQTT: `upload_logs` sube los logs en el siguiente tick (sin push ni pull; varias
-órdenes seguidas dan una sola subida) y `test_output` pasa al worker de órdenes, que corre en su propio
+órdenes seguidas dan una sola subida); `test_output` y `remote_open` pasan al worker de órdenes, que corre en su propio
 hilo con su propia CloudApi (CloudApi no es segura entre hilos). El worker se crea al tener credencial y
 se detiene al revocar o al cerrar.
 
@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 from acceso.cloud.api import CloudApi, CloudError
+from acceso.cloud.commands import WORKER_COMMANDS
 from acceso.cloud.config import CloudSettings, clear_credentials, load_credentials, save_credentials
 from acceso.cloud.identity import Identity, ensure_identity, get_state, regenerate_claim_code, set_state
 from acceso.cloud.mapping import InvalidChange, snapshot_tables
@@ -499,12 +500,12 @@ class Runner:
 
     def _command(self, body: Dict[str, Any]) -> None:
         """Orden de la nube (hilo de MQTT). `upload_logs` solo levanta una bandera que atiende el
-        siguiente tick; `test_output` va al worker, y solo con el panel activo."""
+        siguiente tick; `test_output` y `remote_open` van al worker, y solo con el panel activo."""
         kind = body.get("type")
         if kind == "upload_logs":
             with self._notice_lock:
                 self._logs_requested = True
-        elif kind == "test_output":
+        elif kind in WORKER_COMMANDS:
             worker = self._worker
             if self._state == ACTIVE and worker is not None:
                 worker.submit(body)

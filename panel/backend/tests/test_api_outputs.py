@@ -65,9 +65,9 @@ def test_probar_salida_sin_daemon_real_503(client, db, settings, tmp_path):
 
 
 def test_probar_salida_ocupada_409(app, client, db):
-    app.state.daemon_request = _fake_daemon({"ok": False, "detail": "La salida ya se está probando"})
+    app.state.daemon_request = _fake_daemon({"ok": False, "detail": "La salida ya está en uso"})
     r = client.post("/api/outputs/2/test")
-    assert r.status_code == 409 and r.json() == {"detail": "La salida ya se está probando"}
+    assert r.status_code == 409 and r.json() == {"detail": "La salida ya está en uso"}
 
 
 def test_probar_salida_inexistente_404(app, client, db):

@@ -34,6 +34,7 @@ const regla = (extra: Partial<RuleInput> = {}): RuleInput => ({
   card_reader_mask: 0b0001,
   pin_reader_mask: 0b0010,
   allow_rf: true,
+  allow_remote: false,
   weekday_mask: 0b0011111,
   start_minute: 480,
   end_minute: 1080,
@@ -231,7 +232,7 @@ describe("perfiles y salidas (N14)", () => {
       ]);
       const { data } = await admin
         .from("profile_panel_rules")
-        .select("panel_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, weekday_mask, start_minute, end_minute, origin, deleted_at")
+        .select("panel_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, allow_remote, weekday_mask, start_minute, end_minute, origin, deleted_at")
         .eq("profile_id", perfilId);
       expect(data).toHaveLength(1);
       expect(data![0]).toMatchObject({ panel_id: panelA, ...regla(), origin: "cloud", deleted_at: null });
@@ -245,13 +246,13 @@ describe("perfiles y salidas (N14)", () => {
       expect(await revision(instA)).toBe(antes);
 
       await saveProfileRulesAs(adminA, tenantA, instA, perfilId, [
-        { panel_id: panelA, rule: regla({ allow_rf: false, output_mask: 15 }) },
+        { panel_id: panelA, rule: regla({ allow_rf: false, allow_remote: true, output_mask: 15 }) },
         { panel_id: panelB, rule: regla({ weekday_mask: 127, start_minute: 0, end_minute: 0 }) },
       ]);
       expect(await revision(instA)).toBeGreaterThan(antes);
-      const vivas = await admin.from("profile_panel_rules").select("panel_id, allow_rf, output_mask").eq("profile_id", perfilId).is("deleted_at", null);
+      const vivas = await admin.from("profile_panel_rules").select("panel_id, allow_rf, allow_remote, output_mask").eq("profile_id", perfilId).is("deleted_at", null);
       expect(vivas.data).toHaveLength(2);
-      expect(vivas.data!.find((r) => r.panel_id === panelA)).toMatchObject({ allow_rf: false, output_mask: 15 });
+      expect(vivas.data!.find((r) => r.panel_id === panelA)).toMatchObject({ allow_rf: false, allow_remote: true, output_mask: 15 });
 
       await saveProfileRulesAs(adminA, tenantA, instA, perfilId, [{ panel_id: panelA, rule: null }]);
       const quedan = await admin.from("profile_panel_rules").select("panel_id").eq("profile_id", perfilId).is("deleted_at", null);

@@ -1,7 +1,7 @@
 import pytest
 PERM = {"permission_id": 3, "name": "Noches", "output_mask": 3, "card_reader_mask": 15,
         "pin_reader_mask": 0, "weekday_mask": 127, "start_minute": 0, "end_minute": 1439,
-        "allow_rf": False}
+        "allow_rf": False, "allow_remote": False}
 
 
 def test_create_and_duplicate(client, db):
@@ -71,6 +71,7 @@ def test_put_without_method_fields_keeps_them(client, db):
 
 
 @pytest.mark.parametrize("field,value", [("allow_rf", "yes"), ("allow_rf", 1), ("allow_rf", "true"),
+                                         ("allow_remote", "si"), ("allow_remote", 1),
                                          ("card_reader_mask", 16), ("pin_reader_mask", -1)])
 def test_method_fields_validated(client, db, field, value):
     assert client.post("/api/permissions", json={**PERM, field: value}).status_code == 422
@@ -82,6 +83,7 @@ STALE = "El panel está desactualizado: recarga la página (Ctrl+F5) y vuelve a 
 def _old_body():
     body = {k: v for k, v in PERM.items()
             if k not in ("permission_id", "card_reader_mask", "pin_reader_mask", "allow_rf")}
+    body.pop("allow_remote")
     return {**body, "reader_mask": 0, "allow_pin": False}
 
 
@@ -100,7 +102,7 @@ def test_put_with_v4_fields_is_rejected_and_row_unchanged(client, db):
     assert client.get("/api/permissions").json()[0] == before
 
 
-@pytest.mark.parametrize("field", ["card_reader_mask", "pin_reader_mask", "allow_rf"])
+@pytest.mark.parametrize("field", ["card_reader_mask", "pin_reader_mask", "allow_rf", "allow_remote"])
 def test_post_requires_method_fields(client, db, field):
     body = {k: v for k, v in PERM.items() if k != field}
     r = client.post("/api/permissions", json=body)
@@ -114,3 +116,25 @@ def test_masks_are_strict_ints(client, db, field, value):
     client.post("/api/permissions", json=PERM)
     body = {k: v for k, v in PERM.items() if k != "permission_id"}
     assert client.put("/api/permissions/3", json={**body, field: value}).status_code == 422
+
+
+def test_allow_remote_defaults_off_and_roundtrips(client, db):
+    assert client.get("/api/permissions").json()[0]["allow_remote"] is False
+    r = client.post("/api/permissions", json={**PERM, "allow_remote": True})
+    assert r.status_code == 201 and r.json()["allow_remote"] is True
+    body = {k: v for k, v in PERM.items() if k != "permission_id"}
+    r = client.put("/api/permissions/3", json={**body, "allow_remote": False})
+    assert r.status_code == 200 and r.json()["allow_remote"] is False
+
+
+def test_put_without_allow_remote_keeps_it(client, db):
+    client.post("/api/permissions", json={**PERM, "allow_remote": True})
+    body = {k: v for k, v in PERM.items() if k not in ("permission_id", "allow_remote")}
+    r = client.put("/api/permissions/3", json={**body, "name": "Otro"})
+    assert r.status_code == 200 and r.json()["name"] == "Otro" and r.json()["allow_remote"] is True
+
+
+def test_put_validates_allow_remote(client, db):
+    client.post("/api/permissions", json=PERM)
+    body = {k: v for k, v in PERM.items() if k != "permission_id"}
+    assert client.put("/api/permissions/3", json={**body, "allow_remote": "si"}).status_code == 422

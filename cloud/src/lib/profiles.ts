@@ -41,12 +41,13 @@ export interface ProfileRow {
 }
 
 const REGLA_COLUMNAS =
-  "id, profile_id, panel_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, weekday_mask, start_minute, end_minute";
+  "id, profile_id, panel_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, allow_remote, weekday_mask, start_minute, end_minute";
 const CAMPOS_REGLA = [
   "output_mask",
   "card_reader_mask",
   "pin_reader_mask",
   "allow_rf",
+  "allow_remote",
   "weekday_mask",
   "start_minute",
   "end_minute",
@@ -63,6 +64,7 @@ const reglaEsquema = z.strictObject({
   card_reader_mask: entero(0, 15),
   pin_reader_mask: entero(0, 15),
   allow_rf: z.boolean(),
+  allow_remote: z.boolean(),
   weekday_mask: entero(0, 127),
   start_minute: entero(0, 1439),
   end_minute: entero(0, 1439),

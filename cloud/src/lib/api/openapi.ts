@@ -51,6 +51,7 @@ const pTitular = param("holderId", "Id del titular.");
 const pTarjeta = param("cardId", "Id de la tarjeta.");
 const pControl = param("controlId", "Id del control.");
 const pPerfil = param("profileId", "Id del perfil.");
+const pSalida = param("outputId", "Id de la salida.");
 
 interface Op {
   resumen: string;
@@ -197,6 +198,27 @@ const paths: Record<string, Obj> = {
   "/installations/{installationId}/outputs": {
     get: op({ resumen: "Lista las salidas", tag: "Salidas", params: [pInstalacion], ok: lista(ref("Salida")) }),
   },
+  "/installations/{installationId}/outputs/{outputId}/open": {
+    post: op({
+      resumen: "Abre una salida a distancia",
+      descripcion:
+        "Pide al panel de la salida abrirla a nombre del titular y espera su confirmación hasta 8 s (la orden vence a los 10 s). El panel decide con el permiso del titular (`allow_remote`, salidas, días y horario). No es un alta: responde 200 con el resultado en `status`: `opened` (abierta), `denied` (rechazada por salida, permiso o titular; motivos 2, 3 y 11), `failed` (otro error, como la salida ya en uso) o `timeout` (sin confirmación a tiempo). Con `Idempotency-Key` la respuesta se guarda al terminar la espera: una repetición devuelve el mismo resultado sin volver a abrir, y si llega mientras la primera sigue esperando responde 409. `timeout` no garantiza que la salida no se haya abierto (la orden vence a los 10 s y la API deja de esperar a los 8 s): revisa los logs antes de insistir; un reintento con otra `Idempotency-Key` es una orden nueva y puede abrir de nuevo.",
+      tag: "Salidas",
+      params: [pInstalacion, pSalida],
+      body: ref("AperturaRemota"),
+      ok: lectura(ref("ResultadoApertura")),
+      idem: true,
+      errores: {
+        400: respuestaError("`bad_request`: cuerpo inválido, o `El titular no existe.` (borrado o de otra instalación)."),
+        409: respuestaError(
+          "`conflict`: `Panel sin conexión` (panel fuera de línea o no activo), `La salida ya tiene una orden en curso.`, o la petición original con la misma `Idempotency-Key` sigue en curso.",
+        ),
+        502: respuestaError(
+          "`bad_gateway`: EMQX rechazó el mensaje, así que la orden no llegó al panel; se puede reintentar. Un fallo de red al publicar no da 502: la API sigue esperando y responde 200 con el resultado o `timeout`.",
+        ),
+      },
+    }),
+  },
   "/installations/{installationId}/logs": {
     get: op({
       resumen: "Lista los logs de acceso",
@@ -213,8 +235,8 @@ const paths: Record<string, Obj> = {
         {
           name: "origen",
           in: "query",
-          description: "Origen del evento: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 5 prueba.",
-          schema: { type: "string", enum: ["0", "1", "2", "3", "5"] },
+          description: "Origen del evento: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 4 remota, 5 prueba.",
+          schema: { type: "string", enum: ["0", "1", "2", "3", "4", "5"] },
         },
         { name: "pagina", in: "query", description: "Número de página (desde 1).", schema: { type: "string", pattern: "^[1-9]\\d*$" } },
       ],
@@ -474,6 +496,7 @@ const camposRegla = {
   card_reader_mask: { type: "integer", minimum: 0, maximum: 15, description: "Máscara de lectores L1 a L4 con tarjeta." },
   pin_reader_mask: { type: "integer", minimum: 0, maximum: 15, description: "Máscara de lectores L1 a L4 con PIN." },
   allow_rf: { type: "boolean" },
+  allow_remote: { type: "boolean", description: "Permite la apertura remota de las salidas de la regla." },
   weekday_mask: { type: "integer", minimum: 0, maximum: 127, description: "Días de la semana; bit 0 = lunes." },
   start_minute: { type: "integer", minimum: 0, maximum: 1439, description: "Minuto del día en que empieza el horario." },
   end_minute: { type: "integer", minimum: 0, maximum: 1439, description: "Minuto del día en que termina el horario." },
@@ -495,9 +518,9 @@ export const openapi: object = {
       "",
       "**Autenticación:** `Authorization: Bearer acc_…`. La llave actúa como admin del tenant en todas sus instalaciones; un recurso de otro tenant responde 404.",
       "",
-      "**Errores:** `{code, message}` con mensaje en español. Códigos: `invalid_api_key` (401), `bad_request` (400), `not_found` (404), `conflict` (409), `idempotency_mismatch` (422), `rate_limited` (429, con `Retry-After`) e `internal_error` (500).",
+      "**Errores:** `{code, message}` con mensaje en español. Códigos: `invalid_api_key` (401), `bad_request` (400), `not_found` (404), `conflict` (409), `idempotency_mismatch` (422), `rate_limited` (429, con `Retry-After`), `internal_error` (500) y `bad_gateway` (502, solo en la apertura remota).",
       "",
-      "**Escrituras:** responden `{data, revision}`; los `POST` responden 201. `revision` se lee después de escribir, así que con escrituras concurrentes puede ser mayor que la de la propia escritura, aunque siempre es monótona. Con `GET .../sync-status` se sabe si los paneles ya la aplicaron.",
+      "**Escrituras:** responden `{data, revision}`; los `POST` de alta responden 201 (la apertura remota, `POST .../outputs/{outputId}/open`, responde 200 `{data}` sin `revision`). `revision` se lee después de escribir, así que con escrituras concurrentes puede ser mayor que la de la propia escritura, aunque siempre es monótona. Con `GET .../sync-status` se sabe si los paneles ya la aplicaron.",
       "",
       "**Idempotencia:** `Idempotency-Key` (1 a 200 caracteres, vigente 24 h) es opcional en `POST`, `PATCH`, `PUT` y `DELETE`. La misma llave con el mismo cuerpo devuelve la respuesta guardada con `Idempotent-Replayed: true`; con otro cuerpo, 422; si la original sigue en curso, 409. No se admite en `PUT` ni `DELETE .../holders/{holderId}/pin` (400), para no guardar el PIN.",
       "",
@@ -541,7 +564,7 @@ export const openapi: object = {
           code: {
             type: "string",
             description:
-              "Código estable. Ejemplos: `invalid_api_key`, `bad_request`, `not_found`, `conflict`, `idempotency_mismatch`, `rate_limited`, `internal_error`. Puede haber otros según el estado HTTP.",
+              "Código estable. Ejemplos: `invalid_api_key`, `bad_request`, `not_found`, `conflict`, `idempotency_mismatch`, `rate_limited`, `internal_error`, `bad_gateway`. Puede haber otros según el estado HTTP.",
           },
           message: { type: "string", description: "Texto en español." },
         },
@@ -550,6 +573,36 @@ export const openapi: object = {
         type: "integer",
         description:
           "Revisión de la instalación leída después de escribir; con escrituras concurrentes puede ser mayor que la de esta escritura, pero es monótona.",
+      },
+      AperturaRemota: {
+        type: "object",
+        required: ["holder_id", "requested_by"],
+        additionalProperties: false,
+        properties: {
+          holder_id: { ...uuid, description: "Titular a cuyo nombre se abre; debe ser de la instalación." },
+          requested_by: {
+            type: "string",
+            minLength: 1,
+            maxLength: 120,
+            description: "Quién pide la apertura (p. ej. \"Caseta norte\"); queda en el log del panel. Sin caracteres de control (400).",
+          },
+        },
+      },
+      ResultadoApertura: {
+        type: "object",
+        required: ["command_id", "status", "reason", "detail"],
+        properties: {
+          command_id: uuid,
+          status: { type: "string", enum: ["opened", "denied", "failed", "timeout"] },
+          reason: {
+            type: ["integer", "null"],
+            minimum: 0,
+            maximum: 255,
+            description:
+              "Motivo del panel: 0 abierta (o salida en uso, con `failed`), 2 salida inexistente o deshabilitada, 3 sin permiso, 4 fallo del relevador, 11 titular desconocido. Nulo en `timeout` o si el panel no lo envía.",
+          },
+          detail: { type: ["string", "null"], description: "Texto del panel en español; nulo en `timeout`." },
+        },
       },
       NombrePerfil: { type: "string", minLength: 1, maxLength: 60, description: "De 1 a 60 caracteres." },
       IdObjeto: { type: "object", required: ["id"], properties: { id: uuid } },
@@ -607,15 +660,15 @@ export const openapi: object = {
           allowed: { type: "boolean" },
           source: {
             type: "integer",
-            enum: [0, 1, 2, 3, 5],
-            description: "Origen: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 5 prueba (el 4 está reservado).",
+            enum: [0, 1, 2, 3, 4, 5],
+            description: "Origen: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 4 remota, 5 prueba.",
           },
           reason: {
             type: "integer",
             minimum: 0,
-            maximum: 10,
+            maximum: 11,
             description:
-              "Motivo: 0 permitido, 1 tarjeta desconocida, 2 sin salida, 3 sin permiso, 4 error UART, 5 control desconocido, 6 botón sin salida, 7 botón de salida, 8 PIN desconocido, 9 PIN no permitido, 10 PIN bloqueado.",
+              "Motivo: 0 permitido, 1 tarjeta desconocida, 2 sin salida, 3 sin permiso, 4 error UART, 5 control desconocido, 6 botón sin salida, 7 botón de salida, 8 PIN desconocido, 9 PIN no permitido, 10 PIN bloqueado, 11 titular desconocido.",
           },
           holder_id: uuidNulo,
           holder_name: { type: ["string", "null"] },
@@ -720,8 +773,17 @@ export const openapi: object = {
       ControlCuerpo: controlCuerpo,
       ControlReemplazo: { ...controlCuerpo, required: ["holder_id", "description", "buttons"] },
       Regla: regla,
+      // `allow_remote` es opcional al escribir (se conserva el actual) para no romper a los clientes de 2A.
       ReglaEntrada: {
         ...reglaEntrada,
+        required: requeridosRegla.filter((c) => c !== "allow_remote"),
+        properties: {
+          ...camposRegla,
+          allow_remote: {
+            type: "boolean",
+            description: "Permite la apertura remota. Si se omite, se conserva el valor actual (false en una regla nueva).",
+          },
+        },
       },
       ReglaPanel: {
         allOf: [

@@ -12,6 +12,7 @@ const REASONS: Record<number, string> = {
   8: "PIN desconocido",
   9: "PIN no permitido",
   10: "PIN bloqueado",
+  11: "Titular desconocido",
 };
 
 const SOURCES: Record<number, string> = {
@@ -19,6 +20,7 @@ const SOURCES: Record<number, string> = {
   1: "Control RF",
   2: "Botón de salida",
   3: "PIN",
+  4: "Remota",
   5: "Prueba",
 };
 
@@ -52,6 +54,7 @@ export function mediumLabel(log: LogItem): string {
   if (log.source === 3) {
     return device === null ? "PIN" : `PIN · Reader${device + 1}`;
   }
+  if (log.source === 4) return log.credential_label ?? "Remota";
   if (log.source === 5) return log.credential_label ?? "Prueba";
   return device === null ? "Botón de salida" : `Botón de salida ${device + 1}`;
 }

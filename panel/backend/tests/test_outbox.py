@@ -100,7 +100,7 @@ def test_holder_permissions_change_by_difference(client, db):
     permissions.create_permission(db, {
         "permission_id": 1, "name": "B", "output_mask": 1, "card_reader_mask": 1,
         "pin_reader_mask": 0, "weekday_mask": 127, "start_minute": 0, "end_minute": 0,
-        "allow_rf": True})
+        "allow_rf": True, "allow_remote": False})
     holder_id = _holder(client, permission_ids=[0])
     keep_uuid = _uuid_of(db, "holder_permissions", "holder_id=? AND permission_id=0", (holder_id,))
     holder_uuid = _uuid_of(db, "holders", "holder_id=?", (holder_id,))
@@ -203,7 +203,7 @@ def test_store_stamps_uuid_updated_at_and_origin_on_create_and_edit(db):
     permissions.create_permission(db, {
         "permission_id": 1, "name": "B", "output_mask": 1, "card_reader_mask": 1,
         "pin_reader_mask": 0, "weekday_mask": 127, "start_minute": 0, "end_minute": 0,
-        "allow_rf": False})
+        "allow_rf": False, "allow_remote": False})
 
     targets = {
         "holders": ("holder_id=?", (holder_id,)),

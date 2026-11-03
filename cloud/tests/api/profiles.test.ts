@@ -160,6 +160,22 @@ describe("API pública: perfiles", () => {
     });
     expect(reglas.res.status).toBe(200);
     expect(reglas.json.data.rules).toHaveLength(2);
+    // Regla nueva sin `allow_remote` en el cuerpo (cliente de 2A): queda en false.
+    expect(reglas.json.data.rules.every((r: { allow_remote: boolean }) => r.allow_remote === false)).toBe(true);
+
+    const remota = await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ allow_remote: true }) }] });
+    expect(remota.res.status).toBe(200);
+    expect(remota.json.data.rules.find((r: { panel_id: string }) => r.panel_id === panel1).allow_remote).toBe(true);
+    // Reenviar sin el campo conserva el valor guardado (true).
+    const sinCampo = await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ output_mask: 5 }) }] });
+    const conservada = sinCampo.json.data.rules.find((r: { panel_id: string }) => r.panel_id === panel1);
+    expect(conservada).toMatchObject({ allow_remote: true, output_mask: 5 });
+    // Enviarlo explícito en false sí lo apaga.
+    const apagada = await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ allow_remote: false }) }] });
+    expect(apagada.json.data.rules.find((r: { panel_id: string }) => r.panel_id === panel1).allow_remote).toBe(false);
+    expect(
+      (await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ allow_remote: "si" }) }] })).res.status,
+    ).toBe(400);
     expect(reglas.json.revision).toBeGreaterThan(json.revision);
 
     const quitar = await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel2, rule: null }] });

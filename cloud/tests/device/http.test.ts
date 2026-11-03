@@ -22,6 +22,7 @@ describe("deviceRoute", () => {
       [403, "forbidden"],
       [404, "not_found"],
       [429, "too_many_requests"],
+      [502, "bad_gateway"],
       [418, "http_error"],
     ];
     for (const [estado, codigo] of casos) {

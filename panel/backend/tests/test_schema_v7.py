@@ -1,4 +1,4 @@
-"""Esquema v6: columnas de sincronización, bandeja de salida y triggers."""
+"""Esquema v7: columnas de sincronización, bandeja de salida, triggers y allow_remote."""
 import re
 import sqlite3
 import uuid
@@ -39,9 +39,20 @@ def _scenario(conn):
     _ins(conn, "holder_permissions", holder_id=10, permission_id=0)
 
 
-def test_schema_version_is_6(conn):
-    assert SCHEMA_VERSION == 6
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+def test_schema_version_is_7(conn):
+    assert SCHEMA_VERSION == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+
+
+def test_permissions_have_allow_remote_off_by_default(conn):
+    col = _cols(conn, "permissions")["allow_remote"]
+    assert col["type"] == "INTEGER" and col["notnull"] == 1 and col["dflt_value"] == "0"
+    assert [r[0] for r in conn.execute("SELECT allow_remote FROM permissions")] == [0]
+    _ins(conn, "permissions", permission_id=1, name="x", output_mask=1, card_reader_mask=0,
+         pin_reader_mask=0, weekday_mask=127, start_minute=0, end_minute=0)
+    assert conn.execute("SELECT allow_remote FROM permissions WHERE permission_id=1").fetchone()[0] == 0
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE permissions SET allow_remote=2")
 
 
 @pytest.mark.parametrize("table", REPLICATED)

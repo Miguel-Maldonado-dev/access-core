@@ -4,7 +4,7 @@ READER_COUNT = 4
 CONTROL_BUTTONS = 4
 EXIT_BUTTON_OUTPUTS = (0, 1)
 MAX_CODE = 4294967295
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 RECONNECT_SECONDS = 3.0
 
 HOLDER_KINDS = ("persona", "domicilio")
@@ -14,7 +14,7 @@ REPLICATED_TABLES = ("holders", "cards", "controls", "control_buttons", "permiss
                      "holder_permissions", "outputs")
 
 SOURCE_CARD, SOURCE_RF, SOURCE_EXIT_BUTTON, SOURCE_PIN = 0, 1, 2, 3
-# El 4 queda reservado para "Remota" (etapa 3 de la nube).
+SOURCE_REMOTE = 4  # "Remota": apertura ordenada desde la nube a nombre de un titular
 SOURCE_TEST = 5
 
 PIN_MIN_DIGITS, PIN_MAX_DIGITS = 4, 6
@@ -30,6 +30,7 @@ REASON_EXIT_BUTTON = 7
 REASON_UNKNOWN_PIN = 8
 REASON_PIN_NOT_ALLOWED = 9
 REASON_PIN_LOCKED = 10
+REASON_UNKNOWN_HOLDER = 11
 
 # Bloqueo por intentos de PIN fallidos (por lector).
 PIN_MAX_FAILURES = 5

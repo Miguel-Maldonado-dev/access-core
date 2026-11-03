@@ -40,6 +40,8 @@ describe("format", () => {
     expect(reasonLabel(8)).toBe("PIN desconocido");
     expect(reasonLabel(9)).toBe("PIN no permitido");
     expect(reasonLabel(10)).toBe("PIN bloqueado");
+    expect(sourceLabel(4)).toBe("Remota");
+    expect(reasonLabel(11)).toBe("Titular desconocido");
     expect(outputLabel(3)).toBe("Relay4");
     expect(outputLabel(null)).toBe("-");
     expect(holderKindLabel("persona")).toBe("Persona");
@@ -59,6 +61,8 @@ describe("format", () => {
     expect(mediumLabel(log({ source: 2, device_id: 1 }))).toBe("Botón de salida 2");
     expect(mediumLabel(log({ source: 5, credential_label: "Prueba — web local" }))).toBe("Prueba — web local");
     expect(mediumLabel(log({ source: 5, credential_label: null }))).toBe("Prueba");
+    expect(mediumLabel(log({ source: 4, credential_label: "App Vecinos · Ana" }))).toBe("App Vecinos · Ana");
+    expect(mediumLabel(log({ source: 4, credential_label: null }))).toBe("Remota");
   });
 
   it("formatea fecha y hora en es-MX", () => {

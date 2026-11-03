@@ -23,6 +23,8 @@ export interface RuleInput {
   card_reader_mask: number;
   pin_reader_mask: number;
   allow_rf: boolean;
+  /** Permite la apertura remota desde la nube. */
+  allow_remote: boolean;
   weekday_mask: number;
   start_minute: number;
   end_minute: number;

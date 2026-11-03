@@ -169,7 +169,12 @@ class CloudApi:
     def post_alert(self, alert: Mapping[str, Any]) -> None:
         self._send("POST", "/alerts", auth=True, json=dict(alert))
 
-    def post_command_result(self, command_id: str, ok: bool, detail: Optional[str]) -> None:
-        """Resultado de una orden de la nube (`test_output`); la nube responde 204."""
-        body = {"command_id": command_id, "ok": ok, "detail": detail}
+    def post_command_result(self, command_id: str, ok: bool, detail: Optional[str],
+                            reason: Optional[int] = None) -> None:
+        """Resultado de una orden de la nube (`test_output` o `remote_open`); la nube responde 204.
+
+        `reason` (motivo del daemon en `remote_open`) solo se envía si no es None."""
+        body = {"command_id": command_id, "ok": ok, "detail": detail}  # type: Dict[str, Any]
+        if reason is not None:
+            body["reason"] = reason
         self._send("POST", "/command-result", auth=True, json=body)

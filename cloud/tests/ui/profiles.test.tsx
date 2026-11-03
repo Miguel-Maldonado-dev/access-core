@@ -41,6 +41,7 @@ const regla = (p: Partial<RuleRow> = {}): RuleRow => ({
   card_reader_mask: 0b0001,
   pin_reader_mask: 0b0010,
   allow_rf: true,
+  allow_remote: false,
   weekday_mask: 0b0011111,
   start_minute: 8 * 60,
   end_minute: 18 * 60 + 30,
@@ -156,6 +157,8 @@ describe("ProfilesManager", () => {
       fireEvent.click(within(colA).getByLabelText("Sáb en PNL-AAAA-AAAA"));
       fireEvent.click(within(colA).getByLabelText("Tarjeta L4 en PNL-AAAA-AAAA"));
       fireEvent.click(within(colA).getByLabelText("Permitir control RF en PNL-AAAA-AAAA"));
+      expect((within(colA).getByLabelText("Permitir apertura remota en PNL-AAAA-AAAA") as HTMLInputElement).checked).toBe(false);
+      fireEvent.click(within(colA).getByLabelText("Permitir apertura remota en PNL-AAAA-AAAA"));
       fireEvent.change(within(colA).getByLabelText("Hasta en PNL-AAAA-AAAA"), { target: { value: "20:15" } });
       fireEvent.click(screen.getByRole("button", { name: "Guardar reglas" }));
       await waitFor(() => expect(onSaveRules).toHaveBeenCalled());
@@ -169,6 +172,7 @@ describe("ProfilesManager", () => {
               card_reader_mask: 0b1001,
               pin_reader_mask: 0b0010,
               allow_rf: false,
+              allow_remote: true,
               weekday_mask: 0b0111111,
               start_minute: 480,
               end_minute: 20 * 60 + 15,
@@ -200,6 +204,7 @@ describe("ProfilesManager", () => {
               card_reader_mask: 0,
               pin_reader_mask: 0,
               allow_rf: false,
+              allow_remote: false,
               weekday_mask: 127,
               start_minute: 0,
               end_minute: 0,

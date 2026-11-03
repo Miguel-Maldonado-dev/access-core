@@ -32,7 +32,8 @@ select ok((select relrowsecurity from pg_class where oid = 'public.panel_command
   'RLS activa en panel_commands');
 select columns_are('public', 'panel_commands',
   array['id', 'tenant_id', 'installation_id', 'panel_id', 'kind', 'output_index', 'requested_by',
-        'requested_by_user', 'created_at', 'expires_at', 'status', 'detail', 'finished_at'],
+        'requested_by_user', 'created_at', 'expires_at', 'status', 'detail', 'finished_at', 'holder_id',
+        'reason'],
   'panel_commands tiene exactamente las columnas del diseño');
 select fk_ok('public', 'panel_commands', array['panel_id'], 'public', 'panels', array['id'],
   'panel_commands.panel_id es FK hacia panels(id)');
@@ -58,7 +59,7 @@ select throws_ok(
   $$insert into public.panel_commands (tenant_id, installation_id, panel_id, kind, output_index, requested_by, expires_at)
     values ('10000000-0000-0000-0000-00000000000a', '20000000-0000-0000-0000-00000000000a',
             'c0000000-0000-0000-0000-00000000000a', 'open', 1, 'x', now())$$,
-  '23514', null, 'kind solo admite test_output');
+  '23514', null, 'kind solo admite test_output o remote_open');
 select throws_ok(
   $$insert into public.panel_commands (tenant_id, installation_id, panel_id, kind, output_index, requested_by, expires_at)
     values ('10000000-0000-0000-0000-00000000000a', '20000000-0000-0000-0000-00000000000a',

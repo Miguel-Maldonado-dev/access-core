@@ -124,6 +124,7 @@ describe("rutas de lectura de la API pública", () => {
     const filas = [
       ...Array.from({ length: 55 }, (_, i) => fila(tenantA, instA, panelAtrasado, i + 1, 5)),
       ...Array.from({ length: 3 }, (_, i) => fila(tenantA, instA, panelAlDia, i + 1, 0)),
+      fila(tenantA, instA, panelAlDia, 4, 4),
       fila(tenantB, instB, panelB, 1, 5),
     ];
     const { error } = await admin.from("access_logs").insert(filas);
@@ -207,7 +208,7 @@ describe("rutas de lectura de la API pública", () => {
     expect(p2).toMatchObject({ page: 2, page_size: 50, total: 55 });
     expect(p2.data).toHaveLength(5);
     const todos = await (await pedir(listLogs, "l", instA)).json();
-    expect(todos.total).toBe(58);
+    expect(todos.total).toBe(59);
     expect((await pedir(listLogs, "l", instB)).status).toBe(404);
   });
 
@@ -218,7 +219,7 @@ describe("rutas de lectura de la API pública", () => {
       ["panel=x", "panel"],
       ["titular=x", "titular"],
       ["resultado=otro", "resultado"],
-      ["origen=4", "origen"],
+      ["origen=6", "origen"],
       ["pagina=0", "pagina"],
       ["pagina=abc", "pagina"],
       ["rareza=1", "rareza"],
@@ -229,6 +230,15 @@ describe("rutas de lectura de la API pública", () => {
       expect(cuerpo.code, consulta).toBe("bad_request");
       expect(cuerpo.message, consulta).toContain(campo);
     }
+  });
+
+  it("logs: acepta origen=4 (Remota)", async () => {
+    const res = await pedir(listLogs, "l?origen=4", instA);
+    expect(res.status).toBe(200);
+    const cuerpo = await res.json();
+    expect(cuerpo.total).toBe(1);
+    expect(cuerpo.data).toHaveLength(1);
+    expect(cuerpo.data[0]).toMatchObject({ source: 4, panel_id: panelAlDia });
   });
 
   it("logs: filtrar por el panel de otro tenant no trae filas", async () => {

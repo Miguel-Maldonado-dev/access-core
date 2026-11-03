@@ -15,8 +15,9 @@ from fake_cloud import FakeCloud
 from acceso.access import handle_event
 from acceso.cloud import sync
 from acceso.cloud.api import CloudError
+from acceso.cloud.checksum import table_checksum
 from acceso.cloud.identity import get_state, set_state
-from acceso.cloud.mapping import InvalidChange, apply_batch, snapshot_tables
+from acceso.cloud.mapping import InvalidChange, _fields, apply_batch, snapshot_tables
 from acceso.cloud.sync import SyncBlocked, SyncEngine
 from acceso.constants import REASON_ALLOWED, REASON_NO_PERMISSION
 from acceso.protocol import CardRead
@@ -401,7 +402,8 @@ def test_a_permission_with_zero_masks_is_applied_and_the_daemon_denies_the_card(
     assert read_card().reason == REASON_ALLOWED
     permission_uuid = uuid_of(conn, "permissions", "permission_id=0")
     zero = {"permission_id": 0, "name": "Acceso total", "output_mask": 0, "card_reader_mask": 0,
-            "pin_reader_mask": 0, "allow_rf": False, "weekday_mask": 0, "start_minute": 0, "end_minute": 0}
+            "pin_reader_mask": 0, "allow_rf": False, "allow_remote": False, "weekday_mask": 0,
+            "start_minute": 0, "end_minute": 0}
     cloud.put("permissions", permission_uuid, zero)
 
     engine_for(db_path, cloud).pull()
@@ -411,6 +413,93 @@ def test_a_permission_with_zero_masks_is_applied_and_the_daemon_denies_the_card(
     assert tuple(row) == (0, 0, 0)
     outcome = read_card()
     assert not outcome.allowed and outcome.reason == REASON_NO_PERMISSION
+
+
+# --- allow_remote (esquema v7) ----------------------------------------------------------------
+
+def _permission(**changes):
+    data = {"permission_id": 0, "name": "Acceso total", "output_mask": 15, "card_reader_mask": 15,
+            "pin_reader_mask": 0, "allow_rf": False, "allow_remote": False, "weekday_mask": 127,
+            "start_minute": 0, "end_minute": 0}
+    data.update(changes)
+    return data
+
+
+def _allow_remote(conn, permission_id=0):
+    return conn.execute("SELECT allow_remote FROM permissions WHERE permission_id=?",
+                        (permission_id,)).fetchone()[0]
+
+
+def test_pull_of_a_permission_without_allow_remote_applies_it_as_0(conn, db_path, cloud):
+    # Una nube anterior a la apertura remota no manda el campo: el panel lo toma como falso.
+    conn.execute("UPDATE permissions SET allow_remote=1 WHERE permission_id=0")
+    mark_synced(conn, cloud)
+    permission_uuid = uuid_of(conn, "permissions", "permission_id=0")
+    data = _permission(name="Viejo")
+    del data["allow_remote"]
+    cloud.put("permissions", permission_uuid, _permission())
+    cloud.rows["permissions"][permission_uuid]["data"] = data   # sin validar: forma de la nube vieja
+
+    engine_for(db_path, cloud).pull()
+
+    assert _allow_remote(conn) == 0
+    assert conn.execute("SELECT name FROM permissions WHERE permission_id=0").fetchone()[0] == "Viejo"
+    assert cursor(conn) == cloud.revision
+
+
+def test_pull_of_a_new_permission_without_allow_remote_inserts_it_with_0(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    permission_uuid = str(uuid.uuid4())
+    data = _permission(permission_id=7, name="Nueva")
+    del data["allow_remote"]
+    cloud.put("permissions", permission_uuid, _permission(permission_id=7))
+    cloud.rows["permissions"][permission_uuid]["data"] = data
+
+    engine_for(db_path, cloud).pull()
+
+    assert _allow_remote(conn, 7) == 0
+
+
+def test_pull_of_a_permission_with_allow_remote_true_applies_it_as_1(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    permission_uuid = uuid_of(conn, "permissions", "permission_id=0")
+    cloud.put("permissions", permission_uuid, _permission(allow_remote=True))
+
+    engine_for(db_path, cloud).pull()
+
+    assert _allow_remote(conn) == 1
+
+
+def test_a_permission_missing_another_field_is_still_rejected():
+    data = _permission()
+    del data["allow_rf"]
+    with pytest.raises(InvalidChange):
+        _fields("permissions", data)
+
+
+def test_push_of_a_permission_always_sends_allow_remote(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    conn.execute("UPDATE permissions SET allow_remote=1 WHERE permission_id=0")
+
+    engine_for(db_path, cloud).push()
+
+    pushed = [item for batch in cloud.pushed for item in batch if item["table"] == "permissions"]
+    assert pushed and pushed[-1]["data"]["allow_remote"] is True
+    permission_uuid = uuid_of(conn, "permissions", "permission_id=0")
+    assert cloud.live_row("permissions", permission_uuid)["allow_remote"] is True
+
+
+def test_the_permissions_checksum_includes_allow_remote(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    rows = snapshot_tables(conn)["permissions"]
+    assert rows and all(row["data"]["allow_remote"] is False for row in rows)
+    before = table_checksum(rows)
+    edit_under_guard(conn, "UPDATE permissions SET allow_remote=1 WHERE permission_id=0")
+    after = table_checksum(snapshot_tables(conn)["permissions"])
+    assert before != after
+
+    assert engine_for(db_path, cloud).reconcile() == ["permissions"]   # la nube manda: vuelve a 0
+    assert _allow_remote(conn) == 0
 
 
 def test_pull_with_a_cloud_revision_behind_the_cursor_reconciles(conn, db_path, cloud):
@@ -492,6 +581,7 @@ def test_adopt_cloud_backs_up_keeps_local_outputs_empties_the_outbox_and_saves_r
     cloud.put("cards", str(uuid.uuid4()), {"card_code": 2, "holder_id": cloud_holder, "description": ""})
     cloud.put("permissions", cloud_perm, {"permission_id": 0, "name": "Todo", "output_mask": 15,
                                           "card_reader_mask": 15, "pin_reader_mask": 0, "allow_rf": True,
+                                          "allow_remote": False,
                                           "weekday_mask": 127, "start_minute": 0, "end_minute": 0})
     cloud.put("holder_permissions", str(uuid.uuid4()), {"holder_id": cloud_holder, "permission_id": 0})
     output_uuids = {}

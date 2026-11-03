@@ -31,9 +31,10 @@ describe("parseLogFilters", () => {
     expect(parseLogFilters({ pagina: "abc" }).page).toBe(1);
   });
 
-  it("acepta el origen Prueba (5) y no el 4, reservado", () => {
+  it("acepta los orígenes Remota (4) y Prueba (5)", () => {
     expect(parseLogFilters({ origen: "5" }).source).toBe(5);
-    expect(parseLogFilters({ origen: "4" }).source).toBeUndefined();
+    expect(parseLogFilters({ origen: "4" }).source).toBe(4);
+    expect(parseLogFilters({ origen: "6" }).source).toBeUndefined();
   });
 
   it("toma el primer valor si el parámetro se repite", () => {
@@ -72,7 +73,9 @@ describe("etiquetas", () => {
     expect(reasonLabel(42)).toBe("Motivo 42");
     expect(sourceLabel(3)).toBe("PIN");
     expect(sourceLabel(1)).toBe("Control RF");
+    expect(sourceLabel(4)).toBe("Remota");
     expect(sourceLabel(5)).toBe("Prueba");
+    expect(reasonLabel(11)).toBe("Titular desconocido");
     expect(sourceLabel(9)).toBe("Origen 9");
   });
 
@@ -93,6 +96,8 @@ describe("etiquetas", () => {
     expect(mediumLabel({ ...base, source: 2, device_id: 0 })).toBe("Botón de salida 1");
     expect(mediumLabel({ ...base, source: 5, credential_label: "Prueba — ana@example.com" })).toBe("Prueba — ana@example.com");
     expect(mediumLabel({ ...base, source: 5 })).toBe("Prueba");
+    expect(mediumLabel({ ...base, source: 4, credential_label: "app-porteria" })).toBe("app-porteria");
+    expect(mediumLabel({ ...base, source: 4 })).toBe("Remota");
   });
 
   it("la página es de 50", () => {

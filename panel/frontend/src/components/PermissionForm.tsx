@@ -52,6 +52,7 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
   const [start, setStart] = useState(minutesToHHMM(permission?.start_minute ?? 0));
   const [end, setEnd] = useState(minutesToHHMM(permission?.end_minute ?? 0));
   const [allowRf, setAllowRf] = useState(permission?.allow_rf ?? false);
+  const [allowRemote, setAllowRemote] = useState(permission?.allow_remote ?? false);
   const [error, setError] = useState("");
 
   async function submit(e: FormEvent) {
@@ -85,6 +86,7 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
       start_minute: startMinute,
       end_minute: endMinute,
       allow_rf: allowRf,
+      allow_remote: allowRemote,
     });
   }
 
@@ -156,6 +158,15 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
         </label>
         <p className="mt-1 text-sm text-muted">
           El control RF no depende del lector: usa las salidas, días y horario de este permiso.
+        </p>
+      </div>
+      <div className="sm:col-span-2">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <input type="checkbox" checked={allowRemote} onChange={(e) => setAllowRemote(e.target.checked)} />
+          Permitir apertura remota
+        </label>
+        <p className="mt-1 text-sm text-muted">
+          La app del fraccionamiento puede abrir estas salidas a nombre del titular.
         </p>
       </div>
       <div className="sm:col-span-2">

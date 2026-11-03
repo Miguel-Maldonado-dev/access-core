@@ -1,7 +1,7 @@
 """Enlace MQTT del agente acceso-cloud: recibe avisos de la nube (`acc/<panel_code>/cmd`).
 
-Tipos de mensaje: `sync` (sincronizar antes) va a `on_sync`; `upload_logs` y `test_output` (órdenes)
-van a `on_command` con el cuerpo completo; cualquier otro se ignora. Si MQTT no conecta, la
+Tipos de mensaje: `sync` (sincronizar antes) va a `on_sync`; `upload_logs`, `test_output` y
+`remote_open` (órdenes) van a `on_command` con el cuerpo completo; cualquier otro se ignora. Si MQTT no conecta, la
 sincronización periódica sigue funcionando. Usuario MQTT = panel_code y contraseña = device_token (los verifica la nube por HTTP).
 El token nunca se registra. La conexión es siempre TLS (`mqtts://`).
 """
@@ -23,7 +23,7 @@ RECONNECT_S = 10
 PUBLISH_WAIT_S = 2.0
 # Aviso sin revisión válida: nunca se considera viejo.
 UNKNOWN_REVISION = 2 ** 63 - 1
-COMMAND_TYPES = frozenset(("upload_logs", "test_output"))
+COMMAND_TYPES = frozenset(("upload_logs", "test_output", "remote_open"))
 
 
 def _parse_url(mqtt_url: str):

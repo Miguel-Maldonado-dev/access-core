@@ -14,6 +14,7 @@ export const CODIGO_POR_ESTADO: Readonly<Record<number, string>> = {
   409: "conflict",
   410: "gone",
   429: "too_many_requests",
+  502: "bad_gateway",
 };
 
 /** Resumen apto para `console.error`: solo nombre, código y mensaje. */

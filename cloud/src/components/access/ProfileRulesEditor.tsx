@@ -34,6 +34,7 @@ interface RuleState {
   cards: boolean[];
   pins: boolean[];
   rf: boolean;
+  remote: boolean;
   days: boolean[];
   start: string;
   end: string;
@@ -44,6 +45,7 @@ const NUEVA: RuleState = {
   cards: Array(READER_COUNT).fill(false),
   pins: Array(READER_COUNT).fill(false),
   rf: false,
+  remote: false,
   days: fromMask(ALL_DAYS, DAY_LABELS.length),
   start: "00:00",
   end: "00:00",
@@ -56,6 +58,7 @@ const desdeRegla = (r: RuleRow | undefined): RuleState | null =>
         cards: fromMask(r.card_reader_mask, READER_COUNT),
         pins: fromMask(r.pin_reader_mask, READER_COUNT),
         rf: r.allow_rf,
+        remote: r.allow_remote,
         days: fromMask(r.weekday_mask, DAY_LABELS.length),
         start: minutesToHHMM(r.start_minute),
         end: minutesToHHMM(r.end_minute),
@@ -66,7 +69,7 @@ const alternar = (lista: boolean[], i: number) => lista.map((v, j) => (j === i ?
 
 /**
  * Editor de reglas de un perfil: una columna por panel. Cada columna elige salidas (S1–S4,
- * con su alias como texto emergente), lectores de Tarjeta y de PIN, control RF, días y
+ * con su alias como texto emergente), lectores de Tarjeta y de PIN, control RF, apertura remota, días y
  * horario, o "Sin acceso en este panel" (se borra la regla al guardar).
  */
 export default function ProfileRulesEditor({ panels, rules, outputs, onSave }: Props) {
@@ -95,6 +98,7 @@ export default function ProfileRulesEditor({ panels, rules, outputs, onSave }: P
             card_reader_mask: toMask(s.cards),
             pin_reader_mask: toMask(s.pins),
             allow_rf: s.rf,
+            allow_remote: s.remote,
             weekday_mask: toMask(s.days),
             start_minute: hhmmToMinutes(s.start),
             end_minute: hhmmToMinutes(s.end),
@@ -203,6 +207,15 @@ export default function ProfileRulesEditor({ panels, rules, outputs, onSave }: P
                       onChange={(e) => cambiar(p.id, { rf: e.target.checked })}
                     />
                     Permitir control RF
+                  </label>
+                  <label className="flex items-center gap-2 text-sm font-medium">
+                    <input
+                      type="checkbox"
+                      aria-label={`Permitir apertura remota en ${p.panel_code}`}
+                      checked={s.remote}
+                      onChange={(e) => cambiar(p.id, { remote: e.target.checked })}
+                    />
+                    Permitir apertura remota
                   </label>
                   <fieldset>
                     <legend className="text-sm font-medium">Días</legend>

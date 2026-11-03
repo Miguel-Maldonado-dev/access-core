@@ -747,6 +747,39 @@ describe("subida de cambios del panel (POST /changes)", () => {
       expect(vivas[0].id).not.toBe(reglaA);
     });
 
+    it("un permiso sin allow_remote (panel v6) se aplica y conserva el allow_remote de la nube", async () => {
+      const id = await insertar("access_profiles", { installation_id: inst1, name: "Guardia", local_permission_id: 11 });
+      await regla(inst1, id, panelA.id, { ...REGLA, allow_remote: true });
+
+      const r = await pushUno(panelA, upsert("permissions", id, { permission_id: 11, name: "Guardia", ...REGLA, output_mask: 3 }));
+      expect(r.status).toBe("applied");
+      const vivas = (await filas("profile_panel_rules", "profile_id", id)).filter((x) => x.deleted_at === null);
+      expect(vivas).toHaveLength(1);
+      expect(vivas[0]).toMatchObject({ panel_id: panelA.id, output_mask: 3, allow_remote: true });
+    });
+
+    it("un permiso con allow_remote lo guarda, al crear la regla y al editarla", async () => {
+      const id = randomUUID();
+      const datos = { permission_id: 12, name: "Portero", ...REGLA, allow_remote: true };
+      expect((await pushUno(panelA, upsert("permissions", id, datos))).status).toBe("applied");
+      let vivas = (await filas("profile_panel_rules", "profile_id", id)).filter((x) => x.deleted_at === null);
+      expect(vivas).toHaveLength(1);
+      expect(vivas[0]).toMatchObject({ panel_id: panelA.id, allow_remote: true });
+
+      const sinRemota = { ...datos, allow_remote: false };
+      expect((await pushUno(panelA, upsert("permissions", id, sinRemota, hora(5000)))).status).toBe("applied");
+      vivas = (await filas("profile_panel_rules", "profile_id", id)).filter((x) => x.deleted_at === null);
+      expect(vivas[0]).toMatchObject({ allow_remote: false });
+    });
+
+    it("un permiso nuevo sin allow_remote crea la regla con allow_remote en false", async () => {
+      const id = randomUUID();
+      const datos = { permission_id: 13, name: "Visitante", ...REGLA };
+      expect((await pushUno(panelA, upsert("permissions", id, datos))).status).toBe("applied");
+      const vivas = (await filas("profile_panel_rules", "profile_id", id)).filter((x) => x.deleted_at === null);
+      expect(vivas[0]).toMatchObject({ panel_id: panelA.id, allow_remote: false });
+    });
+
     it("un permission_id nuevo que ya usa otro perfil queda rejected", async () => {
       const id = randomUUID();
       const r = await pushUno(panelA, upsert("permissions", id, { permission_id: 0, name: "Choque", ...REGLA }));

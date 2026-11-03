@@ -1,9 +1,10 @@
-"""Órdenes de la nube que el agente ejecuta en su propio hilo: hoy solo `test_output`.
+"""Órdenes de la nube que el agente ejecuta en su propio hilo: `test_output` y `remote_open`.
 
 La orden llega por MQTT (`acc/<panel_code>/cmd`), se valida, se descarta si ya caducó o si su
 `command_id` ya se vio, y se pasa al daemon por su socket local. El resultado se informa a la nube
 con `POST /api/device/v1/command-result`. Una orden inválida, caducada o repetida se descarta sin
 informar: la nube la deja vencer. De una excepción inesperada solo se registra el tipo.
+`remote_open` exige además `holder_uuid` (UUID canónico) e informa el motivo (`reason`) del daemon.
 """
 import logging
 import queue
@@ -29,6 +30,9 @@ STOP_WAIT_S = 0.2
 DAEMON_DOWN = "El daemon no responde"
 # La nube rechaza un `detail` de más de 200 caracteres.
 DETAIL_MAX = 200
+TEST_OUTPUT = "test_output"
+REMOTE_OPEN = "remote_open"
+WORKER_COMMANDS = frozenset((TEST_OUTPUT, REMOTE_OPEN))
 
 # Fracción de segundo de cualquier longitud: Python 3.9 solo acepta 3 o 6 dígitos en fromisoformat.
 _FRACTION = re.compile(r"\.(\d+)")
@@ -49,7 +53,7 @@ def _parse_expires_at(value: Any) -> Optional[float]:
     return moment.timestamp()
 
 
-def _parse_command_id(value: Any) -> Optional[str]:
+def _parse_uuid(value: Any) -> Optional[str]:
     """UUID en su forma canónica (minúsculas con guiones); None si no lo es."""
     if not isinstance(value, str):
         return None
@@ -61,17 +65,23 @@ def _parse_command_id(value: Any) -> Optional[str]:
 
 
 class _Order:
-    __slots__ = ("command_id", "output", "requested_by", "expires_at")
+    __slots__ = ("kind", "command_id", "output", "requested_by", "expires_at", "holder_uuid")
 
-    def __init__(self, command_id: str, output: int, requested_by: str, expires_at: float) -> None:
+    def __init__(self, kind: str, command_id: str, output: int, requested_by: str, expires_at: float,
+                 holder_uuid: Optional[str] = None) -> None:
+        self.kind = kind
         self.command_id = command_id
         self.output = output
         self.requested_by = requested_by
         self.expires_at = expires_at
+        self.holder_uuid = holder_uuid
 
 
 def _parse(body: Mapping[str, Any]) -> Optional[_Order]:
-    command_id = _parse_command_id(body.get("command_id"))
+    kind = body.get("type")
+    if kind not in WORKER_COMMANDS:
+        return None
+    command_id = _parse_uuid(body.get("command_id"))
     output = body.get("output")
     requested_by = body.get("requested_by")
     expires_at = _parse_expires_at(body.get("expires_at"))
@@ -81,15 +91,39 @@ def _parse(body: Mapping[str, Any]) -> Optional[_Order]:
         return None
     if not isinstance(requested_by, str) or not 1 <= len(requested_by) <= REQUESTED_BY_MAX:
         return None
-    return _Order(command_id, output, requested_by, expires_at)
+    holder_uuid = None  # type: Optional[str]
+    if kind == REMOTE_OPEN:
+        holder_uuid = _parse_uuid(body.get("holder_uuid"))
+        if holder_uuid is None:
+            return None
+    return _Order(kind, command_id, output, requested_by, expires_at, holder_uuid)
+
+
+def _request(order: _Order) -> Dict[str, Any]:
+    """Petición al daemon por su socket local."""
+    payload = {"op": order.kind, "output": order.output}  # type: Dict[str, Any]
+    if order.kind == REMOTE_OPEN:
+        payload["holder_uuid"] = order.holder_uuid
+    payload["requested_by"] = order.requested_by
+    return payload
+
+
+def _reason(order: _Order, reply: Mapping[str, Any]) -> Optional[int]:
+    """Motivo del daemon en `remote_open`; None en `test_output` o si no es un entero (p. ej. la
+    respuesta INVALID_REQUEST no lo trae)."""
+    reason = reply.get("reason")
+    if order.kind != REMOTE_OPEN or isinstance(reason, bool) or not isinstance(reason, int):
+        return None
+    return reason
 
 
 class CommandWorker:
-    """Atiende las órdenes `test_output` en un hilo propio, una a la vez y en orden de llegada."""
+    """Atiende las órdenes `test_output` y `remote_open` en un hilo propio, una a la vez y en orden
+    de llegada. La deduplicación por `command_id` y la caducidad son comunes a los dos tipos."""
 
     def __init__(self, daemon_request: Callable[[str, Mapping[str, Any]], Dict[str, Any]],
                  socket_path: str,
-                 post_result: Callable[[str, bool, Optional[str]], None],
+                 post_result: Callable[[str, bool, Optional[str], Optional[int]], None],
                  wall: Callable[[], float] = time.time) -> None:
         self._daemon_request = daemon_request
         self._socket_path = socket_path
@@ -141,13 +175,13 @@ class CommandWorker:
     def _handle(self, body: Mapping[str, Any]) -> None:
         order = _parse(body)
         if order is None:
-            log.warning("Orden de prueba de salida inválida: se descarta")
+            log.warning("Orden de la nube inválida: se descarta")
             return
         if self._wall() > order.expires_at:
-            log.info("Orden de prueba de salida %s caducada: se descarta", order.command_id)
+            log.info("Orden %s %s caducada: se descarta", order.kind, order.command_id)
             return
         if order.command_id in self._seen:
-            log.info("Orden de prueba de salida %s repetida: se descarta", order.command_id)
+            log.info("Orden %s %s repetida: se descarta", order.kind, order.command_id)
             return
         self._seen[order.command_id] = True
         while len(self._seen) > SEEN_MAX:
@@ -155,17 +189,17 @@ class CommandWorker:
         if self._stopping.is_set():  # detenido (p. ej. revocado): ya no se activa nada
             return
         try:
-            reply = self._daemon_request(self._socket_path, {
-                "op": "test_output", "output": order.output, "requested_by": order.requested_by})
+            reply = self._daemon_request(self._socket_path, _request(order))
         except DaemonUnavailable:
-            ok, detail = False, DAEMON_DOWN  # type: bool, Optional[str]
+            ok, detail, reason = False, DAEMON_DOWN, None  # type: bool, Optional[str], Optional[int]
         else:
             ok = reply.get("ok") is True
             detail = reply.get("detail") if isinstance(reply.get("detail"), str) else None
+            reason = _reason(order, reply)
         if detail is not None:
             detail = detail[:DETAIL_MAX]
         try:
-            self._post_result(order.command_id, ok, detail)
+            self._post_result(order.command_id, ok, detail, reason)
         except Exception as exc:
-            log.warning("No se pudo informar a la nube el resultado de la prueba de salida (%s)",
-                        type(exc).__name__)
+            log.warning("No se pudo informar a la nube el resultado de la orden %s (%s)",
+                        order.kind, type(exc).__name__)

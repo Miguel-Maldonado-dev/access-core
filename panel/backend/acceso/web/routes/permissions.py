@@ -25,7 +25,7 @@ def create(body: PermissionCreate, conn=Depends(get_conn)):
 @router.put("/{permission_id}")
 def update(permission_id: int, body: PermissionBody, conn=Depends(get_conn)):
     data = body.model_dump()
-    for field in ("card_reader_mask", "pin_reader_mask", "allow_rf"):
+    for field in ("card_reader_mask", "pin_reader_mask", "allow_rf", "allow_remote"):
         if field not in body.model_fields_set:
             data[field] = None  # PUT sin el campo: conservar el actual (pestaña vieja)
     permissions.update_permission(conn, permission_id, data)

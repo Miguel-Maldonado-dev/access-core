@@ -71,6 +71,7 @@ class AccessOutcome:
 
 
 METHOD_CARD, METHOD_PIN, METHOD_RF = "card", "pin", "rf"
+METHOD_REMOTE = "remote"
 
 
 def permission_allows(conn: sqlite3.Connection, holder_id: int, output_id: int,
@@ -78,13 +79,14 @@ def permission_allows(conn: sqlite3.Connection, holder_id: int, output_id: int,
     """Algún permiso del titular cubre método, salida, día y horario.
 
     card: el bit del lector debe estar en card_reader_mask; pin: en pin_reader_mask;
-    rf: el permiso debe tener allow_rf=1 y el lector no aplica (reader=None).
+    rf: el permiso debe tener allow_rf=1 y el lector no aplica (reader=None);
+    remote: igual, con allow_remote=1.
     """
     minute = now.hour * 60 + now.minute
     day = 1 << now.weekday()
     rows = conn.execute(
-        "SELECT p.output_mask, p.card_reader_mask, p.pin_reader_mask, p.allow_rf, p.weekday_mask,"
-        " p.start_minute, p.end_minute"
+        "SELECT p.output_mask, p.card_reader_mask, p.pin_reader_mask, p.allow_rf, p.allow_remote,"
+        " p.weekday_mask, p.start_minute, p.end_minute"
         " FROM permissions p JOIN holder_permissions hp ON hp.permission_id = p.permission_id"
         " WHERE hp.holder_id = ?",
         (holder_id,),
@@ -99,6 +101,8 @@ def permission_allows(conn: sqlite3.Connection, holder_id: int, output_id: int,
             time_ok = minute >= start or minute < end
         if method == METHOD_RF:
             method_ok = p["allow_rf"] == 1
+        elif method == METHOD_REMOTE:
+            method_ok = p["allow_remote"] == 1
         elif method == METHOD_PIN:
             method_ok = reader is not None and bool(p["pin_reader_mask"] & (1 << reader))
         elif method == METHOD_CARD:

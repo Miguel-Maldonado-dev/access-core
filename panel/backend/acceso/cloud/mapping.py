@@ -34,7 +34,7 @@ FIELDS = {
     "controls": ("holder_id", "description"),
     "control_buttons": ("control_id", "button", "rf_code", "output_id"),
     "permissions": ("permission_id", "name", "output_mask", "card_reader_mask", "pin_reader_mask",
-                    "allow_rf", "weekday_mask", "start_minute", "end_minute"),
+                    "allow_rf", "allow_remote", "weekday_mask", "start_minute", "end_minute"),
     "holder_permissions": ("holder_id", "permission_id"),
     "outputs": ("output_id", "alias", "duration_ms", "reader_mask", "enabled"),
 }
@@ -50,7 +50,8 @@ _SELECT = {
     "control_buttons": "SELECT b.uuid AS id, k.uuid AS control_id, b.button, b.rf_code, b.output_id"
                        " FROM control_buttons b JOIN controls k ON k.control_id = b.control_id",
     "permissions": "SELECT p.uuid AS id, p.permission_id, p.name, p.output_mask, p.card_reader_mask,"
-                   " p.pin_reader_mask, p.allow_rf, p.weekday_mask, p.start_minute, p.end_minute"
+                   " p.pin_reader_mask, p.allow_rf, p.allow_remote, p.weekday_mask, p.start_minute,"
+                   " p.end_minute"
                    " FROM permissions p",
     "holder_permissions": "SELECT hp.uuid AS id, h.uuid AS holder_id, hp.permission_id"
                           " FROM holder_permissions hp JOIN holders h ON h.holder_id = hp.holder_id",
@@ -59,7 +60,9 @@ _SELECT = {
 }
 _ALIAS = {"holders": "h", "cards": "c", "controls": "k", "control_buttons": "b", "permissions": "p",
           "holder_permissions": "hp", "outputs": "o"}
-_BOOLEANS = ("allow_rf", "enabled")
+_BOOLEANS = ("allow_rf", "allow_remote", "enabled")
+# Campos que una nube anterior puede no enviar, con su valor por omisión. Al subir siempre se envían.
+_OPTIONAL = {"permissions": {"allow_remote": False}}
 
 
 class MissingParent(Exception):
@@ -113,9 +116,11 @@ def _local_id(conn: sqlite3.Connection, table: str, key: str, uuid: Any) -> int:
 
 
 def _fields(table: str, data: Any) -> Dict[str, Any]:
-    if not isinstance(data, Mapping) or any(key not in data for key in FIELDS[table]):
+    optional = _OPTIONAL.get(table, {})
+    if not isinstance(data, Mapping) or any(key not in data and key not in optional
+                                            for key in FIELDS[table]):
         raise InvalidChange("La nube envió un cambio incompleto de %s." % table)
-    return {key: data[key] for key in FIELDS[table]}
+    return {key: data[key] if key in data else optional[key] for key in FIELDS[table]}
 
 
 def _exists(conn: sqlite3.Connection, table: str, uuid: str) -> Optional[sqlite3.Row]:
@@ -159,7 +164,8 @@ def _upsert_permission(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], s
     _release(conn, "permissions", "permission_id = ?", (pid,), uuid, resolve)
     conn.execute("DELETE FROM permissions WHERE permission_id = ? AND uuid <> ?", (pid, uuid))
     values = (pid, d["name"], d["output_mask"], d["card_reader_mask"], d["pin_reader_mask"],
-              1 if d["allow_rf"] else 0, d["weekday_mask"], d["start_minute"], d["end_minute"], stamp)
+              1 if d["allow_rf"] else 0, 1 if d["allow_remote"] else 0, d["weekday_mask"],
+              d["start_minute"], d["end_minute"], stamp)
     current = _exists(conn, "permissions", uuid)
     if current is not None:
         if current["permission_id"] != pid:
@@ -167,12 +173,12 @@ def _upsert_permission(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], s
             conn.execute("UPDATE holder_permissions SET permission_id = ? WHERE permission_id = ?",
                          (pid, current["permission_id"]))
         conn.execute("UPDATE permissions SET permission_id=?, name=?, output_mask=?, card_reader_mask=?,"
-                     " pin_reader_mask=?, allow_rf=?, weekday_mask=?, start_minute=?, end_minute=?,"
+                     " pin_reader_mask=?, allow_rf=?, allow_remote=?, weekday_mask=?, start_minute=?, end_minute=?,"
                      " updated_at=?, origin='cloud' WHERE uuid=?", values + (uuid,))
     else:
         conn.execute("INSERT INTO permissions(permission_id, name, output_mask, card_reader_mask,"
-                     " pin_reader_mask, allow_rf, weekday_mask, start_minute, end_minute, updated_at,"
-                     " origin, uuid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?)", values + (uuid,))
+                     " pin_reader_mask, allow_rf, allow_remote, weekday_mask, start_minute, end_minute,"
+                     " updated_at, origin, uuid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?)", values + (uuid,))
 
 
 def _upsert_output(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], stamp: int,

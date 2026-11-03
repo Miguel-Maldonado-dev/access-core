@@ -56,6 +56,8 @@ describe("órdenes a los paneles (panel-commands)", () => {
   let publicaciones: Publicacion[] = [];
   /** Códigos de panel cuya publicación EMQX rechaza (HTTP 503). */
   let rechazar = new Set<string>();
+  /** Códigos de panel cuya publicación falla por red (sin respuesta de EMQX). */
+  let sinRed = new Set<string>();
 
   async function crearPanel(installationId: string, status: string, online: boolean) {
     const code = `PNL-${base32(4)}-${base32(4)}`;
@@ -169,6 +171,7 @@ describe("órdenes a los paneles (panel-commands)", () => {
   beforeEach(() => {
     publicaciones = [];
     rechazar = new Set();
+    sinRed = new Set();
     process.env.EMQX_API_URL = EMQX;
     process.env.EMQX_API_KEY = "llave";
     process.env.EMQX_API_SECRET = "secreto-api";
@@ -178,6 +181,7 @@ describe("órdenes a los paneles (panel-commands)", () => {
       const cuerpo = JSON.parse(String(init?.body)) as { topic: string; payload: string };
       const codigo = cuerpo.topic.split("/")[1];
       if (rechazar.has(codigo)) return new Response("no", { status: 503 });
+      if (sinRed.has(codigo)) throw new TypeError("fetch failed");
       publicaciones.push({ topic: cuerpo.topic, payload: JSON.parse(cuerpo.payload) });
       return Response.json({ id: "x" });
     });
@@ -321,7 +325,7 @@ describe("órdenes a los paneles (panel-commands)", () => {
     it("otra prueba de la misma salida mientras está pendiente da 409", async () => {
       const e = await fallo(testOutputAs(adminA, tenantA, instA, S.s1));
       expect(e.status).toBe(409);
-      expect(e.message).toBe("La salida ya se está probando");
+      expect(e.message).toBe("La salida ya está en uso");
       expect(publicaciones).toEqual([]);
     });
 
@@ -364,6 +368,15 @@ describe("órdenes a los paneles (panel-commands)", () => {
       const ultima = (await ordenesDe(P.p1.id)).at(-1)!;
       expect(ultima).toMatchObject({ status: "error", detail: "No se pudo enviar la orden" });
       expect(ultima.finished_at).not.toBeNull();
+    });
+
+    it("en una prueba, un fallo de red al publicar también deja la orden en error y responde 502", async () => {
+      sinRed.add(P.p1.code);
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const e = await fallo(testOutputAs(tecnicoA, tenantA, instA, S.s1));
+      error.mockRestore();
+      expect(e.status).toBe(502);
+      expect((await ordenesDe(P.p1.id)).at(-1)).toMatchObject({ status: "error" });
     });
 
     it("una salida de un panel que no está activo da 409; una borrada, de otra instalación o inexistente, 404", async () => {

@@ -1,6 +1,6 @@
 # API pública de Access Core (`/api/v1`)
 
-API REST para administrar una instalación desde sistemas externos: titulares, tarjetas, PIN, controles, perfiles, y consulta de paneles, salidas, logs y estado de sincronización.
+API REST para administrar una instalación desde sistemas externos: titulares, tarjetas, PIN, controles, perfiles, apertura remota de salidas, y consulta de paneles, salidas, logs y estado de sincronización.
 
 - **Base:** `https://<APP_URL>/api/v1` (en local, `http://localhost:3001/api/v1`).
 - **OpenAPI 3.1:** `GET /api/v1/openapi.json` (público, sin llave). Es el contrato completo de rutas, cuerpos y respuestas.
@@ -52,6 +52,7 @@ Todos los errores tienen la forma `{"code": "...", "message": "<texto en españo
 | 409 | `conflict` | Dato repetido (tarjeta, PIN), choque de concurrencia, o la petición original con la misma `Idempotency-Key` sigue en curso |
 | 422 | `idempotency_mismatch` | `Idempotency-Key` ya usada con otro cuerpo |
 | 429 | `rate_limited` | Más de 120 peticiones por minuto (trae `Retry-After`) |
+| 502 | `bad_gateway` | La apertura remota no pudo enviar la orden: EMQX rechazó el mensaje (se puede reintentar) |
 | 500 | `internal_error` | Error interno |
 
 ## Límites
@@ -77,7 +78,7 @@ curl -s -X POST $API/installations/$INST/holders \
 
 ## Escrituras y sincronización
 
-Las escrituras responden `{"data": …, "revision": <n>}`; los `POST` responden `201`. Cada escritura sube la revisión de la instalación y dispara la sincronización hacia los paneles. `revision` se lee después de escribir: con escrituras concurrentes puede ser mayor que la de la propia escritura, pero nunca retrocede.
+Las escrituras responden `{"data": …, "revision": <n>}`; los `POST` de alta responden `201`. La apertura remota (`POST .../outputs/{outputId}/open`) no es una escritura de datos: responde `200` `{data}` sin `revision`. Cada escritura sube la revisión de la instalación y dispara la sincronización hacia los paneles. `revision` se lee después de escribir: con escrituras concurrentes puede ser mayor que la de la propia escritura, pero nunca retrocede.
 
 Para saber si los paneles ya aplicaron un cambio, compara con `sync-status`:
 
@@ -185,17 +186,46 @@ curl -s -X PUT $API/installations/$INST/profiles/<profile-id>/holders \
 # Reglas por panel (rule: null quita el acceso en ese panel)
 curl -s -X PUT $API/installations/$INST/profiles/<profile-id>/rules \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d "[{\"panel_id\":\"$PANEL\",\"rule\":{\"output_mask\":3,\"card_reader_mask\":15,\"pin_reader_mask\":15,\"allow_rf\":true,\"weekday_mask\":127,\"start_minute\":0,\"end_minute\":1439}}]"
+  -d "[{\"panel_id\":\"$PANEL\",\"rule\":{\"output_mask\":3,\"card_reader_mask\":15,\"pin_reader_mask\":15,\"allow_rf\":true,\"allow_remote\":false,\"weekday_mask\":127,\"start_minute\":0,\"end_minute\":1439}}]"
 ```
 
 Las máscaras de salidas y lectores tienen un bit por cada S1 a S4 y L1 a L4 (bit 0 = S1 o L1); `weekday_mask` tiene el bit 0 en lunes.
 
+`allow_remote` (permite la apertura remota) es opcional al escribir: si se omite, se conserva el valor actual (`false` en una regla nueva); las respuestas siempre lo traen. En los logs, el origen `4` es "Remota" y el motivo `11` es "Titular desconocido".
+
+### Apertura remota
+
+`POST .../outputs/{outputId}/open` pide al panel abrir la salida a nombre de un titular y espera su confirmación hasta 8 s (la orden vence a los 10 s). El panel decide con el permiso del titular: la regla debe tener `allow_remote: true` e incluir la salida, el día y la hora. `requested_by` (de 1 a 120 caracteres, sin caracteres de control) queda en el log del panel, con origen `4` (Remota).
+
+```bash
+curl -s -X POST $API/installations/$INST/outputs/<output-id>/open \
+  -H "Authorization: Bearer $KEY" -H "Idempotency-Key: abrir-0001" \
+  -H "Content-Type: application/json" \
+  -d "{\"holder_id\":\"$HOLDER\",\"requested_by\":\"Caseta norte\"}"
+# → 200 {"data":{"command_id":"…","status":"opened","reason":0,"detail":"Salida abierta"}}
+```
+
+No es un alta: responde `200` y el resultado va en `status`:
+
+| `status` | Cuándo |
+|---|---|
+| `opened` | El panel abrió la salida (`reason` 0) |
+| `denied` | El panel la rechazó: `reason` 2 (salida inexistente o deshabilitada), 3 (sin permiso) u 11 (titular desconocido) |
+| `failed` | Otro error del panel, como la salida ya en uso (`reason` 0) o el relevador (`reason` 4) |
+| `timeout` | Sin confirmación en 8 s; `reason` y `detail` son `null` |
+
+**`timeout` no garantiza que la salida siga cerrada:** la orden vence a los 10 s y la API deja de esperar a los 8 s, así que el panel pudo abrirla después. Revisa los logs (origen `4`) antes de insistir. Un reintento con **otra** `Idempotency-Key` (o sin ella) es una orden nueva y puede abrir de nuevo.
+
+Errores: `400` si el titular no existe en la instalación (o está borrado), `404` si la salida no existe, `409` "Panel sin conexión" si el panel está fuera de línea o no activo, `409` "La salida ya tiene una orden en curso." y `502 bad_gateway` solo si EMQX rechazó el mensaje (no se entregó, así que reintentar es seguro). Si la publicación falla por red o tiempo agotado, la orden pudo llegar al panel: la API no responde `502`, sigue esperando y responde `200` con el resultado o con `timeout`. Con `Idempotency-Key`, la respuesta se guarda al terminar la espera: un reintento devuelve el mismo resultado sin volver a abrir. Si el reintento con la misma llave llega mientras la primera petición sigue esperando, responde `409` "La petición original sigue en curso." y no publica otra orden.
+
+- **Requiere paneles v7.** Un panel v6 ignora la orden y la API responde `timeout`.
+- **Ventana de revocación:** si se quita `allow_remote` en la nube, el panel sigue abriendo con el permiso anterior hasta que sincroniza. Consulta `GET .../sync-status` para saber si los paneles ya aplicaron el cambio.
+
 ### Lecturas
 
 - `GET /installations`, `GET /installations/{id}`, `GET .../panels`, `GET .../outputs`.
-- `GET .../logs`: páginas de 50, del más reciente al más viejo. Filtros: `desde`, `hasta` (`AAAA-MM-DD`), `panel`, `titular`, `resultado` (`permitido` o `denegado`), `origen` (`0`, `1`, `2`, `3` o `5`) y `pagina`. Responde `{data, page, page_size, total}`. Un filtro inválido da `400`. Los logs de PIN llevan `code: null`.
+- `GET .../logs`: páginas de 50, del más reciente al más viejo. Filtros: `desde`, `hasta` (`AAAA-MM-DD`), `panel`, `titular`, `resultado` (`permitido` o `denegado`), `origen` (`0` tarjeta, `1` control RF, `2` botón, `3` PIN, `4` remota o `5` prueba) y `pagina`. Responde `{data, page, page_size, total}`. Un filtro inválido da `400`. Los logs de PIN llevan `code: null`.
 
 ## Pendiente
 
 - **Etapa 2B:** webhooks.
-- **Etapa 3:** apertura remota.

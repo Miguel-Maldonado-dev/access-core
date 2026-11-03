@@ -26,9 +26,9 @@ def test_create_schema_defaults(conn):
     assert outputs == [(0, 3000, 3, 1), (1, 3000, 12, 1), (2, 3000, 0, 1), (3, 3000, 0, 1)]
     perms = [tuple(r) for r in conn.execute(
         "SELECT permission_id, name, output_mask, card_reader_mask, pin_reader_mask, weekday_mask,"
-        " start_minute, end_minute, allow_rf FROM permissions")]
-    assert perms == [(0, "Acceso total", 15, 15, 0, 127, 0, 0, 1)]
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+        " start_minute, end_minute, allow_rf, allow_remote FROM permissions")]
+    assert perms == [(0, "Acceso total", 15, 15, 0, 127, 0, 0, 1, 0)]
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
 

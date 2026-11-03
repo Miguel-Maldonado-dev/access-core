@@ -186,7 +186,12 @@ TEST_OUTPUT = {"type": "test_output", "command_id": "8f0c2a5e-1d2b-4c3d-9e4f-5a6
                "requested_by": "ana@example.com", "expires_at": "2027-01-15T08:00:10.000Z"}
 
 
-@pytest.mark.parametrize("payload", [{"type": "upload_logs"}, TEST_OUTPUT])
+REMOTE_OPEN = {"type": "remote_open", "command_id": "8f0c2a5e-1d2b-4c3d-9e4f-5a6b7c8d9e10", "output": 2,
+               "holder_uuid": "3b1f6c2e-8a4d-4e5f-9c7b-1a2b3c4d5e6f", "requested_by": "app-vecinos",
+               "expires_at": "2027-01-15T08:00:10.000Z"}
+
+
+@pytest.mark.parametrize("payload", [{"type": "upload_logs"}, TEST_OUTPUT, REMOTE_OPEN])
 def test_command_messages_reach_on_command_with_their_body(payload):
     commands = []
     link, clients, received = make_link(on_command=commands.append)

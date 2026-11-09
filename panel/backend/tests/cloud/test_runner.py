@@ -187,8 +187,9 @@ class Harness:
         self.links.append(link)
         return link
 
-    def worker_factory(self, api):
+    def worker_factory(self, api, listen=False):
         worker = FakeWorker(api)
+        worker.listen = listen
         self.workers.append(worker)
         return worker
 
@@ -948,12 +949,14 @@ def test_the_worker_gets_its_own_authenticated_api_and_starts_once(h):
     h.preset_active()
     runner = h.started()
     h.run_for(runner, 10)
-    (worker,) = h.workers
+    worker, listener = h.workers
+    assert listener.listen and not worker.listen and listener.api is not worker.api
+    assert listener.events == ["start"]
     assert worker.events == ["start"]
     assert worker.api is not h.api
     assert worker.api._authorization == "Device %s.%s" % (CODE, TOKEN)
     runner.close()
-    assert worker.events == ["start", "stop"]
+    assert worker.events == ["start", "stop"] and listener.events == ["start", "stop"]
 
 
 def test_the_worker_is_stopped_on_revocation_and_recreated_with_the_new_credential(h):
@@ -965,7 +968,22 @@ def test_the_worker_is_stopped_on_revocation_and_recreated_with_the_new_credenti
     h.api.activate_result = Seq("token")
     h.engine.script["pull"] = Seq(None)
     h.run_for(runner, 15)
-    assert len(h.workers) == 2 and h.workers[1].events == ["start"]
+    assert h.workers[1].events == ["start", "stop"]
+    assert len(h.workers) == 4 and h.workers[2].events == ["start"] and h.workers[3].events == ["start"]
+
+
+LISTEN_ORDER = {"type": "listen_rf", "command_id": "8f0c2a5e-1d2b-4c3d-9e4f-5a6b7c8d9e11",
+                "expires_at": "2027-01-15T08:00:10.000Z"}
+
+
+def test_listen_orders_go_to_the_listen_worker_only(h):
+    h.preset_active()
+    runner = h.started()
+    h.run_for(runner, 2)
+    h.links[0].on_command(LISTEN_ORDER)
+    h.links[0].on_command(TEST_ORDER)
+    commands, listener = h.workers
+    assert listener.submitted == [LISTEN_ORDER] and commands.submitted == [TEST_ORDER]
 
 
 def test_without_mqtt_url_no_worker_is_created(tmp_path, conn):

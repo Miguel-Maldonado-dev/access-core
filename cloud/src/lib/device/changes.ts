@@ -123,6 +123,26 @@ export async function readInstallationRevision(admin: SupabaseClient, installati
   return data.revision;
 }
 
+/**
+ * La revisión y `logs_cleared_at` de la instalación en una sola consulta. La fecha sale en
+ * ISO con `Z` (nunca el texto `+00` de Postgres) o nula si nunca se han borrado logs.
+ */
+async function readRevisionAndLogsCleared(
+  admin: SupabaseClient,
+  installationId: string,
+): Promise<{ revision: number; logsClearedAt: string | null }> {
+  const { data, error } = await admin
+    .from("installations")
+    .select("revision, logs_cleared_at")
+    .eq("id", installationId)
+    .single<{ revision: number; logs_cleared_at: string | null }>();
+  if (error) throw error;
+  return {
+    revision: data.revision,
+    logsClearedAt: data.logs_cleared_at === null ? null : new Date(data.logs_cleared_at).toISOString(),
+  };
+}
+
 async function leerConfirmarBorrados(admin: SupabaseClient, panelId: string): Promise<boolean> {
   const { data, error } = await admin
     .from("panels")
@@ -261,15 +281,24 @@ function proyectarDeControles(
  *   emite `delete`. Si un perfil aparece varias veces en la página, sale una sola entrada
  *   con la revisión más alta.
  * - `revision` = R si no hay más; si `has_more`, la revisión del último cambio devuelto.
+ * - Cada página trae `logs_cleared_at` (ISO o nulo) de la instalación.
  * - Guarda `panels.synced_revision = since` y `last_sync_at`.
  */
 export async function listChanges(panel: Panel, since: number, limit: number): Promise<PullResponse> {
   const admin = createAdminSupabase();
-  const [confirmDeletions, R] = await Promise.all([
+  const [confirmDeletions, { revision: R, logsClearedAt }] = await Promise.all([
     registrarPull(admin, panel.id, since),
-    readInstallationRevision(admin, panel.installation_id),
+    readRevisionAndLogsCleared(admin, panel.installation_id),
   ]);
-  if (since >= R) return { revision: R, has_more: false, confirm_deletions: confirmDeletions, changes: [] };
+  if (since >= R) {
+    return {
+      revision: R,
+      has_more: false,
+      confirm_deletions: confirmDeletions,
+      logs_cleared_at: logsClearedAt,
+      changes: [],
+    };
+  }
 
   // Con limit + 1 filas por origen basta: las primeras limit + 1 de la mezcla están ahí.
   const porOrigen = await Promise.all(
@@ -323,6 +352,7 @@ export async function listChanges(panel: Panel, since: number, limit: number): P
     revision: hasMore ? pagina[pagina.length - 1].fila.revision : R,
     has_more: hasMore,
     confirm_deletions: confirmDeletions,
+    logs_cleared_at: logsClearedAt,
     changes: cambios,
   };
 }

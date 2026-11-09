@@ -3,14 +3,16 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { esUuid, type InstallationAccess, requireInstallationAccess } from "@/lib/access-data";
 import type { DataClient } from "@/lib/auth/guards";
+import { LISTEN_RF_RESULT_GRACE_MS } from "@/lib/device/commands";
 import { HttpError } from "@/lib/errors";
 import { PublicacionNoEntregada, publishToPanel } from "@/lib/mqtt/publish";
 import { createAdminSupabase } from "@/lib/supabase/admin";
 
 /**
  * Órdenes de la interfaz a los paneles de una instalación, como el usuario de la sesión
- * (`supabase` con sesión): "Actualizar logs" (`upload_logs`) y "Probar" una salida
- * (`test_output`). Admin y técnico del tenant pueden usarlas. La visibilidad se comprueba
+ * (`supabase` con sesión): "Actualizar logs" (`upload_logs`), "Probar" una salida
+ * (`test_output`) y "Escuchar" un control RF (`listen_rf`, `listenRfAs` y `listenRfStatusAs`;
+ * el panel informa el código en `rf_code`). Admin y técnico del tenant pueden usarlas. La visibilidad se comprueba
  * con RLS y el rol con `requireInstallationAccess`; las escrituras van con la llave
  * secreta porque `authenticated` no escribe `installations.logs_requested_at` ni
  * `panel_commands`. Se publican por MQTT en `acc/<panel_code>/cmd`. La apertura remota
@@ -21,6 +23,8 @@ import { createAdminSupabase } from "@/lib/supabase/admin";
 export const LOGS_REQUEST_INTERVAL_MS = 10_000;
 /** Vigencia de una orden de prueba: pasada esa hora el panel la descarta. */
 export const TEST_OUTPUT_TTL_MS = 10_000;
+/** Vigencia de una orden de escucha de un control RF (`listen_rf`). */
+export const LISTEN_RF_TTL_MS = 5_000;
 /** Largo máximo de `requested_by` que acepta el agente del panel. */
 const REQUESTED_BY_MAX = 120;
 
@@ -395,4 +399,149 @@ export async function commandStatusAs(
     return { status: "expired", detail: null };
   }
   return { status: orden.status, detail: orden.detail };
+}
+
+/**
+ * "Escuchar" un control: pide al panel capturar el siguiente código RF (`listen_rf`, vigente
+ * 5 s). El panel debe ser de la instalación (404 "El panel no existe."), estar activo (409) y
+ * en línea (409 "Panel sin conexión"). Antes se marcan `expired` las escuchas pendientes cuyo
+ * plazo de resultado (`expires_at` + 15 s) ya pasó; si queda una vigente, el índice único de
+ * pendientes responde 409 "Ya hay una escucha en curso.". Si el publish falla (cualquier
+ * error), la orden queda `error` y responde 502.
+ */
+export async function listenRfAs(
+  supabase: SupabaseClient,
+  tenantId: string,
+  installationId: string,
+  panelId: string,
+): Promise<{ commandId: string }> {
+  const acceso = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+
+  const noExiste = new HttpError(404, "El panel no existe.");
+  if (!esUuid(panelId)) throw noExiste;
+  const { data: panel, error: errorPanel } = await acceso.supabase
+    .from("panels")
+    .select("id, panel_code, status, online")
+    .eq("id", panelId)
+    .eq("installation_id", installationId)
+    .maybeSingle<{ id: string; panel_code: string; status: string; online: boolean }>();
+  if (errorPanel) throw errorPanel;
+  if (!panel) throw noExiste;
+  if (panel.status !== "active") throw new HttpError(409, "El panel no está activo.");
+  if (!panel.online) throw new HttpError(409, "Panel sin conexión");
+
+  const admin = createAdminSupabase();
+  const ahora = new Date();
+  const { error: errorCaducadas } = await admin
+    .from("panel_commands")
+    .update({ status: "expired", finished_at: ahora.toISOString() })
+    .eq("panel_id", panel.id)
+    .eq("kind", "listen_rf")
+    .eq("status", "pending")
+    .lt("expires_at", new Date(ahora.getTime() - LISTEN_RF_RESULT_GRACE_MS).toISOString());
+  if (errorCaducadas) throw errorCaducadas;
+
+  // ISO UTC (`toISOString`): el agente del panel no acepta el formato de texto de Postgres.
+  const expiresAt = new Date(ahora.getTime() + LISTEN_RF_TTL_MS).toISOString();
+  const requestedBy = (acceso.email || acceso.userId).slice(0, REQUESTED_BY_MAX);
+  const { data: fila, error: errorOrden } = await admin
+    .from("panel_commands")
+    .insert({
+      tenant_id: acceso.tenantId,
+      installation_id: installationId,
+      panel_id: panel.id,
+      kind: "listen_rf",
+      requested_by: requestedBy,
+      requested_by_user: acceso.userId,
+      expires_at: expiresAt,
+    })
+    .select("id")
+    .single<{ id: string }>();
+  if (errorOrden?.code === "23505") throw new HttpError(409, "Ya hay una escucha en curso.");
+  if (errorOrden) throw errorOrden;
+
+  try {
+    await publishToPanel(panel.panel_code, { type: "listen_rf", command_id: fila.id, expires_at: expiresAt });
+  } catch (error) {
+    console.error(`Falló la orden de escucha a ${panel.panel_code}:`, (error as Error)?.message);
+    const { error: errorMarca } = await admin
+      .from("panel_commands")
+      .update({ status: "error", detail: "No se pudo enviar la orden", finished_at: new Date().toISOString() })
+      .eq("id", fila.id)
+      .eq("status", "pending");
+    if (errorMarca) throw errorMarca;
+    throw new HttpError(502, "No se pudo enviar la orden al panel. Intenta de nuevo.");
+  }
+  return { commandId: fila.id };
+}
+
+export interface ListenRfStatus {
+  status: "pending" | "received" | "error" | "timeout";
+  /** Código RF capturado (solo en `received`). */
+  code: number | null;
+  /** Control vivo de la instalación dueño del código, si lo hay. */
+  control: { id: string; description: string | null } | null;
+  detail: string | null;
+}
+
+/**
+ * Estado de una escucha (RLS; 404 "La orden no existe." si no es de la instalación o no es
+ * `listen_rf`). `ok` → `received` con el control vivo cuyo botón vivo tiene ese código;
+ * `ok` sin código (`rf_code` nulo) → `error` "El panel no envió el código.";
+ * `error` → `error` con el detalle del panel; `expired`, o pendiente con el plazo de
+ * resultado (`expires_at` + 15 s) vencido → `timeout` "El panel no respondió.".
+ */
+export async function listenRfStatusAs(
+  supabase: SupabaseClient,
+  tenantId: string,
+  installationId: string,
+  commandId: string,
+): Promise<ListenRfStatus> {
+  const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
+  const noExiste = new HttpError(404, "La orden no existe.");
+  if (!esUuid(commandId)) throw noExiste;
+  const { data: orden, error } = await cliente
+    .from("panel_commands")
+    .select("status, detail, expires_at, rf_code")
+    .eq("id", commandId)
+    .eq("installation_id", installationId)
+    .eq("kind", "listen_rf")
+    .maybeSingle<{ status: CommandStatus; detail: string | null; expires_at: string; rf_code: number | null }>();
+  if (error) throw error;
+  if (!orden) throw noExiste;
+
+  const sinRespuesta: ListenRfStatus = { status: "timeout", code: null, control: null, detail: "El panel no respondió." };
+  if (orden.status === "expired") return sinRespuesta;
+  if (orden.status === "pending") {
+    if (Date.parse(orden.expires_at) + LISTEN_RF_RESULT_GRACE_MS < Date.now()) return sinRespuesta;
+    return { status: "pending", code: null, control: null, detail: null };
+  }
+  if (orden.status === "error") return { status: "error", code: null, control: null, detail: orden.detail };
+
+  if (orden.rf_code === null) {
+    return { status: "error", code: null, control: null, detail: "El panel no envió el código." };
+  }
+  const code = Number(orden.rf_code);
+  let control: ListenRfStatus["control"] = null;
+  const { data: boton, error: errorBoton } = await cliente
+    .from("control_buttons")
+    .select("control_id")
+    .eq("installation_id", installationId)
+    .eq("rf_code", code)
+    .is("deleted_at", null)
+    .limit(1)
+    .maybeSingle<{ control_id: string }>();
+  if (errorBoton) throw errorBoton;
+  if (boton) {
+    const { data: dueno, error: errorControl } = await cliente
+      .from("controls")
+      .select("id, description")
+      .eq("id", boton.control_id)
+      .eq("installation_id", installationId)
+      .is("deleted_at", null)
+      .maybeSingle<{ id: string; description: string }>();
+    if (errorControl) throw errorControl;
+    if (dueno) control = { id: dueno.id, description: dueno.description || null };
+  }
+  return { status: "received", code, control, detail: null };
 }

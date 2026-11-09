@@ -67,10 +67,27 @@ def test_rf_ignores_reader_masks(conn):
     assert row["control_id"] == control_id and row["device_id"] == 0
 
 
-def test_rf_unknown_control(conn):
-    assert run(conn, RfRead(777)).reason == 5
-    row = last_log(conn)
-    assert row["code"] == 777 and row["control_id"] is None
+def test_unknown_rf_is_not_logged(conn):
+    outcome = run(conn, RfRead(777))
+    assert outcome.reason == 5 and not outcome.allowed
+    assert outcome.command is None and outcome.log_id is None
+    assert conn.execute("SELECT COUNT(*) FROM access_logs").fetchone()[0] == 0
+
+
+def test_unknown_rf_is_delivered_to_an_active_listener_and_not_logged(conn, tmp_path):
+    from acceso.rf_listen import RfListener
+    listener = RfListener(tmp_path / "x.sqlite")
+    listener._active = True  # escucha activa sin hilo de espera
+    outcome = handle_event(conn, RfRead(777), Sender(), now=NOW, max_entries=1000, rf_listener=listener)
+    assert listener._code == 777
+    assert outcome.reason == 5 and outcome.log_id is None
+    assert conn.execute("SELECT COUNT(*) FROM access_logs").fetchone()[0] == 0
+
+
+def test_unknown_card_still_logged(conn):
+    outcome = run(conn, CardRead(0, 999))
+    assert outcome.reason == 1 and outcome.log_id is not None
+    assert last_log(conn)["reason"] == 1
 
 
 def test_rf_unassigned_button(conn):
@@ -145,7 +162,7 @@ def test_send_failure_logs_uart_error(conn):
 
 def test_log_trim_keeps_newest(conn):
     for _ in range(5):
-        run(conn, RfRead(1), max_entries=3)
+        run(conn, CardRead(0, 1), max_entries=3)
     ids = [r[0] for r in conn.execute("SELECT log_id FROM access_logs ORDER BY log_id")]
     assert ids == [3, 4, 5]
 

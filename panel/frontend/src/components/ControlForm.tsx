@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { listenRf } from "@/lib/api";
 import { parseCode } from "@/lib/codes";
 import { outputLabel } from "@/lib/format";
-import type { Control, ControlButton, Holder } from "@/lib/types";
+import type { Control, ControlButton, Holder, ListenResult } from "@/lib/types";
 
 export interface ControlPayload {
   holder_id: number;
@@ -17,11 +18,12 @@ interface Props {
   error?: string;
   onSubmit: (payload: ControlPayload) => void | Promise<void>;
   onCancel?: () => void;
+  onListen?: () => Promise<ListenResult>;
 }
 
 const OUTPUTS = [0, 1, 2, 3];
 
-export default function ControlForm({ control, holders, error = "", onSubmit, onCancel }: Props) {
+export default function ControlForm({ control, holders, error = "", onSubmit, onCancel, onListen = listenRf }: Props) {
   const [holderId, setHolderId] = useState(control ? String(control.holder_id) : "");
   const [description, setDescription] = useState(control?.description ?? "");
   const [codes, setCodes] = useState<string[]>(() =>
@@ -38,6 +40,29 @@ export default function ControlForm({ control, holders, error = "", onSubmit, on
     }),
   );
   const [localError, setLocalError] = useState("");
+  // Fila que está escuchando (solo una a la vez) y avisos por fila.
+  const [listening, setListening] = useState<number | null>(null);
+  const [notes, setNotes] = useState<string[]>(() => OUTPUTS.map(() => ""));
+
+  async function listen(i: number) {
+    setListening(i);
+    setAt(setNotes, i, "");
+    try {
+      const res = await onListen();
+      if (res.code === null) {
+        setAt(setNotes, i, "No se recibió ningún control.");
+      } else if (res.control && res.control.control_id !== control?.control_id) {
+        const who = res.control.description ? res.control.description : "otro control";
+        setAt(setNotes, i, `Este código ya pertenece a ${who}`);
+      } else {
+        setAt(setCodes, i, String(res.code));
+      }
+    } catch (err) {
+      setAt(setNotes, i, (err as Error).message);
+    } finally {
+      setListening(null);
+    }
+  }
 
   function setAt(setter: typeof setCodes, i: number, value: string) {
     setter((cur) => cur.map((v, j) => (j === i ? value : v)));
@@ -94,7 +119,7 @@ export default function ControlForm({ control, holders, error = "", onSubmit, on
         <legend className="text-sm font-medium">Botones</legend>
         <p className="text-sm text-muted">Un botón sin código se ignora.</p>
         {OUTPUTS.map((i) => (
-          <div key={i} className="grid items-end gap-3 sm:grid-cols-[5rem_1fr_12rem]">
+          <div key={i} className="grid items-end gap-3 sm:grid-cols-[5rem_1fr_auto_12rem]">
             <span className="pb-2 text-sm font-medium">Botón {i + 1}</span>
             <label className="text-sm">
               <span className="sr-only">Código del botón {i + 1}</span>
@@ -107,6 +132,15 @@ export default function ControlForm({ control, holders, error = "", onSubmit, on
                 onChange={(e) => setAt(setCodes, i, e.target.value)}
               />
             </label>
+            <button
+              type="button"
+              className="btn-quiet"
+              disabled={listening !== null}
+              aria-label={listening === i ? "Escuchando…" : `Escuchar código del botón ${i + 1}`}
+              onClick={() => listen(i)}
+            >
+              {listening === i ? "Escuchando…" : "Escuchar"}
+            </button>
             <select
               className="field"
               aria-label={`Salida del botón ${i + 1}`}
@@ -120,6 +154,9 @@ export default function ControlForm({ control, holders, error = "", onSubmit, on
                 </option>
               ))}
             </select>
+            <p aria-live="polite" className="min-h-5 text-sm font-medium text-danger sm:col-span-4">
+              {notes[i]}
+            </p>
           </div>
         ))}
       </fieldset>

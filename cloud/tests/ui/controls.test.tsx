@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ControlsManager from "@/components/access/ControlsManager";
 import type { ActionResult } from "@/lib/actions";
 import type { ControlRow } from "@/lib/controls";
+import type { ListenRfStatus } from "@/lib/panel-commands";
 
 const ok = <T,>(data: T): ActionResult<T> => ({ ok: true, data });
 const fallo = (mensaje: string, status = 409): ActionResult<never> => ({ ok: false, status, error: mensaje });
@@ -13,14 +14,15 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 const P1 = "p-1";
 const P2 = "p-2";
 const PANELES = [
-  { id: P1, panel_code: "PNL-AAAA-0001", aliases: ["Pluma vehicular", null, null, "Peatonal"] },
-  { id: P2, panel_code: "PNL-BBBB-0002", aliases: [null, null, null, null] },
+  { id: P1, panel_code: "PNL-AAAA-0001", aliases: ["Pluma vehicular", null, null, "Peatonal"], active: true },
+  { id: P2, panel_code: "PNL-BBBB-0002", aliases: [null, null, null, null], active: true },
 ];
 
 const control = (p: Partial<ControlRow> = {}): ControlRow => ({
@@ -234,5 +236,142 @@ describe("ControlsManager", () => {
     fireEvent.click(borrar);
     expect(window.confirm).toHaveBeenCalledWith('¿Borrar el control de "Ana Pérez"?');
     await waitFor(() => expect(onDelete).toHaveBeenCalledWith("k-1"));
+  });
+});
+
+describe("ControlForm: Escuchar", () => {
+  const avanzar = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+  const estado = (p: Partial<ListenRfStatus>): ActionResult<ListenRfStatus> =>
+    ok({ status: "pending", code: null, control: null, detail: null, ...p });
+
+  function abrirEscucha(panels = PANELES, controlEditado?: ControlRow) {
+    vi.useFakeTimers();
+    const onListen = vi.fn<(panelId: string) => Promise<ActionResult<{ commandId: string }>>>(async () => ok({ commandId: "c-1" }));
+    const onListenStatus = vi.fn<(id: string) => Promise<ActionResult<ListenRfStatus>>>(async () => estado({}));
+    const controls = controlEditado ? [controlEditado] : [];
+    render(
+      <ControlsManager
+        controls={controls}
+        holders={[{ id: "h-1", name: "Ana Pérez" }]}
+        panels={panels}
+        onSave={vi.fn(async () => ok({ id: "k-9" }))}
+        onDelete={vi.fn(async () => ok(undefined))}
+        onListen={onListen}
+        onListenStatus={onListenStatus}
+      />,
+    );
+    fireEvent.click(controlEditado ? screen.getByRole("button", { name: /Editar/ }) : screen.getByRole("button", { name: "Nuevo control" }));
+    return { onListen, onListenStatus };
+  }
+  const escuchar = (n = 1) => fireEvent.click(screen.getByRole("button", { name: `Escuchar el código del botón ${n}` }));
+  const codigo = (n = 1) => (screen.getByLabelText(`Código del botón ${n}`) as HTMLInputElement).value;
+
+  it("con 2 paneles activos muestra el selector; con 1 no; los inactivos no se ofrecen", () => {
+    abrirEscucha();
+    const sel = screen.getByLabelText("Panel que escucha") as HTMLSelectElement;
+    expect(sel.options).toHaveLength(2);
+    cleanup();
+    abrirEscucha([PANELES[0], { ...PANELES[1], active: false }]);
+    expect(screen.queryByLabelText("Panel que escucha")).toBeNull();
+  });
+
+  it("sin paneles activos explica por qué no se puede escuchar", () => {
+    abrirEscucha(PANELES.map((p) => ({ ...p, active: false })));
+    expect(screen.queryByRole("button", { name: /Escuchar el código/ })).toBeNull();
+    expect(screen.getByText("Escuchar requiere un panel activo.")).toBeTruthy();
+  });
+
+  it("Escuchar pide al panel elegido, consulta cada 1 s y escribe el código", async () => {
+    const { onListen, onListenStatus } = abrirEscucha();
+    fireEvent.change(screen.getByLabelText("Panel que escucha"), { target: { value: P2 } });
+    escuchar();
+    await avanzar(0);
+    expect(onListen).toHaveBeenCalledWith(P2);
+    expect(screen.getByRole("button", { name: "Escuchando…" })).toBeTruthy();
+    await avanzar(999);
+    expect(onListenStatus).not.toHaveBeenCalled();
+    await avanzar(1);
+    expect(onListenStatus).toHaveBeenCalledWith("c-1");
+    onListenStatus.mockResolvedValueOnce(estado({ status: "received", code: 777 }));
+    await avanzar(1000);
+    expect(codigo()).toBe("777");
+    expect(screen.queryByRole("button", { name: "Escuchando…" })).toBeNull();
+  });
+
+  it("un código de otro control avisa y no escribe", async () => {
+    const { onListenStatus } = abrirEscucha();
+    onListenStatus.mockResolvedValue(estado({ status: "received", code: 5, control: { id: "k-2", description: "Llavero de Beto" } }));
+    escuchar();
+    await avanzar(1000);
+    expect(screen.getByText("Este código ya pertenece a Llavero de Beto").className).toContain("text-danger");
+    expect(codigo()).toBe("");
+  });
+
+  it("sin descripción dice otro control", async () => {
+    const { onListenStatus } = abrirEscucha();
+    onListenStatus.mockResolvedValue(estado({ status: "received", code: 5, control: { id: "k-2", description: null } }));
+    escuchar();
+    await avanzar(1000);
+    expect(screen.getByText("Este código ya pertenece a otro control")).toBeTruthy();
+  });
+
+  it("un código del mismo control que se edita se escribe sin aviso", async () => {
+    const { onListenStatus } = abrirEscucha(PANELES, control());
+    onListenStatus.mockResolvedValue(estado({ status: "received", code: 2001, control: { id: "k-1", description: "Llavero" } }));
+    escuchar(2);
+    await avanzar(1000);
+    expect(codigo(2)).toBe("2001");
+    expect(screen.queryByText(/ya pertenece/)).toBeNull();
+  });
+
+  it("con error muestra el detalle del panel", async () => {
+    const { onListenStatus } = abrirEscucha();
+    onListenStatus.mockResolvedValue(estado({ status: "error", detail: "No se recibió ningún control." }));
+    escuchar();
+    await avanzar(1000);
+    expect(screen.getByText("No se recibió ningún control.")).toBeTruthy();
+  });
+
+  it("si a los 20 s sigue pendiente dice que el panel no respondió", async () => {
+    const { onListenStatus } = abrirEscucha();
+    escuchar();
+    await avanzar(19_000);
+    expect(screen.queryByText("El panel no respondió.")).toBeNull();
+    await avanzar(1000);
+    expect(screen.getByText("El panel no respondió.")).toBeTruthy();
+    expect(onListenStatus.mock.calls.length).toBeLessThanOrEqual(21);
+  });
+
+  it("solo escucha una fila a la vez", async () => {
+    const { onListen } = abrirEscucha();
+    escuchar(1);
+    await avanzar(0);
+    expect((screen.getByRole("button", { name: "Escuchar el código del botón 2" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(onListen).toHaveBeenCalledTimes(1);
+  });
+
+  it("al desmontar cancela el sondeo y no consulta más", async () => {
+    const { onListenStatus } = abrirEscucha();
+    escuchar();
+    await avanzar(1000);
+    expect(onListenStatus).toHaveBeenCalledTimes(1);
+    cleanup();
+    await avanzar(5000);
+    expect(onListenStatus).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("dos clics seguidos piden una sola escucha", async () => {
+    const { onListen } = abrirEscucha();
+    const boton = screen.getByRole("button", { name: "Escuchar el código del botón 1" });
+    fireEvent.click(boton);
+    fireEvent.click(boton);
+    await avanzar(0);
+    expect(onListen).toHaveBeenCalledTimes(1);
+  });
+
+  it("la región de avisos existe siempre en el DOM", () => {
+    abrirEscucha();
+    expect(document.querySelector('[aria-live="polite"]')).not.toBeNull();
   });
 });

@@ -9,7 +9,7 @@ import { listOutputsAs } from "@/lib/outputs";
 import { listPanelsAs } from "@/lib/panels/list";
 import { isLinkedPanel } from "@/lib/profile-view";
 import { createServerSupabase } from "@/lib/supabase/server";
-import { deleteControl, saveControl } from "./actions";
+import { deleteControl, listenRf, listenRfStatus, saveControl } from "./actions";
 
 export const instant = false;
 export const metadata: Metadata = { title: "Controles" };
@@ -29,6 +29,7 @@ export default async function ControlsPage({ params }: PageProps<"/t/[tenant]/in
   const panels = paneles.filter(isLinkedPanel).map((p) => ({
     id: p.id,
     panel_code: p.panel_code,
+    active: p.status === "active",
     aliases: Array.from({ length: OUTPUT_COUNT }, (_, i) => alias.get(`${p.id}:${i}`) ?? null),
   }));
 
@@ -39,6 +40,8 @@ export default async function ControlsPage({ params }: PageProps<"/t/[tenant]/in
       panels={panels}
       onSave={saveControl.bind(null, tenant, instalacion.id)}
       onDelete={deleteControl.bind(null, tenant, instalacion.id)}
+      onListen={listenRf.bind(null, tenant, instalacion.id)}
+      onListenStatus={listenRfStatus.bind(null, tenant, instalacion.id)}
     />
   );
 }

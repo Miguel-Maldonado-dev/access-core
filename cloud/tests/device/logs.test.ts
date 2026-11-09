@@ -37,11 +37,14 @@ function peticion(ruta: string, panel?: PanelPrueba, cuerpo?: unknown): Request 
   });
 }
 
+/** Base reciente (el filtro de la BD descarta logs de más de 30 días): hace una hora, a la hora en punto. */
+const BASE_TS = Math.floor((Date.now() - 3_600_000) / 3_600_000) * 3_600_000;
+
 /** Un log del panel en la forma del contrato (campos de más o de menos se sobrescriben). */
 function log(id: number, extra: Record<string, unknown> = {}) {
   return {
     local_log_id: id,
-    timestamp: new Date(Date.UTC(2026, 9, 1, 12, 0, id % 60)).toISOString(),
+    timestamp: new Date(BASE_TS + (id % 60) * 1000).toISOString(),
     allowed: true,
     source: 0,
     reason: 0,
@@ -193,12 +196,26 @@ describe("logs, alertas y confirmación de borrados", () => {
   });
 
   describe("POST /logs", () => {
+    it("un log de motivo 5 (escucha RF) responde accepted con el total pero no se guarda", async () => {
+      const antes = (await filasDe(panelA)).length;
+      const res = await enviar(panelA, [log(9001, { reason: 5 }), log(9002)]);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ accepted: 2, last_local_log_id: 9002 });
+      const ids = (await filasDe(panelA)).map((f) => f.local_log_id);
+      expect(ids).toContain(9002);
+      expect(ids).not.toContain(9001);
+      expect(ids.length).toBe(antes + 1);
+      // Deja el panel como estaba para las pruebas que cuentan sus filas.
+      const { error } = await admin.from("access_logs").delete().eq("panel_id", panelA.id).eq("local_log_id", 9002);
+      if (error) throw error;
+    });
+
     it("guarda el lote con el tenant, la instalación y el panel autenticados y responde {accepted, last_local_log_id}", async () => {
       const holder = randomUUID();
       const control = randomUUID();
       const res = await enviar(panelA, [
         log(1),
-        log(3, { allowed: false, source: 1, reason: 5, holder_id: holder, control_id: control, code: 777, device_id: null, output_id: null }),
+        log(3, { allowed: false, source: 1, reason: 6, holder_id: holder, control_id: control, code: 777, device_id: null, output_id: null }),
         log(2, { holder_name: null, holder_kind: null, credential_label: null, code: null }),
       ]);
       expect(res.status).toBe(200);
@@ -225,7 +242,7 @@ describe("logs, alertas y confirmación de borrados", () => {
       expect(filas[2]).toMatchObject({
         allowed: false,
         source: 1,
-        reason: 5,
+        reason: 6,
         holder_id: holder,
         control_id: control,
         code: 777,

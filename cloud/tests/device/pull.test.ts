@@ -514,6 +514,7 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
         revision: R,
         has_more: false,
         confirm_deletions: false,
+        logs_cleared_at: null,
         changes: [],
       });
       expect((await panelEnBase(panelA.id)).synced_revision).toBe(R);
@@ -582,6 +583,7 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
         revision: since + 1,
         has_more: false,
         confirm_deletions: false,
+        logs_cleared_at: null,
         changes: [{ table: "cards", op: "delete", id: c2, revision: since + 1 }],
       });
       const snap = await snapshot(panelA, "cards");
@@ -1073,6 +1075,22 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
         expect(res.status, ruta).toBe(401);
         expect(await res.json()).toMatchObject({ code: "unauthorized" });
       }
+    });
+
+    it("cada página trae logs_cleared_at: nulo al inicio y en ISO con Z tras fijarse", async () => {
+      const R = await revisionInstalacion(inst1);
+      expect((await pull(panelA, R)).logs_cleared_at).toBeNull();
+      expect((await pull(panelA, 0)).logs_cleared_at).toBeNull();
+      const instante = new Date(Date.now() - 60_000);
+      const { error } = await admin
+        .from("installations")
+        .update({ logs_cleared_at: instante.toISOString() })
+        .eq("id", inst1);
+      if (error) throw error;
+      expect((await pull(panelA, R)).logs_cleared_at).toBe(instante.toISOString());
+      expect((await pull(panelA, 0)).logs_cleared_at).toBe(instante.toISOString());
+      const { error: e2 } = await admin.from("installations").update({ logs_cleared_at: null }).eq("id", inst1);
+      if (e2) throw e2;
     });
 
     it("confirm_deletions es verdadero solo mientras confirm_deletions_until está en el futuro", async () => {

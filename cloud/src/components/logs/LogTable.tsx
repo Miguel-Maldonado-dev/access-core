@@ -1,4 +1,4 @@
-import { formatDateTime, holderKindLabel, mediumLabel, outputLabel, reasonLabel, type LogRow } from "@/lib/log-view";
+import { formatDateTimeShort, holderKindLabel, mediumLabel, outputLabel, reasonLabel, type LogRow } from "@/lib/log-view";
 
 const HEADERS = ["Fecha", "Panel", "Resultado", "Titular", "Medio", "Código", "Salida", "Motivo"];
 
@@ -6,11 +6,11 @@ const HEADERS = ["Fecha", "Panel", "Resultado", "Titular", "Medio", "Código", "
 export default function LogTable({ rows }: { rows: LogRow[] }) {
   return (
     <div className="overflow-x-auto rounded-lg border border-line bg-surface">
-      <table className="w-full text-left text-sm">
+      <table className="w-full text-left text-xs">
         <thead className="border-b border-line bg-paper text-muted">
           <tr>
             {HEADERS.map((h) => (
-              <th key={h} scope="col" className="whitespace-nowrap px-4 py-2 font-medium">
+              <th key={h} scope="col" className="whitespace-nowrap px-2.5 py-1.5 font-medium">
                 {h}
               </th>
             ))}
@@ -18,21 +18,21 @@ export default function LogTable({ rows }: { rows: LogRow[] }) {
         </thead>
         <tbody>
           {rows.map((log) => (
-            <tr key={log.id} className="border-b border-line last:border-0">
-              <td className="whitespace-nowrap px-4 py-2 tabular-nums">{formatDateTime(log.ts)}</td>
-              <td className="whitespace-nowrap px-4 py-2 font-mono text-xs">{log.panel_code}</td>
-              <td className={`px-4 py-2 font-semibold ${log.allowed ? "text-signal" : "text-danger"}`}>
+            <tr key={log.id} className="border-b border-line last:border-0 even:bg-paper/60">
+              <td className="whitespace-nowrap px-2.5 py-1.5 tabular-nums">{formatDateTimeShort(log.ts)}</td>
+              <td className="whitespace-nowrap px-2.5 py-1.5 font-mono">{log.panel_code}</td>
+              <td className={`whitespace-nowrap px-2.5 py-1.5 font-semibold ${log.allowed ? "text-signal" : "text-danger"}`}>
                 {log.allowed ? "Permitido" : "Denegado"}
               </td>
-              <td className="px-4 py-2 [overflow-wrap:anywhere]">
+              <td className="min-w-36 px-2.5 py-1.5 [overflow-wrap:anywhere]">
                 {log.holder_name === null
                   ? "-"
                   : `${log.holder_name}${log.holder_kind ? ` · ${holderKindLabel(log.holder_kind)}` : ""}`}
               </td>
-              <td className="px-4 py-2">{mediumLabel(log)}</td>
-              <td className="px-4 py-2 tabular-nums">{log.source === 3 || log.code === null ? "-" : log.code}</td>
-              <td className="px-4 py-2">{outputLabel(log.output_index, log.output_alias)}</td>
-              <td className="px-4 py-2">{reasonLabel(log.reason)}</td>
+              <td className="whitespace-nowrap px-2.5 py-1.5">{mediumLabel(log)}</td>
+              <td className="whitespace-nowrap px-2.5 py-1.5 tabular-nums">{log.source === 3 || log.code === null ? "-" : log.code}</td>
+              <td className="whitespace-nowrap px-2.5 py-1.5">{outputLabel(log.output_index, log.output_alias)}</td>
+              <td className="whitespace-nowrap px-2.5 py-1.5">{reasonLabel(log.reason)}</td>
             </tr>
           ))}
           {rows.length === 0 && (

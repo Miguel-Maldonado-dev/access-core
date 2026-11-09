@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   BUTTON_COUNT,
   KEEP_NO_OUTPUT,
@@ -10,13 +10,17 @@ import {
   outputOptionLabel,
   parseCode,
 } from "@/lib/access-view";
+import type { ActionResult } from "@/lib/actions";
 import type { ButtonInput, ControlInput, ControlRow } from "@/lib/controls";
+import type { ListenRfStatus } from "@/lib/panel-commands";
 
 /** Panel vinculado de la instalación con el alias de sus 4 salidas (null = sin alias). */
 export interface ControlPanel {
   id: string;
   panel_code: string;
   aliases: (string | null)[];
+  /** Solo un panel activo puede escuchar un control. */
+  active: boolean;
 }
 
 interface Props {
@@ -27,7 +31,17 @@ interface Props {
   pending?: boolean;
   onSubmit: (input: ControlInput) => void;
   onCancel: () => void;
+  /** "Escuchar": pide al panel que capture el siguiente control RF. */
+  onListen?: (panelId: string) => Promise<ActionResult<{ commandId: string }>>;
+  onListenStatus?: (commandId: string) => Promise<ActionResult<ListenRfStatus>>;
 }
+
+/** Cada cuánto se consulta la escucha y cuánto se espera en total. */
+const CONSULTA_MS = 1_000;
+const ESPERA_MS = 20_000;
+const SIN_RESPUESTA = "El panel no respondió.";
+const FALLO_INESPERADO = "No se pudo consultar el panel. Intenta de nuevo.";
+
 
 /**
  * Una fila del formulario: un botón vivo o un número libre. Las salidas van como texto:
@@ -88,14 +102,97 @@ function filasIniciales(control: ControlRow | undefined, panels: ControlPanel[])
   return filas;
 }
 
-export default function ControlForm({ control, holders, panels, error = "", pending = false, onSubmit, onCancel }: Props) {
+export default function ControlForm({
+  control,
+  holders,
+  panels,
+  error = "",
+  pending = false,
+  onSubmit,
+  onCancel,
+  onListen,
+  onListenStatus,
+}: Props) {
   const [holderId, setHolderId] = useState(control?.holder_id ?? "");
   const [description, setDescription] = useState(control?.description ?? "");
   const [filas, setFilas] = useState(() => filasIniciales(control, panels));
   const [localError, setLocalError] = useState("");
+  const activos = panels.filter((p) => p.active);
+  const puedeEscuchar = onListen !== undefined && onListenStatus !== undefined;
+  const [panelEscucha, setPanelEscucha] = useState(activos[0]?.id ?? "");
+  /** Fila que está escuchando (solo una a la vez). */
+  const [escuchando, setEscuchando] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<{ kind: "ok" | "error"; text: string }>({ kind: "ok", text: "" });
+  // Si se cierra el formulario a media escucha, deja de consultar.
+  const montado = useRef(true);
+  // Un solo candado síncrono: dos clics seguidos no abren dos escuchas antes del re-render.
+  const ocupado = useRef(false);
+  // Espera pendiente del sondeo; al desmontar se cancela el temporizador.
+  const espera = useRef<{ timer: ReturnType<typeof setTimeout>; resolver: () => void } | null>(null);
+  useEffect(() => {
+    montado.current = true;
+    return () => {
+      montado.current = false;
+      if (espera.current) {
+        clearTimeout(espera.current.timer);
+        espera.current.resolver();
+        espera.current = null;
+      }
+    };
+  }, []);
+
+  const esperar = (ms: number) =>
+    new Promise<void>((resolver) => {
+      const timer = setTimeout(() => {
+        espera.current = null;
+        resolver();
+      }, ms);
+      espera.current = { timer, resolver };
+    });
 
   const cambiar = (key: string, cambio: (f: Fila) => Fila) =>
     setFilas((actuales) => actuales.map((f) => (f.key === key ? cambio(f) : f)));
+
+  async function escuchar(key: string) {
+    if (!onListen || !onListenStatus || ocupado.current) return;
+    ocupado.current = true;
+    const panelId = activos.some((p) => p.id === panelEscucha) ? panelEscucha : (activos[0]?.id ?? "");
+    setAviso({ kind: "ok", text: "" });
+    setEscuchando(key);
+    try {
+      const r = await onListen(panelId);
+      if (!montado.current) return;
+      if (!r.ok) return setAviso({ kind: "error", text: r.error });
+      const fin = Date.now() + ESPERA_MS;
+      for (;;) {
+        await esperar(CONSULTA_MS);
+        if (!montado.current) return;
+        const e = await onListenStatus(r.data.commandId);
+        if (!montado.current) return;
+        if (!e.ok) return setAviso({ kind: "error", text: e.error });
+        const { status, code, control: dueno, detail } = e.data;
+        if (status === "received" && code !== null) {
+          if (dueno !== null && dueno.id !== control?.id) {
+            return setAviso({
+              kind: "error",
+              text: `Este código ya pertenece a ${dueno.description?.trim() || "otro control"}`,
+            });
+          }
+          cambiar(key, (x) => ({ ...x, code: String(code) }));
+          return;
+        }
+        if (status === "error" || status === "timeout" || status === "received") {
+          return setAviso({ kind: "error", text: detail ?? SIN_RESPUESTA });
+        }
+        if (Date.now() >= fin) return setAviso({ kind: "error", text: SIN_RESPUESTA });
+      }
+    } catch {
+      if (montado.current) setAviso({ kind: "error", text: FALLO_INESPERADO });
+    } finally {
+      ocupado.current = false;
+      if (montado.current) setEscuchando(null);
+    }
+  }
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -168,6 +265,30 @@ export default function ControlForm({ control, holders, panels, error = "", pend
               Los códigos van en decimal y un botón sin código se ignora. En cada panel elige la salida que abre el
               botón; con {NO_OUTPUT_LABEL} ese panel no lo recibe.
             </p>
+            {puedeEscuchar && activos.length > 1 && (
+              <label className="max-w-xs text-sm font-medium">
+                Panel que escucha
+                <select
+                  className="field"
+                  value={panelEscucha}
+                  disabled={escuchando !== null}
+                  onChange={(e) => setPanelEscucha(e.target.value)}
+                >
+                  {activos.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.panel_code}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {puedeEscuchar && activos.length === 0 && (
+              <p className="text-sm text-muted">Escuchar requiere un panel activo.</p>
+            )}
+            {/* Siempre en el DOM para que los lectores de pantalla anuncien lo que aparezca. */}
+            <p aria-live="polite" className={`min-h-5 text-sm font-medium ${aviso.kind === "error" ? "text-danger" : "text-signal"}`}>
+              {aviso.text}
+            </p>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="text-muted">
@@ -188,6 +309,7 @@ export default function ControlForm({ control, holders, panels, error = "", pend
                         Botón {f.nombre}
                       </th>
                       <td className="pr-3 pb-2">
+                        <div className="flex items-center gap-2">
                         <input
                           className="field mt-0 min-w-36 tabular-nums"
                           inputMode="numeric"
@@ -200,6 +322,18 @@ export default function ControlForm({ control, holders, panels, error = "", pend
                             cambiar(f.key, (x) => ({ ...x, code }));
                           }}
                         />
+                        {puedeEscuchar && activos.length > 0 && (
+                          <button
+                            type="button"
+                            className="btn-quiet whitespace-nowrap"
+                            disabled={escuchando !== null}
+                            onClick={() => escuchar(f.key)}
+                            aria-label={escuchando === f.key ? undefined : `Escuchar el código del botón ${f.nombre}`}
+                          >
+                            {escuchando === f.key ? "Escuchando…" : "Escuchar"}
+                          </button>
+                        )}
+                        </div>
                       </td>
                       {panels.map((p) => (
                         <td key={p.id} className="pr-3 pb-2">

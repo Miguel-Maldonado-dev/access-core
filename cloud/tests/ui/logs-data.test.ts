@@ -20,6 +20,13 @@ async function fallo(promesa: Promise<unknown>): Promise<HttpError> {
   throw new Error("Se esperaba un HttpError y salió bien.");
 }
 
+/** Días recientes (UTC): el filtro de la BD descarta logs de más de 30 días. D0 = hace 20 días. */
+const dia = (atras: number) => new Date(Date.now() - atras * 86_400_000).toISOString().slice(0, 10);
+const DM1 = dia(21);
+const D0 = dia(20);
+const D1 = dia(19);
+const D2 = dia(18);
+
 const filtros = (consulta: Record<string, string> = {}) => parseLogFilters(consulta);
 
 describe("logs de acceso (N15)", () => {
@@ -186,20 +193,20 @@ describe("logs de acceso (N15)", () => {
     beforeAll(async () => {
       const base = { tenant: tenantA, inst: instA };
       await logs([
-        // Medio día local de México (UTC-6 en marzo de 2026).
-        { ...base, panel: panelA1, ts: "2026-03-10T18:00:00Z", source: 0, code: 111, holder_id: holderAna, holder_name: "Ana Pérez", output_index: 0 },
-        { ...base, panel: panelA1, ts: "2026-03-10T19:00:00Z", source: 3, reason: 0, holder_id: holderBeto, holder_name: "Beto Ruiz", output_index: 1 },
-        { ...base, panel: panelA2, ts: "2026-03-11T19:00:00Z", source: 1, code: 222, allowed: false, reason: 5 },
-        { ...base, panel: panelA2, ts: "2026-03-12T19:00:00Z", source: 2, output_index: 0 },
+        // Medio día local de México (UTC-6, sin horario de verano).
+        { ...base, panel: panelA1, ts: `${D0}T18:00:00Z`, source: 0, code: 111, holder_id: holderAna, holder_name: "Ana Pérez", output_index: 0 },
+        { ...base, panel: panelA1, ts: `${D0}T19:00:00Z`, source: 3, reason: 0, holder_id: holderBeto, holder_name: "Beto Ruiz", output_index: 1 },
+        { ...base, panel: panelA2, ts: `${D1}T19:00:00Z`, source: 1, code: 222, allowed: false, reason: 6 },
+        { ...base, panel: panelA2, ts: `${D2}T19:00:00Z`, source: 2, output_index: 0 },
         // Frontera del día local: 23:59:59 del 9 y 00:00:00 del 10 (hora de México).
-        { ...base, panel: panelA1, ts: "2026-03-10T05:59:59Z", source: 0, code: 333 },
-        { ...base, panel: panelA1, ts: "2026-03-10T06:00:00Z", source: 0, code: 444 },
+        { ...base, panel: panelA1, ts: `${D0}T05:59:59Z`, source: 0, code: 333 },
+        { ...base, panel: panelA1, ts: `${D0}T06:00:00Z`, source: 0, code: 444 },
         // Último segundo del día local 10 y primero del 11.
-        { ...base, panel: panelA1, ts: "2026-03-11T05:59:59Z", source: 0, code: 555 },
-        { ...base, panel: panelA1, ts: "2026-03-11T06:00:00Z", source: 0, code: 666 },
+        { ...base, panel: panelA1, ts: `${D1}T05:59:59Z`, source: 0, code: 555 },
+        { ...base, panel: panelA1, ts: `${D1}T06:00:00Z`, source: 0, code: 666 },
       ]);
       // Otro tenant: nunca debe aparecer.
-      await logs([{ tenant: tenantB, inst: instB, panel: panelB, ts: "2026-03-10T18:00:00Z", code: 999 }]);
+      await logs([{ tenant: tenantB, inst: instB, panel: panelB, ts: `${D0}T18:00:00Z`, code: 999 }]);
     });
 
     it("sin filtros trae todos los de la instalación, del más reciente al más viejo", async () => {
@@ -238,26 +245,26 @@ describe("logs de acceso (N15)", () => {
     });
 
     it("el rango de fechas usa el día local de México, con la frontera exacta", async () => {
-      const dia10 = await listLogsAs(tecnicoA, tenantA, instA, filtros({ desde: "2026-03-10", hasta: "2026-03-10" }));
+      const dia10 = await listLogsAs(tecnicoA, tenantA, instA, filtros({ desde: `${D0}`, hasta: `${D0}` }));
       expect(dia10.rows.map((x) => x.ts).sort()).toEqual([
-        "2026-03-10T06:00:00+00:00",
-        "2026-03-10T18:00:00+00:00",
-        "2026-03-10T19:00:00+00:00",
-        "2026-03-11T05:59:59+00:00",
+        `${D0}T06:00:00+00:00`,
+        `${D0}T18:00:00+00:00`,
+        `${D0}T19:00:00+00:00`,
+        `${D1}T05:59:59+00:00`,
       ]);
-      const desde11 = await listLogsAs(tecnicoA, tenantA, instA, filtros({ desde: "2026-03-11" }));
+      const desde11 = await listLogsAs(tecnicoA, tenantA, instA, filtros({ desde: `${D1}` }));
       expect(desde11.total).toBe(3);
-      const hasta9 = await listLogsAs(tecnicoA, tenantA, instA, filtros({ hasta: "2026-03-09" }));
+      const hasta9 = await listLogsAs(tecnicoA, tenantA, instA, filtros({ hasta: `${DM1}` }));
       expect(hasta9.rows.map((x) => x.code)).toEqual([333]);
     });
 
     it("combina filtros", async () => {
-      const r = await listLogsAs(tecnicoA, tenantA, instA, filtros({ panel: panelA1, origen: "0", desde: "2026-03-10", hasta: "2026-03-10" }));
+      const r = await listLogsAs(tecnicoA, tenantA, instA, filtros({ panel: panelA1, origen: "0", desde: `${D0}`, hasta: `${D0}` }));
       expect(r.rows.map((x) => x.code).sort()).toEqual([111, 444, 555]);
     });
 
     it("resuelve panel y alias de la salida entre filas vivas, sin alias queda null", async () => {
-      const r = await listLogsAs(tecnicoA, tenantA, instA, filtros({ desde: "2026-03-10", hasta: "2026-03-10" }));
+      const r = await listLogsAs(tecnicoA, tenantA, instA, filtros({ desde: `${D0}`, hasta: `${D0}` }));
       const ana = r.rows.find((x) => x.code === 111)!;
       expect(ana.output_alias).toBe("Pluma vehicular");
       expect(ana.panel_code).toMatch(/^PNL-/);
@@ -284,7 +291,7 @@ describe("logs de acceso (N15)", () => {
   describe("paginación", () => {
     beforeAll(async () => {
       // 120 logs; cada 3 comparten la misma marca de tiempo para probar el desempate por id.
-      const base = Date.parse("2026-04-01T12:00:00Z");
+      const base = Date.now() - 5 * 86_400_000;
       await logs(
         Array.from({ length: 120 }, (_, i) => ({
           tenant: tenantA,
@@ -335,7 +342,7 @@ describe("logs de acceso (N15)", () => {
       const r = await listLogsAs(tecnicoA, tenantA, instA, filtros({ panel: panelB }));
       expect(r.total).toBe(0);
       const holderB = await titular(instB, "Titular de B");
-      await logs([{ tenant: tenantB, inst: instB, panel: panelB, ts: "2026-03-10T18:00:00Z", holder_id: holderB, holder_name: "Titular de B" }]);
+      await logs([{ tenant: tenantB, inst: instB, panel: panelB, ts: `${D0}T18:00:00Z`, holder_id: holderB, holder_name: "Titular de B" }]);
       const t = await listLogsAs(tecnicoA, tenantA, instA, filtros({ titular: holderB }));
       expect(t.total).toBe(0);
     });

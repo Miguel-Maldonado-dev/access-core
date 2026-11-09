@@ -131,6 +131,8 @@ export interface PullResponse {
   revision: number;
   has_more: boolean;
   confirm_deletions: boolean;
+  /** `installations.logs_cleared_at` en ISO (con `Z`), o nulo si nunca se borraron logs. */
+  logs_cleared_at: string | null;
   /** Ordenados por `revision` ascendente. */
   changes: ChangeItem[];
 }
@@ -293,14 +295,16 @@ export const alertRequestSchema = z.object({
 
 /**
  * Cuerpo de `POST /command-result`: el resultado de una orden de la nube (`test_output` o
- * `remote_open`). `detail` es el texto del panel (o nulo); `reason` es el motivo de la
- * decisión del daemon y solo llega en `remote_open`.
+ * `remote_open` o `listen_rf`). `detail` es el texto del panel (o nulo); `reason` es el
+ * motivo de la decisión del daemon y solo llega en `remote_open`; `rf_code` es el código
+ * RF captado y solo llega en `listen_rf`.
  */
 export const commandResultSchema = z.strictObject({
   command_id: uuidSchema,
   ok: z.boolean(),
   detail: texto.max(200).nullable().optional(),
   reason: entero(0, 255).nullable().optional(),
+  rf_code: entero(0, 4294967295).nullable().optional(),
 });
 
 export type CommandResult = z.infer<typeof commandResultSchema>;

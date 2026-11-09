@@ -116,7 +116,7 @@ describe("rutas de lectura de la API pública", () => {
       installation_id: inst,
       panel_id: panelId,
       local_log_id: n,
-      ts: new Date(Date.UTC(2026, 2, 10, 12, 0, n)).toISOString(),
+      ts: new Date(Date.now() - 3_600_000 + n * 1000).toISOString(),
       allowed: true,
       source,
       reason: 0,

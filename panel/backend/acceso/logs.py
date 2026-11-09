@@ -109,3 +109,24 @@ def query_logs(
 def clear_logs(conn: sqlite3.Connection) -> None:
     with (nullcontext() if conn.in_transaction else transaction(conn)):
         conn.execute("DELETE FROM access_logs")
+
+
+RETENTION_DAYS = 30
+_MIN_CLOCK_YEAR = 2026
+
+
+def purge_old_logs(conn: sqlite3.Connection, now: float, days: int = RETENTION_DAYS) -> int:
+    """Borra los logs con más de `days` días y devuelve cuántos. Sin reloj válido no borra."""
+    if datetime.fromtimestamp(now).year < _MIN_CLOCK_YEAR:
+        return 0
+    with (nullcontext() if conn.in_transaction else transaction(conn)):
+        cur = conn.execute("DELETE FROM access_logs WHERE timestamp < ?",
+                           (int(now - days * 86400),))
+        return cur.rowcount
+
+
+def delete_logs_until(conn: sqlite3.Connection, until_ts: int) -> int:
+    """Borra los logs con timestamp <= until_ts (inclusive) y devuelve cuántos."""
+    with (nullcontext() if conn.in_transaction else transaction(conn)):
+        cur = conn.execute("DELETE FROM access_logs WHERE timestamp <= ?", (until_ts,))
+        return cur.rowcount

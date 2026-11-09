@@ -14,9 +14,10 @@ vinculación y se vuelve a `unlinked` sin tocar los datos locales. Un 401 sin es
 nube (proxy, portal cautivo): se trata como un error de red.
 
 Órdenes de la nube por MQTT: `upload_logs` sube los logs en el siguiente tick (sin push ni pull; varias
-órdenes seguidas dan una sola subida); `test_output` y `remote_open` pasan al worker de órdenes, que corre en su propio
-hilo con su propia CloudApi (CloudApi no es segura entre hilos). El worker se crea al tener credencial y
-se detiene al revocar o al cerrar.
+órdenes seguidas dan una sola subida); `test_output` y `remote_open` pasan al worker de órdenes y
+`listen_rf` (espera hasta 13 s) a un worker aparte, para no retrasar las aperturas. Cada worker corre en su
+propio hilo con su propia CloudApi (CloudApi no es segura entre hilos); se crean al tener credencial y se
+detienen al revocar o al cerrar.
 
 Los errores se registran sin tumbar el proceso y nunca con secretos: de una excepción inesperada solo
 se registra su tipo, y los mensajes de CloudError, SyncBlocked e InvalidChange ya están en español y
@@ -34,7 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 from acceso.cloud.api import CloudApi, CloudError
-from acceso.cloud.commands import WORKER_COMMANDS
+from acceso.cloud.commands import LISTEN_COMMANDS, WORKER_COMMANDS
 from acceso.cloud.config import CloudSettings, clear_credentials, load_credentials, save_credentials
 from acceso.cloud.identity import Identity, ensure_identity, get_state, regenerate_claim_code, set_state
 from acceso.cloud.mapping import InvalidChange, snapshot_tables
@@ -103,7 +104,7 @@ class Runner:
                  clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
                  wall: Callable[[], float] = time.time,
-                 command_worker_factory: Optional[Callable[[CloudApi], Any]] = None):
+                 command_worker_factory: Optional[Callable[..., Any]] = None):
         self._settings = settings
         self._db_path = Path(db_path)
         self._api = api
@@ -117,6 +118,8 @@ class Runner:
         self._link = None  # type: Optional[Any]
         self._worker = None  # type: Optional[Any]
         self._worker_api = None  # type: Optional[CloudApi]
+        self._listen_worker = None  # type: Optional[Any]
+        self._listen_api = None  # type: Optional[CloudApi]
         self._credentials = None  # type: Optional[Tuple[str, str]]
         self._state = UNLINKED
         self._adopted = False
@@ -500,13 +503,14 @@ class Runner:
 
     def _command(self, body: Dict[str, Any]) -> None:
         """Orden de la nube (hilo de MQTT). `upload_logs` solo levanta una bandera que atiende el
-        siguiente tick; `test_output` y `remote_open` van al worker, y solo con el panel activo."""
+        siguiente tick; `test_output` y `remote_open` van al worker de órdenes y `listen_rf` al de escucha, y solo con el
+        panel activo."""
         kind = body.get("type")
         if kind == "upload_logs":
             with self._notice_lock:
                 self._logs_requested = True
-        elif kind in WORKER_COMMANDS:
-            worker = self._worker
+        elif kind in WORKER_COMMANDS or kind in LISTEN_COMMANDS:
+            worker = self._listen_worker if kind in LISTEN_COMMANDS else self._worker
             if self._state == ACTIVE and worker is not None:
                 worker.submit(body)
 
@@ -541,26 +545,41 @@ class Runner:
     # --- worker de órdenes ---------------------------------------------------------------------
 
     def _ensure_worker(self, now: float) -> None:
-        """Crea el worker con una CloudApi propia, autenticada con la credencial vigente."""
+        """Crea los workers (órdenes y escucha), cada uno con una CloudApi propia, autenticada con la
+        credencial vigente. Si uno falla, no queda ninguno y se reintenta más tarde."""
         # Las órdenes solo llegan por MQTT: sin MQTT_URL no hace falta el worker.
         if (self._command_worker_factory is None or self._state == UNLINKED or self._credentials is None
                 or not self._settings.mqtt_url or self._worker is not None or now < self._next_worker):
             return
-        api = CloudApi(self._settings.cloud_url)
+        built = []  # type: List[Tuple[Any, CloudApi]]
         try:
-            api.authenticate(*self._credentials)
-            worker = self._command_worker_factory(api)
-            worker.start()
+            for listen in (False, True):
+                api = CloudApi(self._settings.cloud_url)
+                try:
+                    api.authenticate(*self._credentials)
+                    worker = (self._command_worker_factory(api, listen=True) if listen
+                              else self._command_worker_factory(api))
+                    worker.start()
+                except BaseException:
+                    api.close()
+                    raise
+                built.append((worker, api))
         except Exception as exc:
-            api.close()
+            for worker, api in built:
+                self._close_worker(worker, api)
             self._next_worker = now + SYNC_INTERVAL_S
             log.warning("No se pudo iniciar el worker de órdenes de la nube (%s)", type(exc).__name__)
             return
-        self._worker, self._worker_api = worker, api
+        (self._worker, self._worker_api), (self._listen_worker, self._listen_api) = built
 
     def _stop_worker(self) -> None:
-        worker, self._worker = self._worker, None
-        api, self._worker_api = self._worker_api, None
+        pairs = [(self._worker, self._worker_api), (self._listen_worker, self._listen_api)]
+        self._worker = self._worker_api = self._listen_worker = self._listen_api = None
+        for worker, api in pairs:
+            self._close_worker(worker, api)
+
+    @staticmethod
+    def _close_worker(worker: Optional[Any], api: Optional[CloudApi]) -> None:
         if worker is not None:
             try:
                 worker.stop()

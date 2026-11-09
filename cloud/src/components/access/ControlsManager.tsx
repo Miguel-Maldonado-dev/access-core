@@ -6,6 +6,7 @@ import Notices, { type Notice } from "@/components/Notices";
 import { controlButtonSummary } from "@/lib/access-view";
 import type { ActionResult } from "@/lib/actions";
 import type { ControlInput, ControlRow } from "@/lib/controls";
+import type { ListenRfStatus } from "@/lib/panel-commands";
 
 interface Props {
   controls: ControlRow[];
@@ -15,12 +16,14 @@ interface Props {
   /** `controlId` null crea; con id edita. */
   onSave: (controlId: string | null, input: ControlInput) => Promise<ActionResult<{ id: string }>>;
   onDelete: (controlId: string) => Promise<ActionResult>;
+  onListen?: (panelId: string) => Promise<ActionResult<{ commandId: string }>>;
+  onListenStatus?: (commandId: string) => Promise<ActionResult<ListenRfStatus>>;
 }
 
 type Editing = { control?: ControlRow } | null;
 
 /** Pestaña Controles: controles RF con sus botones; cada botón tiene su código y su salida en cada panel. */
-export default function ControlsManager({ controls, holders, panels, onSave, onDelete }: Props) {
+export default function ControlsManager({ controls, holders, panels, onSave, onDelete, onListen, onListenStatus }: Props) {
   const [filter, setFilter] = useState("");
   const [editing, setEditing] = useState<Editing>(null);
   const [notice, setNotice] = useState<Notice>(null);
@@ -78,6 +81,8 @@ export default function ControlsManager({ controls, holders, panels, onSave, onD
             pending={pendiente}
             onSubmit={guardar}
             onCancel={() => setEditing(null)}
+            onListen={onListen}
+            onListenStatus={onListenStatus}
           />
         </section>
       )}

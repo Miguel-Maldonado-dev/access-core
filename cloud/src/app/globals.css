@@ -83,6 +83,15 @@ body {
   }
   .btn-quiet:hover { background: var(--paper); }
   .btn-quiet:disabled { opacity: 0.5; cursor: not-allowed; background: var(--surface); }
+  .btn-danger {
+    border-radius: 0.25rem;
+    background: var(--danger);
+    padding: 0.5rem 1rem;
+    font-weight: 500;
+    color: #fff;
+  }
+  .btn-danger:hover { background: color-mix(in srgb, var(--danger) 85%, #000); }
+  .btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
   .panel {
     border-radius: 0.5rem;
     border: 1px solid var(--line);

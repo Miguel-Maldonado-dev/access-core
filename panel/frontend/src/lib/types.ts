@@ -58,6 +58,11 @@ export interface Control {
   buttons: ControlButton[];
 }
 
+export interface ListenResult {
+  code: number | null;
+  control: { control_id: number; description: string | null } | null;
+}
+
 export interface LogItem {
   log_id: number;
   timestamp: string;

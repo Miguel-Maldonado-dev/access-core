@@ -1,3 +1,4 @@
+import pytest
 from helpers import add_holder
 
 BUTTONS = [
@@ -131,3 +132,59 @@ def test_coded_button_output_4_422_and_count_message(client, db):
     assert r.json()["detail"] == "La salida debe estar entre 0 y 3."
     r = _post(client, h, BUTTONS[:3])
     assert r.json()["detail"] == "El control debe tener exactamente 4 botones."
+
+
+def _fake_daemon(response=None, error=None, calls=None):
+    def request(path, payload, timeout=7.0):
+        if calls is not None:
+            calls.append((path, dict(payload), timeout))
+        if error is not None:
+            raise error
+        return response
+    return request
+
+
+def test_listen_route_ok(app, client, settings):
+    calls = []
+    reply = {"ok": True, "code": 99, "control": {"control_id": 3, "description": "Casa"}}
+    app.state.daemon_request = _fake_daemon(reply, calls=calls)
+    r = client.post("/api/controls/listen")
+    assert r.status_code == 200
+    assert r.json() == {"code": 99, "control": {"control_id": 3, "description": "Casa"}}
+    assert calls == [(settings.daemon_socket, {"op": "listen_rf"}, 13.0)]
+
+
+def test_listen_route_no_code(app, client):
+    app.state.daemon_request = _fake_daemon({"ok": False, "detail": "No se recibió ningún control."})
+    r = client.post("/api/controls/listen")
+    assert r.status_code == 200 and r.json() == {"code": None, "control": None}
+
+
+def test_listen_route_busy_409(app, client):
+    app.state.daemon_request = _fake_daemon({"ok": False, "detail": "Ya hay una escucha en curso."})
+    r = client.post("/api/controls/listen")
+    assert r.status_code == 409 and r.json()["detail"] == "Ya hay una escucha en curso."
+
+
+def test_listen_route_daemon_down_503(app, client):
+    from acceso.daemon_socket import DaemonUnavailable
+    app.state.daemon_request = _fake_daemon(error=DaemonUnavailable("x"))
+    r = client.post("/api/controls/listen")
+    assert r.status_code == 503 and r.json()["detail"] == "El daemon no responde"
+
+
+def test_listen_route_unexpected_detail_503(app, client):
+    app.state.daemon_request = _fake_daemon({"ok": False, "detail": "Fallo raro del daemon."})
+    r = client.post("/api/controls/listen")
+    assert r.status_code == 503 and r.json()["detail"] == "Fallo raro del daemon."
+
+
+@pytest.mark.parametrize("code", [True, -1, 4294967296, "7", None])
+def test_listen_route_invalid_code_503(app, client, code):
+    app.state.daemon_request = _fake_daemon({"ok": True, "code": code, "control": None})
+    r = client.post("/api/controls/listen")
+    assert r.status_code == 503 and r.json()["detail"] == "Código RF inválido"
+
+
+def test_listen_route_requires_session(anon_client):
+    assert anon_client.post("/api/controls/listen").status_code == 401

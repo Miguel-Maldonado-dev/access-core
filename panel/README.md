@@ -160,6 +160,12 @@ La página **Salidas** tiene un botón **Probar** en cada salida: activa ese rel
 - **Al actualizar una placa ya instalada** hay que reinstalar el paquete (`sudo ./deploy/install.sh`): el `RuntimeDirectory` viene en el servicio nuevo. Reiniciar los servicios con el paquete anterior no basta.
 - **Hora correcta:** las pruebas pedidas desde la nube caducan a los 10 s según el reloj del panel, así que debe estar sincronizado por NTP (`timedatectl`; `install.sh` lo habilita).
 
+## Escuchar un control RF y retención de logs
+
+- **Escuchar:** en el formulario de un control, el botón **Escuchar** de cada botón espera hasta 10 s la siguiente señal RF y rellena su código (si ya pertenece a otro control, lo avisa). La web llama a `POST /api/controls/listen` (responde `{code, control}`, o `{code: null, control: null}` si no llegó nada; 409 si ya hay otra escucha; 503 si el daemon no responde), que pide al daemon la operación `listen_rf` del socket Unix. Desde la nube, la orden `listen_rf` de `acc/<código>/cmd` hace lo mismo y el agente informa el código como `rf_code` en `/api/device/v1/command-result`. Solo hay una escucha a la vez.
+- **Motivo 5 ya no se registra:** una señal RF que no pertenece a ningún control (vecino, ruido) se ignora y no entra a los logs; solo la ve la escucha activa.
+- **Retención:** el panel borra los logs de más de 30 días (al arrancar y una vez al día). Si un admin usa "Borrar logs" en la nube, el panel borra en su siguiente sincronización los logs hasta esa marca (`sync_state.logs_cleared_at`).
+
 ## Servicio `acceso-cloud` (plataforma en la nube)
 
 `acceso-cloud` es un servicio systemd aparte, que `install.sh` instala y arranca junto con `acceso-daemon` y `acceso-web`. Sincroniza la base del panel con la plataforma en la nube (`cloud/` del repositorio): se registra, se vincula a una instalación, sube los cambios que haces en el panel, baja los que se hacen en la nube y sube los logs de acceso. Escucha avisos por MQTT para sincronizar al instante y, si el broker no responde, sigue sincronizando por HTTPS cada 5 minutos. **El panel nunca depende de la nube para abrir**: el daemon y la autorización local no cambian, y con `acceso-cloud` detenido o sin internet todo funciona igual.

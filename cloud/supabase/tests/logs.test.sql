@@ -78,24 +78,28 @@ reset role;
 select has_extension('pg_cron', 'pg_cron esta habilitada');
 select is((select count(*)::int from cron.job where jobname = 'access-logs-retention'), 1,
   'existe un solo trabajo access-logs-retention');
-select is((select schedule from cron.job where jobname = 'access-logs-retention'), '0 3 1 * *',
-  'corre el dia 1 de cada mes');
-select ok((select command from cron.job where jobname = 'access-logs-retention') ilike '%access_logs%12 months%',
-  'el comando borra los logs de mas de 12 meses');
+select is((select schedule from cron.job where jobname = 'access-logs-retention'), '0 9 * * *',
+  'corre cada dia a las 09:00');
+select ok((select command from cron.job where jobname = 'access-logs-retention') ilike '%access_logs%30 days%',
+  'el comando borra los logs de mas de 30 dias');
 
 delete from public.access_logs;
 insert into public.access_logs (tenant_id, installation_id, panel_id, local_log_id, ts, allowed, source, reason) values
   ('10000000-0000-0000-0000-00000000000a', '20000000-0000-0000-0000-00000000000a',
-   'c0000000-0000-0000-0000-00000000000a', 1, now() - interval '13 months', true, 0, 0),
+   'c0000000-0000-0000-0000-00000000000a', 1, now() - interval '29 days', true, 0, 0),
   ('10000000-0000-0000-0000-00000000000a', '20000000-0000-0000-0000-00000000000a',
-   'c0000000-0000-0000-0000-00000000000a', 2, now() - interval '11 months', true, 0, 0);
+   'c0000000-0000-0000-0000-00000000000a', 2, now() - interval '1 day', true, 0, 0);
+-- El filtro de entrada descarta lo de mas de 30 dias: el viejo se inserta sin filtro.
+alter table public.access_logs disable trigger access_logs_filter;
+update public.access_logs set ts = now() - interval '31 days' where local_log_id = 1;
+alter table public.access_logs enable trigger access_logs_filter;
 do $$
 begin
   execute (select command from cron.job where jobname = 'access-logs-retention');
 end $$;
 select results_eq($$select local_log_id from public.access_logs$$, $$values (2::bigint)$$,
-  'el comando del trabajo borra solo el log de 13 meses');
-select is((select count(*)::int from public.access_logs), 1, 'y conserva el de 11 meses');
+  'el comando del trabajo borra solo el log de 31 dias');
+select is((select count(*)::int from public.access_logs), 1, 'y conserva el de 1 dia');
 
 select * from finish();
 rollback;

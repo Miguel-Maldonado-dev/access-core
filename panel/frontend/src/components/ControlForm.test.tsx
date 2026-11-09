@@ -54,4 +54,71 @@ describe("ControlForm", () => {
     render(<ControlForm holders={holders} error={error} onSubmit={vi.fn()} />);
     expect(screen.getByText(error)).toBeInTheDocument();
   });
+
+  describe("Escuchar", () => {
+    const existing = {
+      control_id: 7,
+      holder_id: 1,
+      holder_name: "Amadeo 1260",
+      holder_kind: "domicilio" as const,
+      description: "Portón",
+      buttons: [],
+    };
+
+    it("deshabilita el botón mientras escucha y escribe el código", async () => {
+      let resolve!: (v: { code: number | null; control: null }) => void;
+      const onListen = vi.fn(() => new Promise<{ code: number | null; control: null }>((r) => (resolve = r)));
+      const user = userEvent.setup();
+      render(<ControlForm holders={holders} onSubmit={vi.fn()} onListen={onListen} />);
+      await user.click(screen.getByRole("button", { name: "Escuchar código del botón 1" }));
+      expect(screen.getByRole("button", { name: /Escuchando/ })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Escuchar código del botón 2" })).toBeDisabled();
+      resolve({ code: 4321, control: null });
+      expect(await screen.findByDisplayValue("4321")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Escuchar código del botón 1" })).toBeEnabled();
+    });
+
+    it("avisa si no se recibió nada", async () => {
+      const user = userEvent.setup();
+      render(<ControlForm holders={holders} onSubmit={vi.fn()} onListen={async () => ({ code: null, control: null })} />);
+      await user.click(screen.getByRole("button", { name: "Escuchar código del botón 1" }));
+      expect(await screen.findByText("No se recibió ningún control.")).toBeInTheDocument();
+    });
+
+    it("avisa y no rellena si el código es de otro control", async () => {
+      const user = userEvent.setup();
+      const onListen = async () => ({ code: 99, control: { control_id: 3, description: "Portón" } });
+      render(<ControlForm control={existing} holders={holders} onSubmit={vi.fn()} onListen={onListen} />);
+      await user.click(screen.getByRole("button", { name: "Escuchar código del botón 1" }));
+      expect(await screen.findByText("Este código ya pertenece a Portón")).toBeInTheDocument();
+      expect(screen.getByLabelText("Código del botón 1")).toHaveValue("");
+    });
+
+    it("sin descripción dice otro control", async () => {
+      const user = userEvent.setup();
+      const onListen = async () => ({ code: 99, control: { control_id: 3, description: null } });
+      render(<ControlForm holders={holders} onSubmit={vi.fn()} onListen={onListen} />);
+      await user.click(screen.getByRole("button", { name: "Escuchar código del botón 1" }));
+      expect(await screen.findByText("Este código ya pertenece a otro control")).toBeInTheDocument();
+    });
+
+    it("rellena sin aviso si es el mismo control", async () => {
+      const user = userEvent.setup();
+      const onListen = async () => ({ code: 99, control: { control_id: 7, description: "Portón" } });
+      render(<ControlForm control={existing} holders={holders} onSubmit={vi.fn()} onListen={onListen} />);
+      await user.click(screen.getByRole("button", { name: "Escuchar código del botón 1" }));
+      expect(await screen.findByDisplayValue("99")).toBeInTheDocument();
+      expect(screen.queryByText(/ya pertenece/)).toBeNull();
+    });
+
+    it("muestra el detail de un error de la API", async () => {
+      const user = userEvent.setup();
+      const onListen = async () => {
+        throw new Error("Ya hay una escucha en curso.");
+      };
+      render(<ControlForm holders={holders} onSubmit={vi.fn()} onListen={onListen} />);
+      await user.click(screen.getByRole("button", { name: "Escuchar código del botón 1" }));
+      expect(await screen.findByText("Ya hay una escucha en curso.")).toBeInTheDocument();
+    });
+  });
 });

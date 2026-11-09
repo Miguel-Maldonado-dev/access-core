@@ -2,7 +2,14 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "@/lib/errors";
-import { commandStatusAs, logsUploadStatusAs, requestLogsUploadAs, testOutputAs } from "@/lib/panel-commands";
+import {
+  commandStatusAs,
+  listenRfAs,
+  listenRfStatusAs,
+  logsUploadStatusAs,
+  requestLogsUploadAs,
+  testOutputAs,
+} from "@/lib/panel-commands";
 import { createLocalUser, localAdmin, requireLocalSupabase, signInLocal } from "../helpers/supabase-local";
 
 // Órdenes a los paneles desde la interfaz ("Actualizar logs" y "Probar") contra el
@@ -429,6 +436,193 @@ describe("órdenes a los paneles (panel-commands)", () => {
       expect((await fallo(commandStatusAs(tecnicoA, tenantA, instA, data.id))).status).toBe(404);
       expect((await fallo(commandStatusAs(tecnicoA, tenantA, instA, randomUUID()))).status).toBe(404);
       expect((await fallo(commandStatusAs(tecnicoA, tenantA, instA, "x"))).status).toBe(404);
+    });
+  });
+
+  describe("listenRfAs y listenRfStatusAs", () => {
+    const limpiar = async () => {
+      const { error } = await admin.from("panel_commands").delete().eq("kind", "listen_rf").in("panel_id", paneles);
+      if (error) throw error;
+    };
+    beforeEach(limpiar);
+
+    async function crearControl(rfCode: number, description: string, borrado = false) {
+      const { data: titular, error: e1 } = await admin
+        .from("holders")
+        .insert({ installation_id: instA, kind: "persona", name: `Titular ${base32(4)}`, ...AUTOR })
+        .select("id")
+        .single<{ id: string }>();
+      if (e1) throw e1;
+      const { data: control, error: e2 } = await admin
+        .from("controls")
+        .insert({ tenant_id: tenantA, installation_id: instA, holder_id: titular.id, description, ...AUTOR })
+        .select("id")
+        .single<{ id: string }>();
+      if (e2) throw e2;
+      const { error: e3 } = await admin.from("control_buttons").insert({
+        tenant_id: tenantA,
+        installation_id: instA,
+        control_id: control.id,
+        button: 0,
+        rf_code: rfCode,
+        ...AUTOR,
+      });
+      if (e3) throw e3;
+      if (borrado) {
+        const { error } = await admin.from("controls").update({ deleted_at: new Date().toISOString() }).eq("id", control.id);
+        if (error) throw error;
+      }
+      return control.id;
+    }
+
+    async function marcar(id: string, cambios: Record<string, unknown>) {
+      const { error } = await admin.from("panel_commands").update(cambios).eq("id", id);
+      if (error) throw error;
+    }
+
+    it("un técnico guarda la orden y publica listen_rf con expires_at en ISO UTC", async () => {
+      const { commandId } = await listenRfAs(tecnicoA, tenantA, instA, P.p1.id);
+      expect(publicaciones).toHaveLength(1);
+      expect(publicaciones[0].topic).toBe(`acc/${P.p1.code}/cmd`);
+      expect(Object.keys(publicaciones[0].payload).sort()).toEqual(["command_id", "expires_at", "type"]);
+      expect(publicaciones[0].payload).toMatchObject({ type: "listen_rf", command_id: commandId });
+      expect(String(publicaciones[0].payload.expires_at)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      const orden = (await ordenesDe(P.p1.id)).find((o) => o.id === commandId);
+      expect(orden).toMatchObject({ id: commandId, kind: "listen_rf", output_index: null, status: "pending" });
+      expect(await listenRfStatusAs(tecnicoA, tenantA, instA, commandId)).toEqual({
+        status: "pending",
+        code: null,
+        control: null,
+        detail: null,
+      });
+    });
+
+    it("panel sin conexión 409, no activo 409, ajeno o inexistente 404", async () => {
+      expect(await fallo(listenRfAs(tecnicoA, tenantA, instA, P.p2.id))).toMatchObject({
+        status: 409,
+        message: "Panel sin conexión",
+      });
+      expect(await fallo(listenRfAs(tecnicoA, tenantA, instA, P.p3.id))).toMatchObject({
+        status: 409,
+        message: "El panel no está activo.",
+      });
+      for (const id of [P.pb.id, randomUUID(), "no-es-uuid"]) {
+        expect(await fallo(listenRfAs(tecnicoA, tenantA, instA, id))).toMatchObject({
+          status: 404,
+          message: "El panel no existe.",
+        });
+      }
+      expect(publicaciones).toEqual([]);
+    });
+
+    it("una segunda escucha pendiente da 409; si la primera ya venció, se marca expired y se acepta", async () => {
+      const { commandId } = await listenRfAs(tecnicoA, tenantA, instA, P.p1.id);
+      expect(await fallo(listenRfAs(adminA, tenantA, instA, P.p1.id))).toMatchObject({
+        status: 409,
+        message: "Ya hay una escucha en curso.",
+      });
+      // Vencida pero dentro de la gracia de 15 s: sigue ocupando el panel.
+      await marcar(commandId, { expires_at: new Date(Date.now() - 6000).toISOString() });
+      expect((await fallo(listenRfAs(adminA, tenantA, instA, P.p1.id))).status).toBe(409);
+      await marcar(commandId, { expires_at: new Date(Date.now() - 16_000).toISOString() });
+      const { commandId: otra } = await listenRfAs(adminA, tenantA, instA, P.p1.id);
+      expect(otra).not.toBe(commandId);
+      expect((await ordenesDe(P.p1.id)).find((o) => o.id === commandId)).toMatchObject({ status: "expired" });
+    });
+
+    it("si el publish falla, la orden queda en error y responde 502", async () => {
+      rechazar.add(P.p1.code);
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const e = await fallo(listenRfAs(tecnicoA, tenantA, instA, P.p1.id));
+      error.mockRestore();
+      expect(e).toMatchObject({ status: 502, message: "No se pudo enviar la orden al panel. Intenta de nuevo." });
+      expect((await ordenesDe(P.p1.id)).at(-1)).toMatchObject({ status: "error" });
+    });
+
+    it("received trae el control vivo dueño del código (descripción vacía → null)", async () => {
+      const controlId = await crearControl(777001, "Portón norte");
+      const { commandId } = await listenRfAs(tecnicoA, tenantA, instA, P.p1.id);
+      await marcar(commandId, { status: "ok", rf_code: 777001, finished_at: new Date().toISOString() });
+      expect(await listenRfStatusAs(tecnicoA, tenantA, instA, commandId)).toEqual({
+        status: "received",
+        code: 777001,
+        control: { id: controlId, description: "Portón norte" },
+        detail: null,
+      });
+
+      const vacio = await crearControl(777002, "");
+      await marcar(commandId, { rf_code: 777002 });
+      expect((await listenRfStatusAs(tecnicoA, tenantA, instA, commandId)).control).toEqual({
+        id: vacio,
+        description: null,
+      });
+    });
+
+    it("received con un código sin control vivo devuelve control null", async () => {
+      await crearControl(777003, "Borrado", true);
+      const { commandId } = await listenRfAs(tecnicoA, tenantA, instA, P.p1.id);
+      await marcar(commandId, { status: "ok", rf_code: 777003, finished_at: new Date().toISOString() });
+      expect(await listenRfStatusAs(tecnicoA, tenantA, instA, commandId)).toMatchObject({
+        status: "received",
+        code: 777003,
+        control: null,
+      });
+      await marcar(commandId, { rf_code: 777004 });
+      expect((await listenRfStatusAs(tecnicoA, tenantA, instA, commandId)).control).toBeNull();
+    });
+
+    it("ok con rf_code nulo es un error", async () => {
+      const { commandId } = await listenRfAs(tecnicoA, tenantA, instA, P.p1.id);
+      await marcar(commandId, { status: "ok", finished_at: new Date().toISOString() });
+      expect(await listenRfStatusAs(tecnicoA, tenantA, instA, commandId)).toEqual({
+        status: "error",
+        code: null,
+        control: null,
+        detail: "El panel no envió el código.",
+      });
+    });
+
+    it("error devuelve el detalle del panel", async () => {
+      const { commandId } = await listenRfAs(tecnicoA, tenantA, instA, P.p1.id);
+      await marcar(commandId, { status: "error", detail: "No se recibió ningún control.", finished_at: new Date().toISOString() });
+      expect(await listenRfStatusAs(tecnicoA, tenantA, instA, commandId)).toEqual({
+        status: "error",
+        code: null,
+        control: null,
+        detail: "No se recibió ningún control.",
+      });
+    });
+
+    it("un pendiente vencido (más de 15 s tras expires_at) o expired da timeout", async () => {
+      const { commandId } = await listenRfAs(tecnicoA, tenantA, instA, P.p1.id);
+      await marcar(commandId, { expires_at: new Date(Date.now() - 16_000).toISOString() });
+      const esperado = { status: "timeout", code: null, control: null, detail: "El panel no respondió." };
+      expect(await listenRfStatusAs(tecnicoA, tenantA, instA, commandId)).toEqual(esperado);
+      await marcar(commandId, {
+        status: "expired",
+        expires_at: new Date(Date.now() + 5000).toISOString(),
+        finished_at: new Date().toISOString(),
+      });
+      expect(await listenRfStatusAs(tecnicoA, tenantA, instA, commandId)).toEqual(esperado);
+    });
+
+    it("una orden que no es de escucha, ajena o inexistente da 404; otro tenant 403", async () => {
+      const { data } = await admin
+        .from("panel_commands")
+        .insert({
+          tenant_id: tenantA,
+          installation_id: instA,
+          panel_id: P.p4.id,
+          kind: "test_output",
+          output_index: 0,
+          requested_by: "x",
+          expires_at: new Date(Date.now() + 10_000).toISOString(),
+        })
+        .select("id")
+        .single<{ id: string }>();
+      expect((await fallo(listenRfStatusAs(tecnicoA, tenantA, instA, data!.id))).status).toBe(404);
+      expect((await fallo(listenRfStatusAs(tecnicoA, tenantA, instA, randomUUID()))).status).toBe(404);
+      expect((await fallo(listenRfAs(adminB, tenantA, instA, P.p1.id))).status).toBe(403);
     });
   });
 });

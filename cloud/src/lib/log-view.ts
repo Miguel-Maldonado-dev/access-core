@@ -114,6 +114,22 @@ export function formatDateTime(iso: string): string {
   return fechaHora.format(new Date(iso));
 }
 
+const fechaHoraCorta = new Intl.DateTimeFormat("es-MX", {
+  timeZone: ZONA,
+  day: "2-digit",
+  month: "2-digit",
+  year: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+
+/** Fecha corta para la tabla: dd/mm/aa hh:mm:ss, hora de México. */
+export function formatDateTimeShort(iso: string): string {
+  return fechaHoraCorta.format(new Date(iso)).replace(",", "");
+}
+
 // ---------------------------------------------------------------------------
 // Filtros en la URL
 // ---------------------------------------------------------------------------

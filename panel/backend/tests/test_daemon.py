@@ -333,3 +333,21 @@ def test_daemon_sigue_sin_socket(settings, db, caplog):
     assert not thread.is_alive()
     assert port.written == [build_relay_command(1, 3000)]
     assert "No se pudo crear el socket" in caplog.text
+
+
+def test_daemon_purges_on_start(settings, db):
+    called = threading.Event()
+    calls = []
+
+    def purge(conn, now):
+        calls.append(now)
+        called.set()
+        return 2
+
+    stop, thread = start_daemon(settings, open_serial=lambda p, b: FakeSerial(),
+                                purge=purge, purge_interval_s=3600)
+    assert called.wait(2)
+    stop.set()
+    thread.join(2)
+    assert not thread.is_alive()
+    assert len(calls) == 1 and calls[0] > 1_700_000_000

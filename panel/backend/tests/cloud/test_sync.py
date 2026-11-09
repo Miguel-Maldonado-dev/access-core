@@ -516,6 +516,72 @@ def test_pull_with_a_cloud_revision_behind_the_cursor_reconciles(conn, db_path, 
     assert cursor(conn) == cloud.revision
 
 
+# --- logs_cleared_at ----------------------------------------------------------------------------
+
+CLEARED_ISO = "2026-11-09T15:04:05.987+00:00"
+CLEARED = int(datetime.fromisoformat("2026-11-09T15:04:05+00:00").timestamp())
+
+
+def add_log(conn, ts):
+    conn.execute("INSERT INTO access_logs(timestamp, allowed, source, credential_label, output_id, reason)"
+                 " VALUES (?, 1, 1, 'x', 1, 0)", (ts,))
+
+
+def log_stamps(conn):
+    return [r[0] for r in conn.execute("SELECT timestamp FROM access_logs ORDER BY timestamp")]
+
+
+def test_pull_applies_logs_cleared_at(conn, db_path, cloud):
+    for ts in (CLEARED - 10, CLEARED, CLEARED + 10):
+        add_log(conn, ts)
+    cloud.logs_cleared_at = CLEARED_ISO
+
+    engine_for(db_path, cloud).pull()
+
+    assert log_stamps(conn) == [CLEARED + 10]
+    assert get_state(conn, "logs_cleared_at") == str(CLEARED)
+
+
+def test_pull_same_logs_cleared_at_not_reapplied(conn, db_path, cloud):
+    cloud.logs_cleared_at = "2026-11-09T15:04:05Z"
+    engine_for(db_path, cloud).pull()
+    add_log(conn, CLEARED - 100)   # un log nuevo anterior a la marca (reloj atrasado)
+
+    engine_for(db_path, cloud).pull()
+
+    assert log_stamps(conn) == [CLEARED - 100]
+
+
+def test_pull_with_a_newer_logs_cleared_at_applies_it_again(conn, db_path, cloud):
+    cloud.logs_cleared_at = CLEARED_ISO
+    engine_for(db_path, cloud).pull()
+    add_log(conn, CLEARED + 5)
+    cloud.logs_cleared_at = "2026-11-09T15:04:10+00:00"
+    engine_for(db_path, cloud).pull()
+    assert log_stamps(conn) == []
+    assert get_state(conn, "logs_cleared_at") == str(CLEARED + 5)
+
+
+def test_pull_with_a_corrupt_stored_mark_treats_it_as_zero(conn, db_path, cloud):
+    set_state(conn, "logs_cleared_at", "basura")
+    add_log(conn, CLEARED - 10)
+    cloud.logs_cleared_at = CLEARED_ISO
+    engine_for(db_path, cloud).pull()
+    assert log_stamps(conn) == []
+    assert get_state(conn, "logs_cleared_at") == str(CLEARED)
+
+
+@pytest.mark.parametrize("value", [None, "no es fecha", 12345, "2026-11-09T15:04:05"])
+def test_pull_without_logs_cleared_at(conn, db_path, cloud, value):
+    add_log(conn, 100)
+    cloud.logs_cleared_at = value
+
+    engine_for(db_path, cloud).pull()
+
+    assert log_stamps(conn) == [100]
+    assert get_state(conn, "logs_cleared_at") is None
+
+
 # --- reconcile --------------------------------------------------------------------------------
 
 def test_reconcile_replaces_only_the_table_whose_checksum_differs(conn, db_path, cloud):

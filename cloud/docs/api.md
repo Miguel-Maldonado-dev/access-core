@@ -224,7 +224,7 @@ Errores: `400` si el titular no existe en la instalación (o está borrado), `40
 ### Lecturas
 
 - `GET /installations`, `GET /installations/{id}`, `GET .../panels`, `GET .../outputs`.
-- `GET .../logs`: páginas de 50, del más reciente al más viejo. Filtros: `desde`, `hasta` (`AAAA-MM-DD`), `panel`, `titular`, `resultado` (`permitido` o `denegado`), `origen` (`0` tarjeta, `1` control RF, `2` botón, `3` PIN, `4` remota o `5` prueba) y `pagina`. Responde `{data, page, page_size, total}`. Un filtro inválido da `400`. Los logs de PIN llevan `code: null`.
+- `GET .../logs`: páginas de 50, del más reciente al más viejo. Filtros: `desde`, `hasta` (`AAAA-MM-DD`), `panel`, `titular`, `resultado` (`permitido` o `denegado`), `origen` (`0` tarjeta, `1` control RF, `2` botón, `3` PIN, `4` remota o `5` prueba) y `pagina`. Responde `{data, page, page_size, total}`. Un filtro inválido da `400`. Los logs de PIN llevan `code: null`. La nube conserva los logs 30 días (un trabajo diario borra los más viejos) y no guarda intentos de controles RF desconocidos (motivo `5`, ya no se registra); si un admin usa "Borrar logs", los anteriores a esa purga tampoco vuelven a subirse.
 
 ## Pendiente
 

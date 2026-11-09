@@ -170,11 +170,15 @@ class CloudApi:
         self._send("POST", "/alerts", auth=True, json=dict(alert))
 
     def post_command_result(self, command_id: str, ok: bool, detail: Optional[str],
-                            reason: Optional[int] = None) -> None:
-        """Resultado de una orden de la nube (`test_output` o `remote_open`); la nube responde 204.
+                            reason: Optional[int] = None, rf_code: Optional[int] = None) -> None:
+        """Resultado de una orden de la nube (`test_output`, `remote_open` o `listen_rf`); la nube
+        responde 204.
 
-        `reason` (motivo del daemon en `remote_open`) solo se envía si no es None."""
+        `reason` (motivo del daemon en `remote_open`) y `rf_code` (código capturado en `listen_rf`)
+        solo se envían si no son None."""
         body = {"command_id": command_id, "ok": ok, "detail": detail}  # type: Dict[str, Any]
         if reason is not None:
             body["reason"] = reason
+        if rf_code is not None:
+            body["rf_code"] = rf_code
         self._send("POST", "/command-result", auth=True, json=body)

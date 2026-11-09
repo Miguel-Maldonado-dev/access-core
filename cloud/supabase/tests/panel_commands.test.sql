@@ -33,7 +33,7 @@ select ok((select relrowsecurity from pg_class where oid = 'public.panel_command
 select columns_are('public', 'panel_commands',
   array['id', 'tenant_id', 'installation_id', 'panel_id', 'kind', 'output_index', 'requested_by',
         'requested_by_user', 'created_at', 'expires_at', 'status', 'detail', 'finished_at', 'holder_id',
-        'reason'],
+        'reason', 'rf_code'],
   'panel_commands tiene exactamente las columnas del diseño');
 select fk_ok('public', 'panel_commands', array['panel_id'], 'public', 'panels', array['id'],
   'panel_commands.panel_id es FK hacia panels(id)');

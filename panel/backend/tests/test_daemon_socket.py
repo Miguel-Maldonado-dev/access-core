@@ -3,6 +3,8 @@ import shutil
 import socket
 import stat
 import tempfile
+import threading
+import time
 
 import pytest
 
@@ -165,3 +167,46 @@ def test_respuesta_no_serializable_responde_error_interno_y_sigue(sock_path, ser
     serve(handler)
     assert request_daemon(sock_path, {"op": "x"}) == {"ok": False, "detail": "Error interno."}
     assert request_daemon(sock_path, {"op": "x"}) == {"ok": True}
+
+
+def test_socket_serves_concurrently(sock_path, serve):
+    release = threading.Event()
+    entered = threading.Event()
+
+    def handler(request):
+        if request["op"] == "listen_rf":
+            entered.set()
+            release.wait(5)
+        return {"ok": True, "op": request["op"]}
+
+    serve(handler)
+    slow = []
+    thread = threading.Thread(
+        target=lambda: slow.append(request_daemon(sock_path, {"op": "listen_rf"}, timeout=5)))
+    thread.start()
+    assert entered.wait(2)
+    start = time.monotonic()
+    assert request_daemon(sock_path, {"op": "test_output"}) == {"ok": True, "op": "test_output"}
+    assert time.monotonic() - start < 1
+    release.set()
+    thread.join(3)
+    assert slow == [{"ok": True, "op": "listen_rf"}]
+
+
+def test_socket_rejects_when_full(sock_path, serve, monkeypatch):
+    monkeypatch.setattr("acceso.daemon_socket.MAX_CONNECTIONS", 1)
+    release = threading.Event()
+    entered = threading.Event()
+
+    def handler(request):
+        entered.set()
+        release.wait(5)
+        return {"ok": True}
+
+    serve(handler)
+    thread = threading.Thread(target=lambda: request_daemon(sock_path, {"op": "listen_rf"}, timeout=5))
+    thread.start()
+    assert entered.wait(2)
+    assert request_daemon(sock_path, {"op": "x"}) == {"ok": False, "detail": "El daemon está ocupado."}
+    release.set()
+    thread.join(3)

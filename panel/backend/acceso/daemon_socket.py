@@ -13,9 +13,11 @@ log = logging.getLogger("acceso.daemon_socket")
 MAX_REQUEST_BYTES = 4096
 CONNECTION_TIMEOUT_S = 2.0
 ACCEPT_POLL_S = 0.2
+MAX_CONNECTIONS = 4
 
 INVALID_REQUEST = {"ok": False, "detail": "Petición inválida."}
 INTERNAL_ERROR = {"ok": False, "detail": "Error interno."}
+TOO_BUSY = {"ok": False, "detail": "El daemon está ocupado."}
 
 
 class DaemonUnavailable(Exception):
@@ -86,7 +88,7 @@ def _remove_stale_socket(path: str) -> None:
 
 
 class DaemonSocketServer:
-    """Atiende peticiones en su propio hilo, una a la vez y una por conexión."""
+    """Atiende cada conexión (una petición por conexión) en su propio hilo, hasta MAX_CONNECTIONS a la vez."""
 
     def __init__(self, path: str, handler: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
         self._path = path
@@ -94,6 +96,7 @@ class DaemonSocketServer:
         self._sock = None  # type: Optional[socket.socket]
         self._thread = None  # type: Optional[threading.Thread]
         self._stop = threading.Event()
+        self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
 
     def start(self) -> None:
         """Crea el socket (modo 0600) y arranca el hilo; lanza OSError si no se puede."""
@@ -139,12 +142,35 @@ class DaemonSocketServer:
                 log.warning("Error al aceptar conexiones en el socket: %s", exc)
                 self._stop.wait(ACCEPT_POLL_S)
                 continue
+            if not self._slots.acquire(blocking=False):
+                self._reject(conn)
+                continue
             try:
-                with conn:
-                    self._serve_connection(conn)
+                threading.Thread(target=self._run_connection, args=(conn,),
+                                 name="daemon-socket-conn", daemon=True).start()
             except Exception:
-                # Nada de una conexión puede tumbar el hilo: se registra y se sigue atendiendo.
-                log.exception("Error inesperado en una conexión del socket")
+                self._slots.release()
+                conn.close()
+                log.exception("No se pudo crear el hilo de una conexión del socket")
+
+    def _reject(self, conn: socket.socket) -> None:
+        """Sin hueco: responde "ocupado" sin leer la petición y cierra."""
+        try:
+            with conn:
+                conn.settimeout(CONNECTION_TIMEOUT_S)
+                conn.sendall(_encode(TOO_BUSY))
+        except OSError:
+            pass
+
+    def _run_connection(self, conn: socket.socket) -> None:
+        try:
+            with conn:
+                self._serve_connection(conn)
+        except Exception:
+            # Nada de una conexión puede tumbar el servidor: se registra y se sigue atendiendo.
+            log.exception("Error inesperado en una conexión del socket")
+        finally:
+            self._slots.release()
 
     def _serve_connection(self, conn: socket.socket) -> None:
         # Plazo total de la conexión (lectura y respuesta), no por cada recv.

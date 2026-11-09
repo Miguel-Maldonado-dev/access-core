@@ -1,4 +1,5 @@
 """Autorización de tarjetas, controles RF y botones de salida."""
+import logging
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
@@ -13,6 +14,9 @@ from .constants import (
 )
 from .logs import HolderRef, append_log
 from .protocol import CardRead, Event, ExitButton, PinRead, RfRead, build_relay_command
+from .rf_listen import RfListener
+
+log = logging.getLogger("acceso.access")
 
 
 # Etiqueta fija del log: los dígitos del PIN nunca se guardan.
@@ -67,7 +71,7 @@ class AccessOutcome:
     allowed: bool
     reason: int
     command: Optional[bytes]
-    log_id: int
+    log_id: Optional[int]
 
 
 METHOD_CARD, METHOD_PIN, METHOD_RF = "card", "pin", "rf"
@@ -194,7 +198,8 @@ def authorize_rf(conn: sqlite3.Connection, code: int, now: datetime) -> Decision
 
 def handle_event(conn: sqlite3.Connection, event: Event, send: Callable[[bytes], None], *,
                  now: Optional[datetime] = None, max_entries: int,
-                 pin_lockout: Optional[PinLockout] = None) -> AccessOutcome:
+                 pin_lockout: Optional[PinLockout] = None,
+                 rf_listener: Optional[RfListener] = None) -> AccessOutcome:
     now = now or datetime.now()
     timestamp = int(now.timestamp())
     if isinstance(event, ExitButton):
@@ -217,7 +222,15 @@ def handle_event(conn: sqlite3.Connection, event: Event, send: Callable[[bytes],
                 pin_lockout.record(event.reader, decision.reason, now)
         source, device_id = SOURCE_PIN, event.reader
     else:
+        if rf_listener is not None:
+            try:
+                rf_listener.offer(event.code)  # la escucha de "Escuchar" ve todo código RF
+            except Exception:
+                log.exception("No se pudo entregar el código RF a la escucha")
         decision = authorize_rf(conn, event.code, now)
+        if decision.reason == REASON_UNKNOWN_CONTROL:
+            # Un RF desconocido (vecino, ruido) no se registra: llenaría el log.
+            return AccessOutcome(False, REASON_UNKNOWN_CONTROL, None, None)
         source, device_id, code = SOURCE_RF, decision.button, event.code
 
     reason, command = decision.reason, None

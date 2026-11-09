@@ -126,6 +126,7 @@ class FakeCloud:
         # tabla -> id -> {"data", "revision", "deleted"}
         self.rows = {t: {} for t in TABLES}
         self.confirm_deletions = False
+        self.logs_cleared_at = None  # ISO 8601 o None: marca de borrado de logs de la nube
         self.forced = {}        # id -> (status, reason): resultado forzado del push
         self.fail = None        # callable(request) -> httpx.Response | None
         self.requests = []      # (method, path, params, body)
@@ -204,7 +205,7 @@ class FakeCloud:
             self.alerts.append(body)
             return httpx.Response(204)
         if route == ("POST", "/command-result"):
-            assert set(body) - {"reason"} == {"command_id", "ok", "detail"}
+            assert set(body) - {"reason", "rf_code"} == {"command_id", "ok", "detail"}
             assert _uuid(body["command_id"]) and isinstance(body["ok"], bool)
             assert "reason" not in body or _int(0, 255)(body["reason"])
             assert body["detail"] is None or isinstance(body["detail"], str)
@@ -217,7 +218,7 @@ class FakeCloud:
         R = self.revision
         if since >= R:
             return {"revision": R, "has_more": False, "confirm_deletions": self.confirm_deletions,
-                    "changes": []}
+                    "logs_cleared_at": self.logs_cleared_at, "changes": []}
         crudas = sorted(
             ((r["revision"], t, i, r) for t in TABLES for i, r in self.rows[t].items()
              if since < r["revision"] <= R),
@@ -232,7 +233,8 @@ class FakeCloud:
                 changes.append({"table": table, "op": "upsert", "id": row_id, "revision": revision,
                                 "data": row["data"]})
         return {"revision": pagina[-1][0] if has_more else R, "has_more": has_more,
-                "confirm_deletions": self.confirm_deletions, "changes": changes}
+                "confirm_deletions": self.confirm_deletions, "logs_cleared_at": self.logs_cleared_at,
+                "changes": changes}
 
     def _push(self, items):
         assert len(items) <= 500

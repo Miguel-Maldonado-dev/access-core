@@ -61,17 +61,17 @@ describe("POST /command-result", () => {
    * Orden `pending` del panel; `venceEnMs` negativo la deja ya caducada. `remota` crea una
    * `remote_open` (con su titular) en lugar de una `test_output`.
    */
-  async function crearOrden(panel: PanelPrueba, venceEnMs = 10_000, remota = false): Promise<string> {
+  async function crearOrden(panel: PanelPrueba, venceEnMs = 10_000, remota = false, escucha = false): Promise<string> {
     const { data, error } = await admin
       .from("panel_commands")
       .insert({
         tenant_id: tenantId,
         installation_id: installationId,
         panel_id: panel.id,
-        kind: remota ? "remote_open" : "test_output",
+        kind: escucha ? "listen_rf" : remota ? "remote_open" : "test_output",
         holder_id: remota ? holderId : null,
         // Cada orden en una salida distinta del ciclo 0..3 para no chocar con otra pendiente.
-        output_index: salida++ % 4,
+        output_index: escucha ? null : salida++ % 4,
         requested_by: "tecnico@test.local",
         expires_at: new Date(Date.now() + venceEnMs).toISOString(),
       })
@@ -84,9 +84,9 @@ describe("POST /command-result", () => {
   async function orden(id: string) {
     const { data, error } = await admin
       .from("panel_commands")
-      .select("status, detail, reason, finished_at")
+      .select("status, detail, reason, rf_code, finished_at")
       .eq("id", id)
-      .single<{ status: string; detail: string | null; reason: number | null; finished_at: string | null }>();
+      .single<{ status: string; detail: string | null; reason: number | null; rf_code: number | null; finished_at: string | null }>();
     if (error) throw error;
     return data;
   }
@@ -182,6 +182,25 @@ describe("POST /command-result", () => {
     expect(await orden(id)).toMatchObject({ status: "expired", detail: null, reason: null });
   });
 
+  it("un listen_rf con resultado 10 s después de expires_at queda ok con su rf_code", async () => {
+    const id = await crearOrden(panelA2, -10_000, false, true);
+    const res = await postCommandResult(peticion(panelA2, { command_id: id, ok: true, detail: null, rf_code: 4294967295 }));
+    expect(res.status).toBe(204);
+    expect(await orden(id)).toMatchObject({ status: "ok", rf_code: 4294967295 });
+  });
+
+  it("un listen_rf con resultado 16 s después de expires_at queda expired, sin rf_code", async () => {
+    const id = await crearOrden(panelA2, -16_000, false, true);
+    await postCommandResult(peticion(panelA2, { command_id: id, ok: true, detail: null, rf_code: 123 }));
+    expect(await orden(id)).toMatchObject({ status: "expired", rf_code: null });
+  });
+
+  it("un test_output pasado de expires_at sigue venciendo (sin el margen de listen_rf)", async () => {
+    const id = await crearOrden(panelA, -10_000);
+    await postCommandResult(peticion(panelA, { command_id: id, ok: true, detail: null }));
+    expect(await orden(id)).toMatchObject({ status: "expired" });
+  });
+
   it("el resultado de otro panel da 404 y no toca la orden", async () => {
     const id = await crearOrden(panelA);
     const res = await postCommandResult(peticion(panelA2, { command_id: id, ok: true, detail: null }));
@@ -236,6 +255,9 @@ describe("POST /command-result", () => {
       { command_id: id, ok: true, detail: null, reason: -1 },
       { command_id: id, ok: true, detail: null, reason: 1.5 },
       { command_id: id, ok: true, detail: null, reason: "3" },
+      { command_id: id, ok: true, detail: null, rf_code: 4294967296 },
+      { command_id: id, ok: true, detail: null, rf_code: -1 },
+      { command_id: id, ok: true, detail: null, rf_code: 1.5 },
     ]) {
       const res = await postCommandResult(peticion(panelA, cuerpo));
       expect(res.status, JSON.stringify(cuerpo)).toBe(400);

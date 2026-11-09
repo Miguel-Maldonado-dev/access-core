@@ -1,3 +1,5 @@
+import type { ListenResult } from "@/lib/types";
+
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
 export class ApiError extends Error {
@@ -34,4 +36,9 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+/** Espera 10 s a que se pulse un control RF y devuelve su código. */
+export function listenRf(): Promise<ListenResult> {
+  return apiFetch<ListenResult>("/api/controls/listen", { method: "POST" });
 }

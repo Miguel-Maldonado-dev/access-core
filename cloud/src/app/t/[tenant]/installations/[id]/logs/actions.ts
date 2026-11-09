@@ -2,6 +2,7 @@
 
 import { z } from "zod";
 import { INVALID_DATA, runAction, type ActionResult } from "@/lib/actions";
+import { purgeInstallationLogsAs } from "@/lib/log-purge";
 import { logsUploadStatusAs, requestLogsUploadAs, type LogsUploadRequest } from "@/lib/panel-commands";
 import { createServerSupabase } from "@/lib/supabase/server";
 
@@ -30,4 +31,14 @@ export async function logsUploadStatus(
   return runAction(async () => logsUploadStatusAs(await createServerSupabase(), tenantId, installationId, since), {
     refresh: false,
   });
+}
+
+/** "Borrar logs" (solo admin): exige el nombre de la instalación y sí refresca la vista. */
+export async function purgeLogs(
+  tenantId: string,
+  installationId: string,
+  confirmName: string,
+): Promise<ActionResult<{ deleted: number }>> {
+  if (!z.tuple([texto, texto, texto]).safeParse([tenantId, installationId, confirmName]).success) return INVALID_DATA;
+  return runAction(async () => purgeInstallationLogsAs(await createServerSupabase(), tenantId, installationId, confirmName));
 }

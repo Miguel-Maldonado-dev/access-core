@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ConflictsManager from "@/components/conflicts/ConflictsManager";
 import LogFilters from "@/components/logs/LogFilters";
 import LogTable from "@/components/logs/LogTable";
+import PurgeLogsButton from "@/components/logs/PurgeLogsButton";
 import RefreshLogsButton from "@/components/logs/RefreshLogsButton";
 import Pagination from "@/components/Pagination";
 import type { ActionResult } from "@/lib/actions";
@@ -56,7 +57,7 @@ describe("LogTable", () => {
     expect(within(fila).getByText("Ana Pérez · Persona")).toBeTruthy();
     expect(within(fila).getByText("Tarjeta azul · L2")).toBeTruthy();
     // Hora de México (UTC-6): 18:30 UTC = 12:30.
-    expect(within(fila).getByText(/10\/03\/2026,? 12:30:00/)).toBeTruthy();
+    expect(within(fila).getByText("10/03/26 12:30:00")).toBeTruthy();
   });
 
   it("sin alias muestra S1 a S4 y sin salida un guion; el código va en decimal", () => {
@@ -78,6 +79,19 @@ describe("LogTable", () => {
     const fila = screen.getAllByRole("row")[1];
     expect(within(fila).getByText("Denegado")).toBeTruthy();
     expect(within(fila).getByText("PIN desconocido")).toBeTruthy();
+  });
+
+  it("es compacta: text-xs, celdas ajustadas y filas pares con fondo alterno", () => {
+    const { container } = render(<LogTable rows={[log(), log({ id: 2 })]} />);
+    expect(container.querySelector("table")?.className).toContain("text-xs");
+    expect(container.querySelector("tbody td")?.className).toContain("px-2.5 py-1.5");
+    expect(screen.getAllByRole("row")[2].className).toContain("even:bg-paper/60");
+    expect(container.firstElementChild?.className).toContain("overflow-x-auto");
+  });
+
+  it("la fecha sale en formato corto de México", () => {
+    render(<LogTable rows={[log({ ts: "2026-11-09T14:14:32+00:00" })]} />);
+    expect(screen.getByText("09/11/26 08:14:32")).toBeTruthy();
   });
 
   it("sin filas dice que no hay registros", () => {
@@ -353,5 +367,57 @@ describe("ConflictsManager", () => {
   it("sin conflictos lo dice", () => {
     montar([]);
     expect(screen.getByText("No hay conflictos de sincronización.")).toBeTruthy();
+  });
+});
+
+describe("PurgeLogsButton", () => {
+  // jsdom no implementa showModal/close del <dialog>.
+  beforeEach(() => {
+    HTMLDialogElement.prototype.showModal = function () {
+      this.setAttribute("open", "");
+    };
+    HTMLDialogElement.prototype.close = function () {
+      this.removeAttribute("open");
+    };
+  });
+
+  it("confirmar sigue deshabilitado hasta que el texto coincide con el nombre", () => {
+    render(<PurgeLogsButton installationName="Villa Real" onPurge={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Borrar logs" }));
+    expect(screen.getByText("Escribe el nombre de la instalación para confirmar.")).toBeTruthy();
+    const campo = screen.getByRole("textbox") as HTMLInputElement;
+    const envio = screen.getAllByRole("button", { name: "Borrar logs" }).find((b) => (b as HTMLButtonElement).type === "submit") as HTMLButtonElement;
+    expect(envio.disabled).toBe(true);
+    fireEvent.change(campo, { target: { value: "Villa" } });
+    expect(envio.disabled).toBe(true);
+    fireEvent.change(campo, { target: { value: " Villa Real " } });
+    expect(envio.disabled).toBe(false);
+  });
+
+  it("al confirmar llama a purgeLogs y muestra cuántos se borraron", async () => {
+    const onPurge = vi.fn(async () => ok({ deleted: 12 }));
+    render(<PurgeLogsButton installationName="Villa Real" onPurge={onPurge} />);
+    fireEvent.click(screen.getByRole("button", { name: "Borrar logs" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Villa Real" } });
+    const envio = screen.getAllByRole("button", { name: "Borrar logs" }).find((b) => (b as HTMLButtonElement).type === "submit")!;
+    fireEvent.click(envio);
+    await waitFor(() =>
+      expect(
+        screen.getByText("Se borraron 12 logs de la nube. Los paneles borran los suyos al sincronizar."),
+      ).toBeTruthy(),
+    );
+    expect(onPurge).toHaveBeenCalledWith("Villa Real");
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("muestra el error del servidor y deja el diálogo abierto", async () => {
+    const onPurge = vi.fn(async () => fallo("El nombre no coincide con la instalación.", 400));
+    const { container } = render(<PurgeLogsButton installationName="Villa Real" onPurge={onPurge} />);
+    fireEvent.click(screen.getByRole("button", { name: "Borrar logs" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Villa Real" } });
+    const envio = screen.getAllByRole("button", { name: "Borrar logs" }).find((b) => (b as HTMLButtonElement).type === "submit")!;
+    fireEvent.click(envio);
+    await waitFor(() => expect(screen.getByText("El nombre no coincide con la instalación.")).toBeTruthy());
+    expect(container.querySelector("dialog")?.hasAttribute("open")).toBe(true);
   });
 });

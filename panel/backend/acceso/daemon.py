@@ -12,9 +12,11 @@ from .config import ConfigError, Settings, load_settings
 from .constants import RECONNECT_SECONDS
 from .daemon_socket import DaemonSocketServer
 from .db import connect
+from .logs import purge_old_logs
 from .migrate import MigrationError, migrate
 from .output_test import OutputTester, RelayLink
 from .protocol import FrameParser, InvalidFrame
+from .rf_listen import RfListener
 
 log = logging.getLogger("acceso.daemon")
 
@@ -47,7 +49,8 @@ def _make_send(port: SerialPort) -> Callable[[bytes], None]:
 
 
 def _serve(settings: Settings, conn, port: SerialPort, stop: threading.Event,
-           pin_lockout: Optional[PinLockout] = None, relay: Optional[RelayLink] = None) -> None:
+           pin_lockout: Optional[PinLockout] = None, relay: Optional[RelayLink] = None,
+           rf_listener: Optional[RfListener] = None) -> None:
     """Procesa tramas hasta `stop` o hasta que el puerto falle (lanza OSError/termios.error).
 
     Mientras el puerto está abierto, su `send` queda en `relay`: la prueba de salida (hilo del
@@ -68,7 +71,7 @@ def _serve(settings: Settings, conn, port: SerialPort, stop: threading.Event,
                                 item.raw[1] if len(item.raw) > 1 else 0, len(item.raw))
                     continue
                 handle_event(conn, item, relay.send, max_entries=settings.log_max_entries,
-                             pin_lockout=pin_lockout)
+                             pin_lockout=pin_lockout, rf_listener=rf_listener)
     finally:
         relay.set(None)
 
@@ -93,16 +96,48 @@ def _start_socket_server(factory: Callable[..., Any], path: str,
     return server
 
 
+def _retention_loop(settings: Settings, stop: threading.Event, purge: Callable[..., int],
+                    interval_s: float) -> None:
+    """Purga los logs viejos al arrancar y luego cada `interval_s`, con su propia conexión."""
+    conn = connect(settings.db_path)
+    try:
+        while not stop.is_set():
+            try:
+                deleted = purge(conn, time.time())
+                if deleted:
+                    log.info("Retención: %d logs antiguos borrados", deleted)
+            except Exception:
+                # El hilo nunca debe morir: se registra y se reintenta en el siguiente ciclo.
+                log.exception("No se pudo purgar los logs antiguos")
+            if stop.wait(interval_s):
+                break
+    finally:
+        conn.close()
+
+
 def run_daemon(settings: Settings, stop: threading.Event, *,
                open_serial: Callable[[str, int], SerialPort] = open_serial_port,
                sleep: Callable[[float], None] = time.sleep,
-               socket_server_factory: Callable[..., Any] = DaemonSocketServer) -> None:
+               socket_server_factory: Callable[..., Any] = DaemonSocketServer,
+               purge: Callable[..., int] = purge_old_logs,
+               purge_interval_s: float = 86400) -> None:
     conn = connect(settings.db_path)
+    retention = threading.Thread(target=_retention_loop,
+                                 args=(settings, stop, purge, purge_interval_s),
+                                 name="log-retention", daemon=True)
     pin_lockout = PinLockout()
     relay = RelayLink()
     tester = OutputTester(settings.db_path, relay, settings.log_max_entries)
-    server = _start_socket_server(socket_server_factory, settings.daemon_socket, tester.handle)
+    rf_listener = RfListener(settings.db_path)
+
+    def dispatch(request: Dict[str, Any]) -> Dict[str, Any]:
+        if request.get("op") == "listen_rf":
+            return rf_listener.handle(request)
+        return tester.handle(request)
+
+    server = _start_socket_server(socket_server_factory, settings.daemon_socket, dispatch)
     try:
+        retention.start()
         while not stop.is_set():
             try:
                 port = open_serial(settings.uart_port, settings.uart_baud)
@@ -113,7 +148,7 @@ def run_daemon(settings: Settings, stop: threading.Event, *,
                 continue
             log.info("Puerto %s abierto", settings.uart_port)
             try:
-                _serve(settings, conn, port, stop, pin_lockout, relay)
+                _serve(settings, conn, port, stop, pin_lockout, relay, rf_listener)
             except _SERIAL_ERRORS as exc:
                 _close_quietly(port)
                 log.warning("Error en el puerto serie: %s. Reconectando en %.0f s",
@@ -125,6 +160,8 @@ def run_daemon(settings: Settings, stop: threading.Event, *,
         if server is not None:
             server.stop()
         conn.close()
+        if retention.is_alive():
+            retention.join(2)
 
 
 def main() -> None:

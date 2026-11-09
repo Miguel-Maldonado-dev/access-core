@@ -5,7 +5,8 @@ import { deviceRoute, readJsonBody } from "@/lib/device/http";
 
 /**
  * POST /api/device/v1/command-result (Device, panel `active`).
- * Cuerpo `{command_id, ok, detail}`: el resultado de una orden de la nube (`test_output`).
+ * Cuerpo `{command_id, ok, detail, reason?, rf_code?}`: el resultado de una orden de la nube
+ * (`test_output`, `remote_open` o `listen_rf`; `rf_code` solo en esta última).
  * Solo se acepta para una orden de ese panel (si no, 404 `not_found`); un resultado tardío
  * deja la orden `expired`. Responde 204.
  */

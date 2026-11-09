@@ -7,6 +7,7 @@ aplica con `sync_guard.applying=1`, así que no vuelve a la bandeja. El PIN viaj
 dentro del contrato hacia y desde la nube: nunca en logs, excepciones ni `last_error`.
 """
 import logging
+import math
 import os
 import sqlite3
 import time
@@ -18,12 +19,14 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from acceso.cloud.api import CloudApi, CloudError
 from acceso.cloud.checksum import table_checksum
+from acceso.cloud.commands import parse_iso_utc
 from acceso.cloud.identity import get_state, set_state
 from acceso.cloud.mapping import (
     apply_batch, apply_changes, applying, collapse, row_to_data, snapshot_tables,
 )
 from acceso.constants import REPLICATED_TABLES, SOURCE_PIN
 from acceso.db import connect, now_ms, transaction
+from acceso.logs import delete_logs_until
 from acceso.migrate import MAX_DATED_BACKUPS
 
 log = logging.getLogger("acceso.cloud")
@@ -234,6 +237,7 @@ class SyncEngine:
             cursor = int(get_state(conn, "cloud_revision", "0") or 0)
             changes = []  # type: List[Mapping[str, Any]]
             confirm = False
+            cleared = None  # type: Optional[int]
             while True:
                 page = self._api.get_changes(since=cursor, limit=CHANGES_PAGE)
                 revision, has_more, page_changes = self._read_page(page)
@@ -248,6 +252,7 @@ class SyncEngine:
                     raise _invalid("La nube no avanzó la revisión")
                 changes.extend(page_changes)
                 confirm = bool(page.get("confirm_deletions"))
+                cleared = self._read_logs_cleared_at(page)
                 cursor = revision
                 if not has_more:
                     break
@@ -256,12 +261,33 @@ class SyncEngine:
                        for table, _ in GUARDED_TABLES}
             # Un borrado de la nube se aplica aunque la fila tenga cambios pendientes: una revocación
             # debe llegar aunque el push de esa fila esté fallando.
-            applied = self._guarded(lambda: apply_batch(
-                conn, final, state={"cloud_revision": str(cursor), "last_sync_at": self._now_iso()},
-                check=lambda c: _check_mass_delete(c, deletes, confirm, count_pending=True),
-                force_deletes=True))
+            state = {"cloud_revision": str(cursor), "last_sync_at": self._now_iso()}
+            try:
+                stored = int(get_state(conn, "logs_cleared_at", "0") or 0)
+            except ValueError:  # marca corrupta: se trata como 0
+                stored = 0
+            apply_cleared = cleared is not None and cleared > stored
+            removed_logs = []  # type: List[int]
+            if apply_cleared:
+                state["logs_cleared_at"] = str(cleared)
+
+            def check(c: sqlite3.Connection) -> None:
+                _check_mass_delete(c, deletes, confirm, count_pending=True)
+                if apply_cleared:  # en la misma transacción que el cursor y la marca
+                    removed_logs.append(delete_logs_until(c, cleared))
+
+            applied = self._guarded(lambda: apply_batch(conn, final, state=state, check=check,
+                                                        force_deletes=True))
+            if removed_logs:  # el mensaje sale tras el COMMIT
+                log.info("Pull: la nube borró los logs hasta %d (%d logs)", cleared, removed_logs[0])
             log.info("Pull: %d cambios aplicados hasta la revisión %d", applied, cursor)
             return applied
+
+    @staticmethod
+    def _read_logs_cleared_at(page: Mapping[str, Any]) -> Optional[int]:
+        """Marca de borrado de logs de la nube (ISO 8601) en segundos Unix; None si falta o no es válida."""
+        moment = parse_iso_utc(page.get("logs_cleared_at"))
+        return None if moment is None else int(math.floor(moment))
 
     @staticmethod
     def _read_page(page: Mapping[str, Any]) -> Tuple[int, bool, List[Mapping[str, Any]]]:

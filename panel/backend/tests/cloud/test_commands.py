@@ -11,7 +11,8 @@ import uuid
 import pytest
 from fake_cloud import FakeCloud
 
-from acceso.cloud.commands import DETAIL_MAX, QUEUE_MAX, CommandWorker
+from acceso.cloud.commands import DETAIL_MAX, LISTEN_COMMANDS, QUEUE_MAX, CommandWorker
+from acceso.rf_listen import LISTEN_CLIENT_TIMEOUT_S
 from acceso.daemon_socket import DaemonUnavailable
 
 SOCKET = "/run/acceso/daemon.sock"
@@ -25,8 +26,10 @@ class FakeDaemon:
         self.reply = {"ok": True} if reply is None else reply
         self.error = error
         self.requests = []
+        self.timeouts = []
 
-    def __call__(self, path, payload):
+    def __call__(self, path, payload, timeout=None):
+        self.timeouts.append(timeout)
         self.requests.append((path, dict(payload)))
         if self.error is not None:
             raise self.error
@@ -41,8 +44,8 @@ class Results:
         self.error = error
         self.done = threading.Event()
 
-    def __call__(self, command_id, ok, detail, reason):
-        self.items.append((command_id, ok, detail, reason))
+    def __call__(self, command_id, ok, detail, reason, rf_code):
+        self.items.append((command_id, ok, detail, reason, rf_code))
         self.done.set()
         if self.error is not None:
             raise self.error
@@ -86,7 +89,7 @@ def test_orden_valida_llama_al_daemon_e_informa():
     run(daemon, results, body)
     assert daemon.requests == [(SOCKET, {"op": "test_output", "output": 2,
                                          "requested_by": "ana@example.com"})]
-    assert results.items == [(body["command_id"], True, None, None)]
+    assert results.items == [(body["command_id"], True, None, None, None)]
 
 
 def test_el_error_del_daemon_se_informa_con_su_detalle():
@@ -94,7 +97,7 @@ def test_el_error_del_daemon_se_informa_con_su_detalle():
     results = Results()
     body = order()
     run(daemon, results, body)
-    assert results.items == [(body["command_id"], False, "La salida ya está en uso", None)]
+    assert results.items == [(body["command_id"], False, "La salida ya está en uso", None, None)]
 
 
 def test_el_detalle_largo_se_recorta_a_200_caracteres():
@@ -104,7 +107,7 @@ def test_el_detalle_largo_se_recorta_a_200_caracteres():
     body = order()
     run(daemon, results, body)
     assert DETAIL_MAX == 200
-    assert results.items == [(body["command_id"], False, "x" * 200, None)]
+    assert results.items == [(body["command_id"], False, "x" * 200, None, None)]
 
 
 def test_orden_caducada_no_llama_al_daemon(caplog):
@@ -154,7 +157,7 @@ def test_daemon_caido_informa_false():
     daemon, results = FakeDaemon(error=DaemonUnavailable("El daemon no responde")), Results()
     body = order()
     run(daemon, results, body)
-    assert results.items == [(body["command_id"], False, "El daemon no responde", None)]
+    assert results.items == [(body["command_id"], False, "El daemon no responde", None, None)]
 
 
 @pytest.mark.parametrize("changes", [
@@ -210,7 +213,7 @@ def test_submit_no_bloquea_y_el_hilo_atiende_en_segundo_plano():
     daemon = FakeDaemon()
     results = Results()
 
-    def slow(path, payload):
+    def slow(path, payload, timeout=None):
         gate.wait(5)
         return daemon(path, payload)
 
@@ -227,7 +230,7 @@ def test_stop_no_bloquea_y_no_llama_mas_al_daemon():
     gate = threading.Event()
     calls = []
 
-    def blocked(path, payload):
+    def blocked(path, payload, timeout=None):
         calls.append(payload)
         gate.wait(5)
         return {"ok": True}
@@ -263,7 +266,7 @@ def test_remote_open_valida_llama_al_daemon_con_el_payload_exacto_e_informa_el_r
     run(daemon, results, body)
     assert daemon.requests == [(SOCKET, {"op": "remote_open", "output": 2, "holder_uuid": HOLDER,
                                          "requested_by": "app-vecinos"})]
-    assert results.items == [(body["command_id"], True, "Salida abierta", 1)]
+    assert results.items == [(body["command_id"], True, "Salida abierta", 1, None)]
 
 
 def test_remote_open_denegada_informa_el_motivo_del_daemon():
@@ -271,7 +274,7 @@ def test_remote_open_denegada_informa_el_motivo_del_daemon():
     results = Results()
     body = remote()
     run(daemon, results, body)
-    assert results.items == [(body["command_id"], False, "Sin permiso de apertura remota", 3)]
+    assert results.items == [(body["command_id"], False, "Sin permiso de apertura remota", 3, None)]
 
 
 @pytest.mark.parametrize("reply", [
@@ -284,21 +287,21 @@ def test_remote_open_sin_reason_entero_informa_none(reply):
     results = Results()
     body = remote()
     run(FakeDaemon(reply=reply), results, body)
-    assert results.items == [(body["command_id"], False, reply["detail"], None)]
+    assert results.items == [(body["command_id"], False, reply["detail"], None, None)]
 
 
 def test_remote_open_con_daemon_caido_informa_false_sin_reason():
     daemon, results = FakeDaemon(error=DaemonUnavailable("El daemon no responde")), Results()
     body = remote()
     run(daemon, results, body)
-    assert results.items == [(body["command_id"], False, "El daemon no responde", None)]
+    assert results.items == [(body["command_id"], False, "El daemon no responde", None, None)]
 
 
 def test_test_output_ignora_el_reason_del_daemon():
     results = Results()
     body = order()
     run(FakeDaemon(reply={"ok": True, "reason": 1}), results, body)
-    assert results.items == [(body["command_id"], True, None, None)]
+    assert results.items == [(body["command_id"], True, None, None, None)]
 
 
 def test_holder_uuid_en_mayusculas_se_acepta_en_forma_canonica():
@@ -358,6 +361,117 @@ def test_la_deduplicacion_es_comun_a_los_dos_tipos():
     assert [payload["op"] for _, payload in daemon.requests] == ["remote_open"]
 
 
+# --- listen_rf ------------------------------------------------------------------------------------
+
+def listen(**changes):
+    body = {"type": "listen_rf", "command_id": str(uuid.uuid4()), "expires_at": VALID_UNTIL}
+    body.update(changes)
+    return body
+
+
+def listen_worker(daemon, results):
+    return CommandWorker(daemon, SOCKET, results, wall=lambda: NOW, kinds=LISTEN_COMMANDS,
+                         timeout=LISTEN_CLIENT_TIMEOUT_S)
+
+
+def run_listen(daemon, results, *bodies):
+    worker = listen_worker(daemon, results)
+    worker.start()
+    thread = worker._thread
+    for body in bodies:
+        worker.submit(body)
+    worker._queue.put(None)
+    thread.join()
+    worker.stop()
+
+
+def test_listen_order_posts_rf_code():
+    daemon = FakeDaemon(reply={"ok": True, "code": 123456, "control": None})
+    results = Results()
+    body = listen()
+    run_listen(daemon, results, body)
+    assert daemon.requests == [(SOCKET, {"op": "listen_rf"})]
+    assert results.items == [(body["command_id"], True, None, None, 123456)]
+
+
+def test_listen_order_without_a_control_reports_the_daemon_detail():
+    daemon = FakeDaemon(reply={"ok": False, "detail": "No se recibió ningún control."})
+    results = Results()
+    body = listen()
+    run_listen(daemon, results, body)
+    assert results.items == [(body["command_id"], False, "No se recibió ningún control.", None, None)]
+
+
+@pytest.mark.parametrize("code", [True, -1, 4294967296, "7", None])
+def test_listen_order_with_an_invalid_code_is_a_failure(code):
+    results = Results()
+    body = listen()
+    run_listen(FakeDaemon(reply={"ok": True, "code": code}), results, body)
+    assert results.items == [(body["command_id"], False, "Código RF inválido", None, None)]
+
+
+def test_listen_order_with_the_daemon_down_reports_it():
+    results = Results()
+    body = listen()
+    run_listen(FakeDaemon(error=DaemonUnavailable("x")), results, body)
+    assert results.items == [(body["command_id"], False, "El daemon no responde", None, None)]
+
+
+def test_listen_order_expired_is_dropped():
+    daemon, results = FakeDaemon(), Results()
+    run_listen(daemon, results, listen(expires_at=EXPIRED_AT))
+    assert daemon.requests == [] and results.items == []
+
+
+def test_listen_order_uses_long_timeout():
+    daemon = FakeDaemon(reply={"ok": True, "code": 1})
+    run_listen(daemon, Results(), listen())
+    assert daemon.timeouts == [13.0]
+
+
+def test_the_commands_worker_ignores_listen_orders_and_uses_the_default_timeout():
+    daemon, results = FakeDaemon(), Results()
+    run(daemon, results, listen(), order())
+    assert [p["op"] for _, p in daemon.requests] == ["test_output"]
+    assert daemon.timeouts == [7.0]
+
+
+def test_listen_order_runs_in_own_thread():
+    """Mientras una escucha espera en el daemon, una remote_open posterior se atiende primero."""
+    gate = threading.Event()
+    started = threading.Event()
+    listening = []
+    results = Results()
+
+    def blocked_daemon(path, payload, timeout=None):
+        listening.append(payload)
+        started.set()
+        gate.wait(5)
+        return {"ok": True, "code": 9}
+
+    commands = CommandWorker(FakeDaemon(reply={"ok": True, "reason": 1}), SOCKET, results, wall=lambda: NOW)
+    listener = listen_worker(blocked_daemon, results)
+    commands.start()
+    listener.start()
+    try:
+        first = listen()
+        listener.submit(first)
+        assert started.wait(5)
+        second = remote()
+        commands.submit(second)
+        assert results.done.wait(5)
+        assert [item[0] for item in results.items] == [second["command_id"]]
+        gate.set()
+        deadline = time.monotonic() + 5
+        while len(results.items) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert results.items[1] == (first["command_id"], True, None, None, 9)
+    finally:
+        gate.set()
+        commands.stop()
+        listener.stop()
+
+
 # --- API: POST /command-result ------------------------------------------------------------------
 
 def test_post_command_result_envia_el_contrato_con_la_credencial():
@@ -384,4 +498,16 @@ def test_post_command_result_envia_reason_solo_si_no_es_none():
         {"command_id": command_id, "ok": False, "detail": "Sin permiso de apertura remota", "reason": 3},
         {"command_id": command_id, "ok": True, "detail": "Salida abierta", "reason": 1},
         {"command_id": command_id, "ok": False, "detail": "Petición inválida"},
+    ]
+
+
+def test_post_command_result_envia_rf_code_solo_si_no_es_none():
+    cloud = FakeCloud()
+    api = cloud.api()
+    command_id = str(uuid.uuid4())
+    api.post_command_result(command_id, True, None, rf_code=4242)
+    api.post_command_result(command_id, False, "No se recibió ningún control.")
+    assert cloud.command_results == [
+        {"command_id": command_id, "ok": True, "detail": None, "rf_code": 4242},
+        {"command_id": command_id, "ok": False, "detail": "No se recibió ningún control."},
     ]

@@ -1,10 +1,13 @@
-"""Órdenes de la nube que el agente ejecuta en su propio hilo: `test_output` y `remote_open`.
+"""Órdenes de la nube que el agente ejecuta en su propio hilo: `test_output`, `remote_open` y `listen_rf`.
 
 La orden llega por MQTT (`acc/<panel_code>/cmd`), se valida, se descarta si ya caducó o si su
 `command_id` ya se vio, y se pasa al daemon por su socket local. El resultado se informa a la nube
 con `POST /api/device/v1/command-result`. Una orden inválida, caducada o repetida se descarta sin
 informar: la nube la deja vencer. De una excepción inesperada solo se registra el tipo.
 `remote_open` exige además `holder_uuid` (UUID canónico) e informa el motivo (`reason`) del daemon.
+`listen_rf` no lleva `output` ni `requested_by`: el daemon espera hasta 10 s el siguiente control RF y
+el código recibido se informa como `rf_code`. Va en un worker aparte (espera mucho) para no retrasar
+las aperturas remotas.
 """
 import logging
 import queue
@@ -14,7 +17,7 @@ import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, FrozenSet, Iterable, Mapping, Optional
 
 from acceso.daemon_socket import DaemonUnavailable
 
@@ -22,23 +25,28 @@ log = logging.getLogger("acceso.cloud")
 
 OUTPUT_MAX = 3
 REQUESTED_BY_MAX = 120
-# Las órdenes viven 10 s en la nube: 256 identificadores cubren de sobra esa vigencia.
+# Las órdenes viven 10 s en la nube (13 s la escucha): 256 identificadores cubren de sobra esa vigencia.
 SEEN_MAX = 256
 QUEUE_MAX = 64
-# stop() no espera a una orden en curso (hasta 7 s del daemon más la llamada a la nube).
+# stop() no espera a una orden en curso (hasta 7 s del daemon, 13 s la escucha, más la llamada a la nube).
 STOP_WAIT_S = 0.2
 DAEMON_DOWN = "El daemon no responde"
 # La nube rechaza un `detail` de más de 200 caracteres.
 DETAIL_MAX = 200
 TEST_OUTPUT = "test_output"
 REMOTE_OPEN = "remote_open"
+LISTEN_RF = "listen_rf"
 WORKER_COMMANDS = frozenset((TEST_OUTPUT, REMOTE_OPEN))
+LISTEN_COMMANDS = frozenset((LISTEN_RF,))
+# Plazo del socket del daemon para las órdenes cortas (el de `request_daemon` por omisión).
+DEFAULT_TIMEOUT_S = 7.0
+RF_CODE_MAX = 4294967295
 
 # Fracción de segundo de cualquier longitud: Python 3.9 solo acepta 3 o 6 dígitos en fromisoformat.
 _FRACTION = re.compile(r"\.(\d+)")
 
 
-def _parse_expires_at(value: Any) -> Optional[float]:
+def parse_iso_utc(value: Any) -> Optional[float]:
     """Segundos Unix de una fecha ISO 8601 con zona horaria; None si no lo es."""
     if not isinstance(value, str) or len(value) > 64:
         return None
@@ -77,16 +85,18 @@ class _Order:
         self.holder_uuid = holder_uuid
 
 
-def _parse(body: Mapping[str, Any]) -> Optional[_Order]:
+def _parse(body: Mapping[str, Any], kinds: FrozenSet[str] = WORKER_COMMANDS) -> Optional[_Order]:
     kind = body.get("type")
-    if kind not in WORKER_COMMANDS:
+    if kind not in kinds:
         return None
     command_id = _parse_uuid(body.get("command_id"))
     output = body.get("output")
     requested_by = body.get("requested_by")
-    expires_at = _parse_expires_at(body.get("expires_at"))
+    expires_at = parse_iso_utc(body.get("expires_at"))
     if command_id is None or expires_at is None:
         return None
+    if kind == LISTEN_RF:
+        return _Order(kind, command_id, 0, "", expires_at)
     if isinstance(output, bool) or not isinstance(output, int) or not 0 <= output <= OUTPUT_MAX:
         return None
     if not isinstance(requested_by, str) or not 1 <= len(requested_by) <= REQUESTED_BY_MAX:
@@ -101,6 +111,8 @@ def _parse(body: Mapping[str, Any]) -> Optional[_Order]:
 
 def _request(order: _Order) -> Dict[str, Any]:
     """Petición al daemon por su socket local."""
+    if order.kind == LISTEN_RF:
+        return {"op": LISTEN_RF}
     payload = {"op": order.kind, "output": order.output}  # type: Dict[str, Any]
     if order.kind == REMOTE_OPEN:
         payload["holder_uuid"] = order.holder_uuid
@@ -117,14 +129,27 @@ def _reason(order: _Order, reply: Mapping[str, Any]) -> Optional[int]:
     return reason
 
 
-class CommandWorker:
-    """Atiende las órdenes `test_output` y `remote_open` en un hilo propio, una a la vez y en orden
-    de llegada. La deduplicación por `command_id` y la caducidad son comunes a los dos tipos."""
+def _rf_code(reply: Mapping[str, Any]) -> Optional[int]:
+    """Código RF de la respuesta de `listen_rf`; None si no es un entero de 32 bits sin signo."""
+    code = reply.get("code")
+    if isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= RF_CODE_MAX:
+        return None
+    return code
 
-    def __init__(self, daemon_request: Callable[[str, Mapping[str, Any]], Dict[str, Any]],
+
+class CommandWorker:
+    """Atiende las órdenes de los tipos `kinds` en un hilo propio, una a la vez y en orden de
+    llegada. La deduplicación por `command_id` y la caducidad son comunes a todos los tipos.
+    `timeout` es el plazo de la petición al daemon."""
+
+    def __init__(self, daemon_request: Callable[..., Dict[str, Any]],
                  socket_path: str,
-                 post_result: Callable[[str, bool, Optional[str], Optional[int]], None],
-                 wall: Callable[[], float] = time.time) -> None:
+                 post_result: Callable[[str, bool, Optional[str], Optional[int], Optional[int]], None],
+                 wall: Callable[[], float] = time.time,
+                 kinds: Iterable[str] = WORKER_COMMANDS,
+                 timeout: float = DEFAULT_TIMEOUT_S) -> None:
+        self._kinds = frozenset(kinds)
+        self._timeout = timeout
         self._daemon_request = daemon_request
         self._socket_path = socket_path
         self._post_result = post_result
@@ -144,7 +169,8 @@ class CommandWorker:
     def start(self) -> None:
         if self._thread is not None:
             return
-        self._thread = threading.Thread(target=self._loop, name="cloud-commands", daemon=True)
+        name = "cloud-listen" if self._kinds == LISTEN_COMMANDS else "cloud-commands"
+        self._thread = threading.Thread(target=self._loop, name=name, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -173,7 +199,7 @@ class CommandWorker:
                 log.warning("Falló una orden de la nube (%s)", type(exc).__name__)
 
     def _handle(self, body: Mapping[str, Any]) -> None:
-        order = _parse(body)
+        order = _parse(body, self._kinds)
         if order is None:
             log.warning("Orden de la nube inválida: se descarta")
             return
@@ -189,17 +215,22 @@ class CommandWorker:
         if self._stopping.is_set():  # detenido (p. ej. revocado): ya no se activa nada
             return
         try:
-            reply = self._daemon_request(self._socket_path, _request(order))
+            reply = self._daemon_request(self._socket_path, _request(order), timeout=self._timeout)
         except DaemonUnavailable:
             ok, detail, reason = False, DAEMON_DOWN, None  # type: bool, Optional[str], Optional[int]
+            rf_code = None  # type: Optional[int]
         else:
             ok = reply.get("ok") is True
             detail = reply.get("detail") if isinstance(reply.get("detail"), str) else None
             reason = _reason(order, reply)
+            rf_code = None
+            if order.kind == LISTEN_RF and ok:
+                rf_code = _rf_code(reply)
+                ok, detail = rf_code is not None, (None if rf_code is not None else "Código RF inválido")
         if detail is not None:
             detail = detail[:DETAIL_MAX]
         try:
-            self._post_result(order.command_id, ok, detail, reason)
+            self._post_result(order.command_id, ok, detail, reason, rf_code)
         except Exception as exc:
             log.warning("No se pudo informar a la nube el resultado de la orden %s (%s)",
                         order.kind, type(exc).__name__)

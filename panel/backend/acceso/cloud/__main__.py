@@ -6,13 +6,14 @@ import threading
 import time
 
 from acceso.cloud.api import CloudApi
-from acceso.cloud.commands import CommandWorker
+from acceso.cloud.commands import LISTEN_COMMANDS, WORKER_COMMANDS, CommandWorker
 from acceso.cloud.config import load_cloud_settings
 from acceso.cloud.mqtt_link import MqttLink
 from acceso.cloud.runner import Runner
 from acceso.cloud.sync import SyncEngine
 from acceso.config import ConfigError, load_settings
 from acceso.daemon_socket import request_daemon
+from acceso.rf_listen import LISTEN_CLIENT_TIMEOUT_S
 from acceso.migrate import MigrationError, migrate
 
 log = logging.getLogger("acceso.cloud")
@@ -36,8 +37,10 @@ def main() -> None:
     runner = Runner(cloud, settings.db_path, api,
                     engine_factory=lambda db_path, cloud_api: SyncEngine(db_path, cloud_api),
                     mqtt_factory=MqttLink, clock=time.monotonic, sleep=stop.wait,
-                    command_worker_factory=lambda worker_api: CommandWorker(
-                        request_daemon, settings.daemon_socket, worker_api.post_command_result))
+                    command_worker_factory=lambda worker_api, listen=False: CommandWorker(
+                        request_daemon, settings.daemon_socket, worker_api.post_command_result,
+                        kinds=LISTEN_COMMANDS if listen else WORKER_COMMANDS,
+                        **({"timeout": LISTEN_CLIENT_TIMEOUT_S} if listen else {})))
     log.info("Agente de nube iniciado")
     try:
         runner.run(stop)

@@ -1,7 +1,9 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
+from acceso.daemon_socket import DaemonUnavailable, request_daemon
+from acceso.rf_listen import LISTEN_CLIENT_TIMEOUT_S
 from acceso.store import controls
 from acceso.web.deps import get_conn
 from acceso.web.schemas import ControlIn
@@ -16,6 +18,29 @@ def _buttons(body: ControlIn):
 @router.get("")
 def list_(holder_id: Optional[int] = None, conn=Depends(get_conn)):
     return controls.list_controls(conn, holder_id)
+
+
+@router.post("/listen")
+def listen(request: Request):
+    """Espera hasta 10 s el siguiente control RF y devuelve su código (y el control, si ya existe)."""
+    # `app.state.daemon_request` permite sustituir al daemon en las pruebas.
+    ask = getattr(request.app.state, "daemon_request", request_daemon)
+    try:
+        reply = ask(request.app.state.settings.daemon_socket, {"op": "listen_rf"},
+                    timeout=LISTEN_CLIENT_TIMEOUT_S)
+    except DaemonUnavailable:
+        raise HTTPException(status_code=503, detail="El daemon no responde")
+    if reply.get("ok") is True:
+        code = reply.get("code")
+        if isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= 4294967295:
+            raise HTTPException(status_code=503, detail="Código RF inválido")
+        return {"code": code, "control": reply.get("control")}
+    detail = str(reply.get("detail") or "")
+    if detail == "Ya hay una escucha en curso.":
+        raise HTTPException(status_code=409, detail=detail)
+    if detail == "No se recibió ningún control.":
+        return {"code": None, "control": None}
+    raise HTTPException(status_code=503, detail=detail or "El daemon no responde")
 
 
 @router.post("", status_code=201)

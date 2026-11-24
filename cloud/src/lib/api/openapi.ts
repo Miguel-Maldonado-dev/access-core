@@ -103,6 +103,85 @@ function op(o: Op): Obj {
   };
 }
 
+/** Máximo de elementos por lote y de códigos por búsqueda (`src/lib/api/batch.ts`). */
+const MAX_LOTE = 200;
+
+const pCodigos = (name: string, descripcion: string) => ({
+  name,
+  in: "query",
+  required: false,
+  description: `${descripcion} De 1 a ${MAX_LOTE} códigos decimales separados por comas; sin coincidencias responde \`{data: []}\`; un valor inválido, 400.`,
+  schema: { type: "string", pattern: "^\\d{1,10}(,\\d{1,10})*$", example: "123456,789012" },
+});
+
+const E400_LOTE = respuestaError(
+  "`invalid_batch`: JSON inválido, `items` vacío o con más de 200 elementos, `ref` repetido, falta `idempotency_key`, `op` desconocida o campo de más. No se procesa nada.",
+);
+const E429_LOTE = respuestaError(
+  "`rate_limited` (límite por minuto; el lote cuenta como una petición) o `batch_in_progress` (otro lote se está procesando en la misma instalación).",
+  { headers: { "Retry-After": { description: "Segundos que hay que esperar.", schema: { type: "string" } } } },
+);
+
+/** `POST .../{recurso}/batch`. */
+function lote(tag: string, esquema: string, nombre: string, update: string): Obj {
+  return {
+    summary: `Procesa un lote de ${nombre}`,
+    description:
+      `Hasta ${MAX_LOTE} operaciones \`create\`, \`update\` (${update}) o \`delete\` en orden, cada una con su propia \`idempotency_key\`, ` +
+      "y responde 200 con un resultado por elemento (mismo orden y `ref`) aunque fallen algunos. Cada elemento hace lo mismo que su endpoint individual " +
+      "y falla con su mismo `status`, `code` y `message`; un fallo no revierte a los demás. Un error inesperado en un elemento da `status: 500, code: internal_error` y los demás siguen. " +
+      "La `idempotency_key` comparte el espacio de llaves del encabezado `Idempotency-Key`: equivale a la llamada individual con el mismo método, ruta y cuerpo (`data`; se compara el JSON sin importar el orden de las llaves). " +
+      "La `revision` sube una sola vez por lote si algo cambió (y los paneles reciben un solo aviso); si nada cambió, no sube. El lote cuenta como una petición para el límite por minuto.",
+    tags: [tag],
+    parameters: [pInstalacion],
+    requestBody: { required: true, content: jsonDe(ref(esquema)) },
+    responses: {
+      200: { description: "Lote procesado (revisar `ok` de cada resultado).", content: jsonDe(ref("BatchResponse")) },
+      400: E400_LOTE,
+      401: E401,
+      404: E404,
+      429: E429_LOTE,
+      500: E500,
+    },
+  };
+}
+
+/** Esquema de la petición de un lote con los cuerpos de `create` y `update` del recurso. */
+function loteCuerpo(crear: Obj, editar: Obj): Obj {
+  return {
+    type: "object",
+    required: ["items"],
+    additionalProperties: false,
+    properties: {
+      items: {
+        type: "array",
+        minItems: 1,
+        maxItems: MAX_LOTE,
+        items: {
+          type: "object",
+          required: ["ref", "op", "idempotency_key"],
+          additionalProperties: false,
+          properties: {
+            ref: { type: "string", minLength: 1, maxLength: 64, description: "Del cliente; se devuelve igual. Único en el lote." },
+            op: { type: "string", enum: ["create", "update", "delete"] },
+            id: { ...uuid, description: "Obligatorio en `update` y `delete`; prohibido en `create` (si no, ese elemento falla con 400)." },
+            idempotency_key: {
+              type: "string",
+              minLength: 1,
+              maxLength: 200,
+              description: "Obligatoria; igual que el encabezado `Idempotency-Key` y en su mismo espacio de llaves (vigente 24 h).",
+            },
+            data: {
+              description: "En `create` y `update` (mismo cuerpo que el endpoint individual); no en `delete`.",
+              oneOf: [crear, editar],
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 const SIN_IDEM_PIN =
   " No admite `Idempotency-Key`: si se envía, responde 400, para no guardar el PIN en la respuesta repetible.";
 
@@ -296,6 +375,9 @@ const paths: Record<string, Obj> = {
       idem: true,
     }),
   },
+  "/installations/{installationId}/holders/batch": {
+    post: lote("Titulares", "LoteTitulares", "titulares", "como `PATCH`, campos opcionales; sin PIN"),
+  },
   "/installations/{installationId}/holders/{holderId}/pin": {
     put: op({
       resumen: "Fija o genera el PIN",
@@ -334,9 +416,9 @@ const paths: Record<string, Obj> = {
   "/installations/{installationId}/cards": {
     get: op({
       resumen: "Lista las tarjetas",
-      descripcion: "Códigos en decimal.",
+      descripcion: "Códigos en decimal. Con `codes`, solo las de esos códigos.",
       tag: "Tarjetas",
-      params: [pInstalacion],
+      params: [pInstalacion, pCodigos("codes", "Filtra por código de tarjeta.")],
       ok: lista(ref("Tarjeta")),
     }),
     post: op({
@@ -349,6 +431,9 @@ const paths: Record<string, Obj> = {
       status: "201",
       idem: true,
     }),
+  },
+  "/installations/{installationId}/cards/batch": {
+    post: lote("Tarjetas", "LoteTarjetas", "tarjetas", "como `PATCH`"),
   },
   "/installations/{installationId}/cards/{cardId}": {
     patch: op({
@@ -372,9 +457,9 @@ const paths: Record<string, Obj> = {
   "/installations/{installationId}/controls": {
     get: op({
       resumen: "Lista los controles",
-      descripcion: "Incluye los botones y la salida por panel.",
+      descripcion: "Incluye los botones y la salida por panel. Con `rf_codes`, solo los controles con un botón de alguno de esos códigos.",
       tag: "Controles",
-      params: [pInstalacion],
+      params: [pInstalacion, pCodigos("rf_codes", "Filtra por código RF de algún botón.")],
       ok: lista(ref("Control")),
     }),
     post: op({
@@ -387,6 +472,9 @@ const paths: Record<string, Obj> = {
       status: "201",
       idem: true,
     }),
+  },
+  "/installations/{installationId}/controls/batch": {
+    post: lote("Controles", "LoteControles", "controles", "como `PUT`: reemplaza el control"),
   },
   "/installations/{installationId}/controls/{controlId}": {
     get: op({
@@ -523,6 +611,8 @@ export const openapi: object = {
       "**Escrituras:** responden `{data, revision}`; los `POST` de alta responden 201 (la apertura remota, `POST .../outputs/{outputId}/open`, responde 200 `{data}` sin `revision`). `revision` se lee después de escribir, así que con escrituras concurrentes puede ser mayor que la de la propia escritura, aunque siempre es monótona. Con `GET .../sync-status` se sabe si los paneles ya la aplicaron.",
       "",
       "**Idempotencia:** `Idempotency-Key` (1 a 200 caracteres, vigente 24 h) es opcional en `POST`, `PATCH`, `PUT` y `DELETE`. La misma llave con el mismo cuerpo devuelve la respuesta guardada con `Idempotent-Replayed: true`; con otro cuerpo, 422; si la original sigue en curso, 409. No se admite en `PUT` ni `DELETE .../holders/{holderId}/pin` (400), para no guardar el PIN.",
+      "",
+      `**Lotes:** \`POST .../holders/batch\`, \`.../cards/batch\` y \`.../controls/batch\` procesan hasta ${MAX_LOTE} operaciones con un resultado por elemento y suben la \`revision\` una sola vez. Errores del lote completo: \`invalid_batch\` (400) y \`batch_in_progress\` (429, otro lote en la misma instalación).`,
       "",
       "**Límite:** por llave, configurable por el admin en la pestaña API (de 1 a 5000 peticiones por minuto; 120 por omisión); al pasarlo, 429 con `Retry-After`.",
     ].join("\n"),
@@ -771,6 +861,45 @@ export const openapi: object = {
         },
       },
       ControlCuerpo: controlCuerpo,
+      LoteTitulares: loteCuerpo(ref("TitularCrear"), ref("TitularEditar")),
+      LoteTarjetas: loteCuerpo(ref("TarjetaCrear"), ref("TarjetaEditar")),
+      LoteControles: loteCuerpo(ref("ControlCuerpo"), ref("ControlReemplazo")),
+      BatchResponse: {
+        type: "object",
+        required: ["revision", "results"],
+        properties: {
+          revision: { ...ref("Revision"), description: "La de la instalación al terminar; sube una sola vez si algo cambió." },
+          results: {
+            type: "array",
+            description: "Un resultado por elemento, en el mismo orden.",
+            items: {
+              oneOf: [
+                {
+                  type: "object",
+                  required: ["ref", "ok", "id"],
+                  properties: {
+                    ref: { type: "string" },
+                    ok: { const: true },
+                    id: { ...uuid, description: "Nuevo en `create`; el enviado en `update` y `delete`." },
+                    data: { description: "El objeto como lo responde el endpoint individual (`{id}` en `delete`)." },
+                  },
+                },
+                {
+                  type: "object",
+                  required: ["ref", "ok", "status", "code", "message"],
+                  properties: {
+                    ref: { type: "string" },
+                    ok: { const: false },
+                    status: { type: "integer", description: "El mismo estado HTTP que el endpoint individual (400, 404, 409, 422, 500…)." },
+                    code: { type: "string" },
+                    message: { type: "string" },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
       ControlReemplazo: { ...controlCuerpo, required: ["holder_id", "description", "buttons"] },
       Regla: regla,
       // `allow_remote` es opcional al escribir (se conserva el actual) para no romper a los clientes de 2A.

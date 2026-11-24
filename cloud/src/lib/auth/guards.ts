@@ -39,6 +39,11 @@ export interface ApiActor {
   keyName: string;
   /** Límite de peticiones por minuto de la llave. */
   requestsPerMinute: number;
+  /**
+   * Token del lote abierto (`POST .../batch`): las escrituras lo envían en `x-acc-batch` y
+   * la base les da la revisión pendiente del lote sin avisar a los paneles.
+   */
+  batchToken?: string;
 }
 
 /** Quien llama a la capa de datos: el cliente con la sesión del usuario o un actor de API. */
@@ -126,7 +131,7 @@ export async function requireTenantRole(
     return {
       userId: null,
       email: `api:${supabase.keyName}`,
-      supabase: createAdminSupabase(),
+      supabase: createAdminSupabase(supabase.batchToken ? { "x-acc-batch": supabase.batchToken } : undefined),
       tenantId,
       role: "admin",
       actor: supabase,

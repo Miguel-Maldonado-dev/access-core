@@ -1,5 +1,6 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { fetchAll } from "@/lib/access-data";
 import type { Panel } from "@/lib/device/auth";
 import { tableChecksum } from "@/lib/device/checksum";
 import {
@@ -202,6 +203,25 @@ async function leerCambiosDeOrigen(
   return data.map((fila) => ({ origen, fila }));
 }
 
+/** Todas las filas de un origen con `revision` = `rev` (en páginas de `paging.size`). */
+async function leerGrupoDeOrigen(
+  admin: SupabaseClient,
+  panel: Panel,
+  origen: SourceTable,
+  rev: number,
+): Promise<FilaCruda[]> {
+  const filas = await fetchAll<FilaCruda["fila"]>((desde, hasta) => {
+    let consulta = admin
+      .from(origen)
+      .select(`${SOURCE_COLUMNS[origen]}, deleted_at, revision${COLUMNAS_EXTRA[origen] ?? ""}`)
+      .eq("installation_id", panel.installation_id)
+      .eq("revision", rev);
+    if (PANEL_SOURCES.has(origen)) consulta = consulta.eq("panel_id", panel.id);
+    return consulta.order("id").range(desde, hasta).overrideTypes<FilaCruda["fila"][], { merge: false }>();
+  });
+  return filas.map((fila) => ({ origen, fila }));
+}
+
 /** Proyección de un cambio que no es de permisos (`id` y `revision` de la fila). */
 function proyectarCambio(
   { origen, fila }: FilaCruda,
@@ -333,8 +353,24 @@ export async function listChanges(panel: Panel, since: number, limit: number): P
     ORIGENES_PULL.map((origen) => leerCambiosDeOrigen(admin, panel, origen, since, R, limit + 1)),
   );
   const crudas = porOrigen.flat().sort((a, b) => a.fila.revision - b.fila.revision);
-  const hasMore = crudas.length > limit;
-  const pagina = crudas.slice(0, limit);
+  let hasMore = crudas.length > limit;
+  let pagina = crudas.slice(0, limit);
+  // Varias filas pueden compartir revisión (un lote de la API publica todas sus filas con una
+  // sola). El cursor es la revisión del último cambio, así que una página nunca parte un grupo
+  // de la misma revisión: se corta antes del grupo o, si la página entera es un solo grupo, se
+  // trae el grupo completo (la página puede pasar de `limit`).
+  if (hasMore && crudas[limit].fila.revision === pagina[limit - 1].fila.revision) {
+    const partida = pagina[limit - 1].fila.revision;
+    if (pagina[0].fila.revision < partida) {
+      pagina = pagina.filter((c) => c.fila.revision < partida);
+    } else {
+      const grupo = await Promise.all(
+        ORIGENES_PULL.map((origen) => leerGrupoDeOrigen(admin, panel, origen, partida)),
+      );
+      pagina = grupo.flat();
+      hasMore = partida < R;
+    }
+  }
 
   // Los perfiles y las reglas se leen después de la página: todo perfil al que apunta
   // una fila de la página ya existe (FK) y la proyección usa su versión vigente.

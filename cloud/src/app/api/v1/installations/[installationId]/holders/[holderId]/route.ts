@@ -1,7 +1,6 @@
-import { apiJson, apiRoute, ApiError, readApiBody } from "@/lib/api/http";
-import { cuerpoEditarTitular, entradaDe, findHolder } from "@/lib/api/holders";
+import { apiJson, apiRoute, readApiJson } from "@/lib/api/http";
+import { findHolder, operacionesTitulares } from "@/lib/api/holders";
 import { currentRevision } from "@/lib/api/revision";
-import { deleteHolderAs, updateHolderAs, type HolderInput } from "@/lib/holders";
 
 type Contexto = { params: Promise<{ installationId: string; holderId: string }> };
 
@@ -17,17 +16,7 @@ export async function GET(req: Request, { params }: Contexto) {
 export async function PATCH(req: Request, { params }: Contexto) {
   const { installationId, holderId } = await params;
   return apiRoute(req, async (actor) => {
-    const cambios = await readApiBody(req, cuerpoEditarTitular);
-    if (Object.keys(cambios).length === 0) throw new ApiError(400, "bad_request", "No hay cambios.");
-    const actual = await findHolder(actor, installationId, holderId);
-    await updateHolderAs(
-      actor,
-      actor.tenantId,
-      installationId,
-      holderId,
-      entradaDe(actual, cambios as Partial<Omit<HolderInput, "pin">>),
-    );
-    const data = await findHolder(actor, installationId, holderId);
+    const { data } = await operacionesTitulares.update(actor, installationId, holderId, await readApiJson(req));
     return apiJson({ data, revision: await currentRevision(installationId) });
   });
 }
@@ -36,7 +25,7 @@ export async function PATCH(req: Request, { params }: Contexto) {
 export async function DELETE(req: Request, { params }: Contexto) {
   const { installationId, holderId } = await params;
   return apiRoute(req, async (actor) => {
-    await deleteHolderAs(actor, actor.tenantId, installationId, holderId);
-    return apiJson({ data: { id: holderId }, revision: await currentRevision(installationId) });
+    const { data } = await operacionesTitulares.delete(actor, installationId, holderId);
+    return apiJson({ data, revision: await currentRevision(installationId) });
   });
 }

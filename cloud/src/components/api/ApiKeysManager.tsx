@@ -129,6 +129,10 @@ export default function ApiKeysManager({ tenantId, keys, onCreate, onRevoke, onR
         </h2>
         <p className="mt-1 text-sm text-muted">
           Las llaves dan acceso a la API pública de este tenant.{" "}
+          <a className="underline" href="/docs/api" target="_blank" rel="noopener">
+            Documentación de la API
+          </a>
+          {" · "}
           <a className="underline" href="/api/v1/openapi.json">
             Ver OpenAPI (openapi.json)
           </a>

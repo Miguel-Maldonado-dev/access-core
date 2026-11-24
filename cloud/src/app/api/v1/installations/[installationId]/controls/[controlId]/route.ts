@@ -1,7 +1,7 @@
-import { apiJson, apiRoute, readApiBody } from "@/lib/api/http";
-import { cuerpoControlPut } from "@/lib/api/controls";
+import { apiJson, apiRoute, readApiJson } from "@/lib/api/http";
+import { operacionesControles } from "@/lib/api/controls";
 import { currentRevision } from "@/lib/api/revision";
-import { deleteControlAs, getControlAs, updateControlAs, type ControlInput } from "@/lib/controls";
+import { getControlAs } from "@/lib/controls";
 
 type Contexto = { params: Promise<{ installationId: string; controlId: string }> };
 
@@ -17,9 +17,7 @@ export async function GET(req: Request, { params }: Contexto) {
 export async function PUT(req: Request, { params }: Contexto) {
   const { installationId, controlId } = await params;
   return apiRoute(req, async (actor) => {
-    const cuerpo = await readApiBody(req, cuerpoControlPut);
-    await updateControlAs(actor, actor.tenantId, installationId, controlId, cuerpo as ControlInput);
-    const data = await getControlAs(actor, actor.tenantId, installationId, controlId);
+    const { data } = await operacionesControles.update(actor, installationId, controlId, await readApiJson(req));
     return apiJson({ data, revision: await currentRevision(installationId) });
   });
 }
@@ -28,7 +26,7 @@ export async function PUT(req: Request, { params }: Contexto) {
 export async function DELETE(req: Request, { params }: Contexto) {
   const { installationId, controlId } = await params;
   return apiRoute(req, async (actor) => {
-    await deleteControlAs(actor, actor.tenantId, installationId, controlId);
-    return apiJson({ data: { id: controlId }, revision: await currentRevision(installationId) });
+    const { data } = await operacionesControles.delete(actor, installationId, controlId);
+    return apiJson({ data, revision: await currentRevision(installationId) });
   });
 }

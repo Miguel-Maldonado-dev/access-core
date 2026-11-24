@@ -1,7 +1,16 @@
 import "server-only";
 import { z } from "zod";
 import type { ApiActor } from "@/lib/auth/guards";
-import { getHolderAs, type HolderInput, type HolderRow } from "@/lib/holders";
+import type { ResultadoOperacion } from "@/lib/api/cards";
+import { ApiError, parseApiBody } from "@/lib/api/http";
+import {
+  createHolderAs,
+  deleteHolderAs,
+  getHolderAs,
+  updateHolderAs,
+  type HolderInput,
+  type HolderRow,
+} from "@/lib/holders";
 
 /** Campos de un titular en la API (sin PIN; la validación fina vive en `holders.ts`). */
 const campos = {
@@ -47,3 +56,30 @@ export function entradaDe(titular: HolderRow, cambios: Partial<Omit<HolderInput,
     pin: { mode: "keep" },
   };
 }
+
+/** Operaciones de titulares de la API pública (rutas individuales y lotes). */
+export const operacionesTitulares = {
+  async create(actor: ApiActor, installationId: string, json: unknown): Promise<ResultadoOperacion> {
+    const cuerpo = parseApiBody(json, cuerpoCrearTitular);
+    const entrada = { department: "", address: "", notes: "", ...cuerpo, pin: { mode: "keep" } } as HolderInput;
+    const { id } = await createHolderAs(actor, actor.tenantId, installationId, entrada);
+    return { status: 201, id, data: await findHolder(actor, installationId, id) };
+  },
+  async update(actor: ApiActor, installationId: string, holderId: string, json: unknown): Promise<ResultadoOperacion> {
+    const cambios = parseApiBody(json, cuerpoEditarTitular);
+    if (Object.keys(cambios).length === 0) throw new ApiError(400, "bad_request", "No hay cambios.");
+    const actual = await findHolder(actor, installationId, holderId);
+    await updateHolderAs(
+      actor,
+      actor.tenantId,
+      installationId,
+      holderId,
+      entradaDe(actual, cambios as Partial<Omit<HolderInput, "pin">>),
+    );
+    return { status: 200, id: holderId, data: await findHolder(actor, installationId, holderId) };
+  },
+  async delete(actor: ApiActor, installationId: string, holderId: string): Promise<ResultadoOperacion> {
+    await deleteHolderAs(actor, actor.tenantId, installationId, holderId);
+    return { status: 200, id: holderId, data: { id: holderId } };
+  },
+};

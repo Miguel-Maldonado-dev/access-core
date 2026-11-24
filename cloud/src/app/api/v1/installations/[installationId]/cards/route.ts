@@ -1,15 +1,25 @@
-import { apiJson, apiRoute, readApiBody } from "@/lib/api/http";
-import { cuerpoCrearTarjeta } from "@/lib/api/cards";
+import { z } from "zod";
+import { apiJson, apiRoute, readApiJson, readApiQuery } from "@/lib/api/http";
+import { operacionesTarjetas } from "@/lib/api/cards";
+import { parseCodes } from "@/lib/api/batch";
 import { currentRevision } from "@/lib/api/revision";
-import { createCardAs, getCardAs, listCardsAs } from "@/lib/cards";
+import { listCardsAs } from "@/lib/cards";
 
 type Contexto = { params: Promise<{ installationId: string }> };
 
-/** GET .../cards: tarjetas vivas con el nombre del titular (códigos en decimal). */
+const consulta = z.object({ codes: z.string().optional() });
+
+/**
+ * GET .../cards: tarjetas vivas con el nombre del titular (códigos en decimal). Con
+ * `?codes=1,2` solo las de esos códigos (máximo 200).
+ */
 export async function GET(req: Request, { params }: Contexto) {
   const { installationId } = await params;
   return apiRoute(req, async (actor) => {
-    return apiJson({ data: await listCardsAs(actor, actor.tenantId, installationId) });
+    const { codes } = readApiQuery(req, consulta);
+    const filtro = codes === undefined ? null : parseCodes(codes, "codes");
+    const data = await listCardsAs(actor, actor.tenantId, installationId);
+    return apiJson({ data: filtro ? data.filter((c) => filtro.has(c.card_code)) : data });
   });
 }
 
@@ -17,12 +27,7 @@ export async function GET(req: Request, { params }: Contexto) {
 export async function POST(req: Request, { params }: Contexto) {
   const { installationId } = await params;
   return apiRoute(req, async (actor) => {
-    const cuerpo = await readApiBody(req, cuerpoCrearTarjeta);
-    const { id } = await createCardAs(actor, actor.tenantId, installationId, {
-      description: "",
-      ...cuerpo,
-    });
-    const data = await getCardAs(actor, actor.tenantId, installationId, id);
-    return apiJson({ data, revision: await currentRevision(installationId) }, 201);
+    const { status, data } = await operacionesTarjetas.create(actor, installationId, await readApiJson(req));
+    return apiJson({ data, revision: await currentRevision(installationId) }, status);
   });
 }

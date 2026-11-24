@@ -4,6 +4,7 @@ API REST para administrar una instalación desde sistemas externos: titulares, t
 
 - **Base:** `https://<APP_URL>/api/v1` (en local, `http://localhost:3001/api/v1`).
 - **OpenAPI 3.1:** `GET /api/v1/openapi.json` (público, sin llave). Es el contrato completo de rutas, cuerpos y respuestas.
+- **Documentación interactiva:** `https://<APP_URL>/docs/api` (pública, sin sesión). Muestra esta guía y el OpenAPI con un visor (Scalar) donde se puede probar cada ruta. Se enlaza desde la pestaña **API** del tenant. El visor no usa recursos externos (sin CDN, fuentes remotas, proxy ni telemetría); **Probar** llama a este mismo origen con la llave que pegues y **no la guarda** (`persistAuth: false`: vive en memoria hasta cerrar o recargar la pestaña). Esta guía (`docs/api.md`) es la fuente: la página la lee al compilar, así que un cambio aquí se ve tras el siguiente despliegue.
 
 En los ejemplos:
 
@@ -68,6 +69,8 @@ Todos los errores tienen la forma `{"code": "...", "message": "<texto en españo
 - Misma llave con otro cuerpo (u otra ruta): `422 idempotency_mismatch`.
 - Si la petición original sigue en curso: `409 conflict`.
 - **Es por llave:** la `Idempotency-Key` se guarda con la llave que la usó. Después de rotar la llave, un reintento con la llave nueva y la misma `Idempotency-Key` se ejecuta de nuevo.
+- **Mismo contenido:** el cuerpo se compara como JSON canónico (sin importar espacios ni el orden de las llaves).
+- **Lotes:** la `idempotency_key` de cada elemento de un lote comparte este mismo espacio de llaves (ver [Lotes](#lotes)).
 - **No se admite en las rutas de PIN** (`PUT` y `DELETE .../holders/{holderId}/pin`): responden `400` si se envía, para no guardar el PIN en la respuesta repetible.
 
 ```bash
@@ -94,6 +97,37 @@ curl -s -H "Authorization: Bearer $KEY" $API/installations/$INST/sync-status
 ```
 
 `applied` es `synced_revision >= revision`.
+
+## Lotes
+
+`POST /installations/{id}/holders/batch`, `.../cards/batch` y `.../controls/batch` procesan **hasta 200** operaciones del mismo recurso en una llamada (se usa la subruta `/batch`; la forma `holders:batch` no existe).
+
+```bash
+curl -s -X POST $API/installations/$INST/holders/batch \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{
+  "items": [
+    {"ref":"4821","op":"create","idempotency_key":"sync-4821-1","data":{"kind":"domicilio","name":"Calle Roble #10"}},
+    {"ref":"4822","op":"update","id":"<holder-id>","idempotency_key":"sync-4822-1","data":{"name":"Calle Roble #12"}},
+    {"ref":"4823","op":"delete","id":"<holder-id>","idempotency_key":"sync-4823-1"}
+  ]}'
+# → 200 {"revision":58,"results":[
+#   {"ref":"4821","ok":true,"id":"c3d2…","data":{…}},
+#   {"ref":"4822","ok":true,"id":"<holder-id>","data":{…}},
+#   {"ref":"4823","ok":false,"status":404,"code":"not_found","message":"El titular no existe."}]}
+```
+
+- **Elemento:** `ref` (1 a 64 caracteres, único en el lote, se devuelve igual), `op` (`create`, `update` o `delete`), `id` (obligatorio en `update` y `delete`, prohibido en `create`), `idempotency_key` (obligatoria, 1 a 200 caracteres) y `data` (en `create` y `update`, el mismo cuerpo que el endpoint individual; no en `delete`). `update` es el `PATCH` en titulares y tarjetas y el `PUT` (reemplazo) en controles.
+- **Resultados:** `200` aunque fallen elementos, uno por elemento, en el mismo orden. `ok: true` trae `id` (nuevo en `create`) y `data` como el endpoint individual (`{id}` en `delete`). `ok: false` trae `status`, `code` y `message` **iguales** a los del endpoint individual (cada elemento usa la misma lógica). Un `id` faltante o sobrante, o `data` faltante o sobrante, falla solo ese elemento con `400 bad_request`. Un error inesperado da `500 internal_error` en ese elemento y los demás siguen.
+- **Éxito parcial y orden:** cada elemento se aplica por separado y en orden; un fallo no revierte a los demás. El mismo `id` dos veces equivale a dos llamadas seguidas. Los elementos no pueden referirse a otros del mismo lote.
+- **Revisión:** `revision` es la de la instalación al terminar y es una **cota inferior** de la revisión publicada (una escritura concurrente o un cierre fallido pueden dejar la publicada por encima); sube **una sola vez** si algo cambió y los paneles reciben un solo aviso; si nada cambió, no sube. (Si otra escritura ajena al lote llega mientras se procesa, la revisión puede subir más de una vez; nunca se pierde un cambio.) Si falla el cierre del lote, la respuesta trae la revisión actual, que todavía **no incluye** los cambios del lote: se publican solos al caducar el lote (como máximo ~70 s más un minuto del trabajo que lo cierra) y entonces los paneles reciben el aviso.
+- **Idempotencia:** cada `idempotency_key` se guarda como el encabezado `Idempotency-Key` y en su mismo espacio de llaves: equivale a la llamada individual con el mismo método, ruta y cuerpo. Una operación hecha por el endpoint individual con la llave `X` no se repite en un lote con `X`, y al revés; se devuelve el resultado original con su `id`. La respuesta de cada elemento se guarda en cuanto termina, así que si la llamada se corta a mitad del lote, reintentarlo con las mismas llaves repite lo ya hecho (mismos ids) y solo ejecuta lo que faltaba; el elemento que estaba en curso responde `409` durante 60 s y después se retoma. La `revision` guardada con cada éxito es la que tendrá el lote al cerrarse (la pendiente). Con otro contenido, ese elemento falla con `422 idempotency_mismatch`. La misma llave dos veces en un lote: el segundo falla con `409` "La petición original sigue en curso.".
+- **Errores del lote completo** (no se procesa nada): `400 invalid_batch` (JSON inválido, `items` vacío o con más de 200, `ref` repetido, falta `idempotency_key`, `op` desconocida o campos de más), `401`, `404` (instalación), `429 rate_limited` y `429 batch_in_progress` (otro lote en curso en la misma instalación; `Retry-After: 5`), `5xx`. Los dos 429 se distinguen por `code`: `rate_limited` es el límite por minuto de la llave y `batch_in_progress` solo pide reintentar el lote en unos segundos.
+- **Límite por minuto:** un lote cuenta como **una** petición.
+- **Tiempo:** medido contra el Supabase local, un lote de 200 tarda ~1,2 s (titulares), ~1,4 s (tarjetas) y ~2,4 s (controles), con ~7, ~8 y ~13 peticiones a la base por elemento. En producción el tiempo es aproximadamente peticiones × latencia entre Vercel y Supabase (con 3 ms, ~4 s, ~5 s y ~8 s). Las rutas declaran `maxDuration = 60` s. Si la latencia real pasara de ~20 ms por petición, habría que bajar el máximo.
+
+### Buscar por código
+
+`GET .../cards?codes=123456,789012` y `GET .../controls?rf_codes=1001,1002` (de 1 a 200 códigos decimales separados por comas) responden `{data: [...]}` con el esquema del listado; lista vacía si no hay coincidencias; un valor inválido, `400`.
 
 ## Ejemplos
 

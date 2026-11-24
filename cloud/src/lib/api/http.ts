@@ -43,14 +43,17 @@ export function apiJson(body: unknown, status = 200, headers?: HeadersInit): Res
   return Response.json(body, { status, headers: h });
 }
 
-/** Lee y valida el cuerpo JSON; si no es válido lanza 400 `bad_request` nombrando el campo. */
-export async function readApiBody<T>(req: Request, schema: z.ZodType<T>): Promise<T> {
-  let cuerpo: unknown;
+/** Lee el cuerpo JSON sin validarlo; si no es JSON lanza 400 `bad_request`. */
+export async function readApiJson(req: Request): Promise<unknown> {
   try {
-    cuerpo = await req.json();
+    return await req.json();
   } catch {
     throw new ApiError(400, "bad_request", "El cuerpo debe ser JSON válido.");
   }
+}
+
+/** Valida un cuerpo ya leído; si no es válido lanza 400 `bad_request` nombrando el campo. */
+export function parseApiBody<T>(cuerpo: unknown, schema: z.ZodType<T>): T {
   const resultado = schema.safeParse(cuerpo);
   if (!resultado.success) {
     const issue = resultado.error.issues[0];
@@ -69,6 +72,11 @@ export async function readApiBody<T>(req: Request, schema: z.ZodType<T>): Promis
   return resultado.data;
 }
 
+/** Lee y valida el cuerpo JSON; si no es válido lanza 400 `bad_request` nombrando el campo. */
+export async function readApiBody<T>(req: Request, schema: z.ZodType<T>): Promise<T> {
+  return parseApiBody(await readApiJson(req), schema);
+}
+
 /** Lee y valida los parámetros de la URL como un objeto de cadenas; si no, 400 `bad_request`. */
 export function readApiQuery<T>(req: Request, schema: z.ZodType<T>): T {
   const parametros = Object.fromEntries(new URL(req.url).searchParams);
@@ -82,16 +90,19 @@ export function readApiQuery<T>(req: Request, schema: z.ZodType<T>): T {
   return resultado.data;
 }
 
-function errorJson(error: unknown): Response {
-  if (error instanceof ApiError) {
-    return apiJson({ code: error.code, message: error.message }, error.status);
-  }
+/** Estado y cuerpo `{code, message}` de un error, como los responde la API. */
+export function apiErrorBody(error: unknown): { status: number; code: string; message: string } {
+  if (error instanceof ApiError) return { status: error.status, code: error.code, message: error.message };
   if (error instanceof HttpError) {
-    const code = CODIGO_POR_ESTADO[error.status] ?? "http_error";
-    return apiJson({ code, message: error.message }, error.status);
+    return { status: error.status, code: CODIGO_POR_ESTADO[error.status] ?? "http_error", message: error.message };
   }
   console.error("Error interno en la API pública:", resumenDeError(error));
-  return apiJson({ code: "internal_error", message: "Error interno del servidor." }, 500);
+  return { status: 500, code: "internal_error", message: "Error interno del servidor." };
+}
+
+function errorJson(error: unknown): Response {
+  const { status, code, message } = apiErrorBody(error);
+  return apiJson({ code, message }, status);
 }
 
 /** 401 genérico: llave ausente, mal formada, inexistente, revocada o borrada. */
@@ -139,35 +150,82 @@ interface FilaIdempotencia {
   created_at: string;
 }
 
-type Reserva = { tipo: "nueva" } | { tipo: "respuesta"; res: Response };
+/** Respuesta guardada de una petición idempotente (`body` nulo: sin cuerpo). */
+export interface RespuestaGuardada {
+  status: number;
+  body: unknown;
+}
+
+export type Reserva = { tipo: "nueva" } | { tipo: "guardada"; guardada: RespuestaGuardada };
+
+/** JSON canónico (llaves ordenadas, sin espacios): mismo contenido, mismo texto. */
+function canonico(valor: unknown): string {
+  if (Array.isArray(valor)) return `[${valor.map(canonico).join(",")}]`;
+  if (valor !== null && typeof valor === "object") {
+    const llaves = Object.keys(valor as Record<string, unknown>)
+      .filter((k) => (valor as Record<string, unknown>)[k] !== undefined)
+      .sort();
+    return `{${llaves.map((k) => `${JSON.stringify(k)}:${canonico((valor as Record<string, unknown>)[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(valor) ?? "null";
+}
 
 /**
- * Reserva `(llave, idemKey)` con `status` nulo. Si ya existía, decide: repetir la respuesta
- * guardada, 422 si el hash no coincide, 409 si sigue en curso, o retomar una reserva
- * abandonada (más de 60 s sin respuesta).
+ * Huellas de una petición idempotente: `[actual, anterior]`. La actual usa el cuerpo JSON
+ * canónico, así que la petición individual y el elemento equivalente de un lote (mismo método,
+ * ruta y contenido) comparten huella aunque el JSON venga con otro formato. La anterior (el
+ * texto tal cual) se sigue aceptando para las llaves guardadas antes de este cambio.
  */
-async function reservarIdempotencia(
+export function idempotencyHashes(metodo: string, ruta: string, cuerpo: string | { json: unknown }): [string, string] {
+  let texto: string;
+  let canon: string;
+  if (typeof cuerpo === "string") {
+    texto = cuerpo;
+    try {
+      canon = cuerpo === "" ? "" : canonico(JSON.parse(cuerpo));
+    } catch {
+      canon = cuerpo;
+    }
+  } else {
+    canon = cuerpo.json === undefined ? "" : canonico(cuerpo.json);
+    texto = canon;
+  }
+  return [idempotencyHash(`${metodo} ${ruta}\n#c1\n${canon}`), idempotencyHash(`${metodo} ${ruta}\n${texto}`)];
+}
+
+/** Valida el largo de una Idempotency-Key (encabezado o elemento de un lote). */
+export function idempotencyKeyValida(idemKey: string): boolean {
+  return idemKey.length >= 1 && idemKey.length <= MAX_IDEMPOTENCY_KEY;
+}
+
+export const MAX_IDEMPOTENCY_KEY_LENGTH = MAX_IDEMPOTENCY_KEY;
+
+/** Borra las llaves caducadas (más de 24 h) de una llave de API. */
+export async function limpiarIdempotencia(admin: SupabaseClient, keyId: string): Promise<void> {
+  const caducidad = new Date(Date.now() - DURACION_IDEMPOTENCIA_MS).toISOString();
+  const { error } = await admin.from("api_idempotency").delete().eq("key_id", keyId).lt("created_at", caducidad);
+  if (error) throw error;
+}
+
+/**
+ * Reserva `(llave, idemKey)` con `status` nulo. Si ya existía, decide: devolver la respuesta
+ * guardada, 422 si la huella no coincide, 409 si sigue en curso, o retomar una reserva
+ * abandonada (más de 60 s sin respuesta). `hashes[0]` es la huella que se guarda.
+ */
+export async function reservarIdempotencia(
   admin: SupabaseClient,
   keyId: string,
   idemKey: string,
-  hash: string,
+  hashes: readonly string[],
 ): Promise<Reserva> {
   const ahora = Date.now();
-  const caducidad = new Date(ahora - DURACION_IDEMPOTENCIA_MS).toISOString();
-  const { error: errorLimpieza } = await admin
-    .from("api_idempotency")
-    .delete()
-    .eq("key_id", keyId)
-    .lt("created_at", caducidad);
-  if (errorLimpieza) throw errorLimpieza;
-
   // La fila puede borrarse entre la inserción y la lectura (la original respondió 5xx):
   // se reintenta hasta MAX_INTENTOS_RESERVA veces y después se responde 409.
   let fila: FilaIdempotencia | null = null;
   for (let intento = 0; intento < MAX_INTENTOS_RESERVA && !fila; intento++) {
     const { error } = await admin
       .from("api_idempotency")
-      .insert({ key_id: keyId, idem_key: idemKey, request_hash: hash });
+      .insert({ key_id: keyId, idem_key: idemKey, request_hash: hashes[0] });
     if (!error) return { tipo: "nueva" };
     if (error.code !== "23505") throw error;
 
@@ -183,7 +241,7 @@ async function reservarIdempotencia(
   const enCurso = new ApiError(409, "conflict", "La petición original sigue en curso.");
   if (!fila) throw enCurso;
 
-  if (fila.request_hash !== hash) {
+  if (!hashes.includes(fila.request_hash)) {
     throw new ApiError(422, "idempotency_mismatch", "La Idempotency-Key ya se usó con otra petición.");
   }
   if (fila.status === null) {
@@ -203,12 +261,33 @@ async function reservarIdempotencia(
   }
 
   const guardada = fila.response as { body: unknown } | null;
+  return { tipo: "guardada", guardada: { status: fila.status, body: guardada?.body ?? null } };
+}
+
+/** Guarda la respuesta (no 5xx) o, con `null` o un 5xx, libera la reserva. */
+export async function guardarIdempotencia(
+  admin: SupabaseClient,
+  keyId: string,
+  idemKey: string,
+  respuesta: RespuestaGuardada | null,
+): Promise<void> {
+  const filtro = admin.from("api_idempotency");
+  const { error } =
+    respuesta && respuesta.status < 500
+      ? await filtro
+          .update({ status: respuesta.status, response: { body: respuesta.body } })
+          .eq("key_id", keyId)
+          .eq("idem_key", idemKey)
+      : await filtro.delete().eq("key_id", keyId).eq("idem_key", idemKey);
+  if (error) throw error;
+}
+
+/** Respuesta HTTP de una respuesta guardada, marcada como repetida. */
+function respuestaRepetida(guardada: RespuestaGuardada): Response {
   const headers = { "idempotent-replayed": "true" };
-  const res =
-    guardada?.body === null || guardada?.body === undefined
-      ? new Response(null, { status: fila.status, headers: { ...headers, "cache-control": "no-store" } })
-      : apiJson(guardada.body, fila.status, headers);
-  return { tipo: "respuesta", res };
+  return guardada.body === null || guardada.body === undefined
+    ? new Response(null, { status: guardada.status, headers: { ...headers, "cache-control": "no-store" } })
+    : apiJson(guardada.body, guardada.status, headers);
 }
 
 /** Guarda la respuesta (no 5xx y con cuerpo JSON o vacío) o libera la reserva. */
@@ -222,15 +301,7 @@ async function cerrarIdempotencia(admin: SupabaseClient, keyId: string, idemKey:
       body = undefined;
     }
   }
-  const filtro = admin.from("api_idempotency");
-  const { error } =
-    res && body !== undefined
-      ? await filtro
-          .update({ status: res.status, response: { body } })
-          .eq("key_id", keyId)
-          .eq("idem_key", idemKey)
-      : await filtro.delete().eq("key_id", keyId).eq("idem_key", idemKey);
-  if (error) throw error;
+  await guardarIdempotencia(admin, keyId, idemKey, res && body !== undefined ? { status: res.status, body } : null);
 }
 
 /**
@@ -272,7 +343,7 @@ export async function apiRoute(
     }
     if (idemKey === null || !METODOS_IDEMPOTENTES.has(req.method)) return await handler(actor);
 
-    if (idemKey.length < 1 || idemKey.length > MAX_IDEMPOTENCY_KEY) {
+    if (!idempotencyKeyValida(idemKey)) {
       throw new ApiError(
         400,
         "bad_request",
@@ -280,9 +351,10 @@ export async function apiRoute(
       );
     }
     const cuerpo = await req.clone().text();
-    const hash = idempotencyHash(`${req.method} ${new URL(req.url).pathname}\n${cuerpo}`);
-    const resultado = await reservarIdempotencia(admin, actor.keyId, idemKey, hash);
-    if (resultado.tipo === "respuesta") return resultado.res;
+    const hashes = idempotencyHashes(req.method, new URL(req.url).pathname, cuerpo);
+    await limpiarIdempotencia(admin, actor.keyId);
+    const resultado = await reservarIdempotencia(admin, actor.keyId, idemKey, hashes);
+    if (resultado.tipo === "guardada") return respuestaRepetida(resultado.guardada);
 
     reserva = { admin, keyId: actor.keyId, idemKey };
     let res: Response;

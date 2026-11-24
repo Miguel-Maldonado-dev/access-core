@@ -214,7 +214,8 @@ describe("núcleo HTTP de la API pública", () => {
       const r1 = await postPrueba(peticion("prueba", { secret: k.secret, method: "POST", body, idem: "hmac-1" }));
       expect(r1.status).toBe(201);
       const { data } = await admin.from("api_idempotency").select("request_hash").eq("key_id", k.id).single();
-      const texto = `POST /api/v1/prueba\n${body}`;
+      // Se guarda la huella del JSON canónico (llaves ordenadas); aquí coincide con el texto.
+      const texto = `POST /api/v1/prueba\n#c1\n${body}`;
       expect(data?.request_hash).not.toBe(sha256(texto));
       expect(data?.request_hash).toBe(huella(texto));
       const r2 = await postPrueba(peticion("prueba", { secret: k.secret, method: "POST", body, idem: "hmac-1" }));
@@ -222,6 +223,38 @@ describe("núcleo HTTP de la API pública", () => {
       expect(r2.headers.get("idempotent-replayed")).toBe("true");
       expect(await r2.json()).toEqual(await r1.json());
       expect(ejecuciones - antes).toBe(1);
+    });
+
+    it("el mismo JSON con otro formato u orden de llaves es la misma petición", async () => {
+      const k = await llave("Canonico");
+      const antes = ejecuciones;
+      const r1 = await postPrueba(
+        peticion("prueba", { secret: k.secret, method: "POST", body: '{"a":1,"b":[2,{"d":3,"c":4}]}', idem: "can-1" }),
+      );
+      const r2 = await postPrueba(
+        peticion("prueba", { secret: k.secret, method: "POST", body: '{ "b": [2, {"c":4, "d":3}], "a": 1 }', idem: "can-1" }),
+      );
+      expect(r2.headers.get("idempotent-replayed")).toBe("true");
+      expect(await r2.json()).toEqual(await r1.json());
+      expect(ejecuciones - antes).toBe(1);
+    });
+
+    it("una llave guardada con la huella anterior (texto tal cual) se sigue repitiendo", async () => {
+      const k = await llave("Anterior");
+      const body = JSON.stringify({ valor: 77 });
+      const { error } = await admin.from("api_idempotency").insert({
+        key_id: k.id,
+        idem_key: "vieja-1",
+        request_hash: huella(`POST /api/v1/prueba\n${body}`),
+        status: 201,
+        response: { body: { guardada: true } },
+      });
+      if (error) throw error;
+      const antes = ejecuciones;
+      const r = await postPrueba(peticion("prueba", { secret: k.secret, method: "POST", body, idem: "vieja-1" }));
+      expect(r.headers.get("idempotent-replayed")).toBe("true");
+      expect(await r.json()).toEqual({ guardada: true });
+      expect(ejecuciones - antes).toBe(0);
     });
 
     it("sin Idempotency-Key el handler corre cada vez", async () => {

@@ -8,6 +8,7 @@ import { NextResponse, type NextRequest } from "next/server";
  *  - lleva a /login, con la ruta de regreso en `next`, a quien no tenga sesión, salvo en
  *    las rutas públicas de acceso (/login y /auth/*);
  *  - lleva al inicio a quien ya tiene sesión y abre /login.
+ * /docs/api (documentación pública de la API) no pide sesión ni la refresca.
  * No corre en /api/* (dispositivos, MQTT, avisos internos y salud tienen su propia
  * autenticación) ni en estáticos. Es solo la primera barrera: cada página, server action
  * y ruta comprueba sesión y rol por su cuenta (`src/lib/auth/guards.ts`).
@@ -15,6 +16,7 @@ import { NextResponse, type NextRequest } from "next/server";
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   if (pathname === "/api" || pathname.startsWith("/api/")) return NextResponse.next();
+  if (pathname === "/docs/api" || pathname === "/docs/api/") return NextResponse.next();
 
   let respuesta = NextResponse.next({ request });
   const supabase = createServerClient(

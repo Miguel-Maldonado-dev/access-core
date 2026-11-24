@@ -88,11 +88,11 @@ describe("documento OpenAPI", () => {
     }
   });
 
-  it("cada POST de alta declara 201; la apertura remota (no es alta) declara 200", () => {
+  it("cada POST de alta declara 201; la apertura remota y los lotes (no son altas) declaran 200", () => {
     const apertura = "/installations/{installationId}/outputs/{outputId}/open";
     for (const [ruta, ops] of Object.entries(doc.paths)) {
       if (!ops.post) continue;
-      if (ruta === apertura) {
+      if (ruta === apertura || ruta.endsWith("/batch")) {
         expect(ops.post.responses["200"], `POST ${ruta}`).toBeDefined();
         expect(ops.post.responses["201"], `POST ${ruta}`).toBeUndefined();
       } else {

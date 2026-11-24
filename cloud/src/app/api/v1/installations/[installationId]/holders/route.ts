@@ -1,7 +1,7 @@
-import { apiJson, apiRoute, readApiBody } from "@/lib/api/http";
-import { cuerpoCrearTitular, findHolder } from "@/lib/api/holders";
+import { apiJson, apiRoute, readApiJson } from "@/lib/api/http";
+import { operacionesTitulares } from "@/lib/api/holders";
 import { currentRevision } from "@/lib/api/revision";
-import { createHolderAs, listHoldersAs, type HolderInput } from "@/lib/holders";
+import { listHoldersAs } from "@/lib/holders";
 
 type Contexto = { params: Promise<{ installationId: string }> };
 
@@ -17,16 +17,7 @@ export async function GET(req: Request, { params }: Contexto) {
 export async function POST(req: Request, { params }: Contexto) {
   const { installationId } = await params;
   return apiRoute(req, async (actor) => {
-    const cuerpo = await readApiBody(req, cuerpoCrearTitular);
-    const entrada = {
-      department: "",
-      address: "",
-      notes: "",
-      ...cuerpo,
-      pin: { mode: "keep" },
-    } as HolderInput;
-    const { id } = await createHolderAs(actor, actor.tenantId, installationId, entrada);
-    const data = await findHolder(actor, installationId, id);
-    return apiJson({ data, revision: await currentRevision(installationId) }, 201);
+    const { status, data } = await operacionesTitulares.create(actor, installationId, await readApiJson(req));
+    return apiJson({ data, revision: await currentRevision(installationId) }, status);
   });
 }

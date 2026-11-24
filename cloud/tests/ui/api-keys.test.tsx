@@ -48,6 +48,8 @@ describe("ApiKeysManager", () => {
     expect(screen.getByRole("cell", { name: "Integración" })).toBeTruthy();
     expect(screen.getByText("Activa")).toBeTruthy();
     expect(screen.getByText("Revocada")).toBeTruthy();
+    const docs = screen.getByRole("link", { name: "Documentación de la API" });
+    expect(docs.getAttribute("href")).toBe("/docs/api");
     expect(screen.getByRole("link", { name: /openapi/i }).getAttribute("href")).toBe("/api/v1/openapi.json");
   });
 

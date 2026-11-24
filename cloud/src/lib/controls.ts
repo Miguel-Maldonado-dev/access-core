@@ -6,6 +6,7 @@ import {
   fetchAll,
   holderNames,
   isMissingParent,
+  livePanelIds,
   isUniqueViolation,
   HOLDER_GONE,
   requireHolder,
@@ -262,7 +263,7 @@ export async function listControlsAs(
   installationId: string,
 ): Promise<ControlRow[]> {
   const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
-  const [controles, botones, vinculos, nombres] = await Promise.all([
+  const [controles, botones, vinculos, nombres, vigentes] = await Promise.all([
     fetchAll<{ id: string; holder_id: string; description: string }>((desde, hasta) =>
       cliente
         .from("controls")
@@ -293,10 +294,12 @@ export async function listControlsAs(
         .range(desde, hasta),
     ),
     holderNames(cliente, installationId),
+    livePanelIds(cliente, installationId),
   ]);
 
   const salidas = new Map<string, Record<string, number | null>>();
   for (const v of vinculos) {
+    if (!vigentes.has(v.panel_id)) continue;
     const porPanel = salidas.get(v.button_id) ?? {};
     porPanel[v.panel_id] = v.output_index;
     salidas.set(v.button_id, porPanel);
@@ -354,7 +357,9 @@ export async function getControlAs(
       .in("button_id", lista.map((b) => b.id))
       .is("deleted_at", null);
     if (errorVinculos) throw errorVinculos;
+    const vigentes = await livePanelIds(cliente, installationId);
     for (const v of vinculos as Vinculo[]) {
+      if (!vigentes.has(v.panel_id)) continue;
       const porPanel = salidas.get(v.button_id) ?? {};
       porPanel[v.panel_id] = v.output_index;
       salidas.set(v.button_id, porPanel);

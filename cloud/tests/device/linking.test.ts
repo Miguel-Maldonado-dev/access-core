@@ -678,5 +678,49 @@ describe("vinculación de paneles", () => {
       expect(logs).toHaveLength(1);
       expect(logs[0].panel_code).toBe(p.code);
     });
+
+    it("revocar, volver a registrar y GET outputs: el panel (ya pending) no trae salidas; el huérfano heredado se limpia", async () => {
+      const p = nuevoPanel();
+      expect((await registrarYGuardar(p)).status).toBe(201);
+      const { id } = await claimPanelAs(clienteAdminA, instA, p.code, p.claimCode);
+      await crearSalidas(id, instA);
+      await crearRegla(id, instA, 21);
+
+      const secret = `acc_${randomBytes(32).toString("base64url")}`;
+      const { error: errorLlave } = await admin
+        .from("api_keys")
+        .insert({ tenant_id: tenantA, name: "Reregistro", prefix: secret.slice(0, 12), key_hash: sha256(secret) });
+      expect(errorLlave).toBeNull();
+      const salidasDe = async () => {
+        const res = await listSalidas(
+          new Request(`http://localhost/api/v1/installations/${instA}/outputs`, {
+            headers: { authorization: `Bearer ${secret}` },
+          }),
+          { params: Promise.resolve({ installationId: instA }) },
+        );
+        expect(res.status).toBe(200);
+        return ((await res.json()).data as { panel_id: string }[]).filter((o) => o.panel_id === id);
+      };
+      expect(await salidasDe()).toHaveLength(4);
+
+      await revokePanelAs(clienteAdminA, id);
+      p.claimCode = base32(8);
+      expect((await registrar(p)).status).toBe(200);
+      const { data: panel } = await admin.from("panels").select("status, installation_id").eq("id", id).single();
+      expect(panel).toEqual({ status: "pending", installation_id: null });
+      expect(await salidasDe()).toEqual([]);
+
+      // Datos heredados del bug: filas vivas de un panel pending. La API no las muestra
+      // (la migración las borra; lo prueba pgTAP).
+      // (un trigger exige que el panel sea de la instalación al insertar: se simula el pasado.)
+      await admin.from("panels").update({ status: "active", installation_id: instA, claim_code_hash: null }).eq("id", id);
+      await crearSalidas(id, instA);
+      await crearRegla(id, instA, 22);
+      await admin
+        .from("panels")
+        .update({ status: "pending", installation_id: null, claim_code_hash: sha256("y") })
+        .eq("id", id);
+      expect(await salidasDe()).toEqual([]);
+    });
   });
 });

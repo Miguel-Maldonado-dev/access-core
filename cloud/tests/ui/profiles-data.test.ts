@@ -329,6 +329,29 @@ describe("perfiles y salidas (N14)", () => {
   });
 
   describe("salidas", () => {
+    it("listOutputsAs y las reglas solo traen filas de paneles vigentes de la instalación", async () => {
+      const { data: huerfano } = await admin
+        .from("panels")
+        .insert({ panel_code: `PNL-QRFA-${randomUUID().slice(0, 4).toUpperCase()}`, panel_secret_hash: "a".repeat(64), status: "active", installation_id: instA })
+        .select("id")
+        .single();
+      const id = huerfano!.id as string;
+      try {
+        // Filas vivas de un panel que ya no es de la instalación (el estado que dejaba el bug).
+        await admin.from("outputs").insert({ installation_id: instA, panel_id: id, output_index: 0, alias: "x", duration_ms: 1000, reader_mask: 1, enabled: true, ...AUTOR });
+        await admin.from("panels").update({ status: "pending", installation_id: null }).eq("id", id);
+        const antes = await listOutputsAs(tecnicoA, tenantA, instA);
+        expect(antes.some((o) => o.panel_id === id)).toBe(false);
+        expect(antes).toHaveLength(8);
+        for (const perfil of await listProfilesAs(adminA, tenantA, instA)) {
+          expect(perfil.rules.some((r) => r.panel_id === id)).toBe(false);
+        }
+      } finally {
+        await admin.from("outputs").delete().eq("panel_id", id);
+        await admin.from("panels").delete().eq("id", id);
+      }
+    });
+
     it("lista las 4 salidas por panel, ordenadas", async () => {
       const lista = await listOutputsAs(tecnicoA, tenantA, instA);
       expect(lista).toHaveLength(8);

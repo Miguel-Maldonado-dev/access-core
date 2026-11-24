@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { autoria, type DataClient } from "@/lib/auth/guards";
-import { esUuid, fetchAll, requireInstallationAccess } from "@/lib/access-data";
+import { esUuid, fetchAll, livePanelIds, requireInstallationAccess } from "@/lib/access-data";
 import { HttpError } from "@/lib/errors";
 import { DURATION_MESSAGE, NAME_MAX, OUTPUT_MAX_MS } from "@/lib/profile-view";
 
@@ -45,17 +45,21 @@ export async function listOutputsAs(
   installationId: string,
 ): Promise<OutputRow[]> {
   const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
-  return fetchAll<OutputRow>((desde, hasta) =>
-    cliente
-      .from("outputs")
-      .select(COLUMNAS)
-      .eq("installation_id", installationId)
-      .is("deleted_at", null)
-      .order("panel_id")
-      .order("output_index")
-      .order("id")
-      .range(desde, hasta),
-  );
+  const [filas, vigentes] = await Promise.all([
+    fetchAll<OutputRow>((desde, hasta) =>
+      cliente
+        .from("outputs")
+        .select(COLUMNAS)
+        .eq("installation_id", installationId)
+        .is("deleted_at", null)
+        .order("panel_id")
+        .order("output_index")
+        .order("id")
+        .range(desde, hasta),
+    ),
+    livePanelIds(cliente, installationId),
+  ]);
+  return filas.filter((o) => vigentes.has(o.panel_id));
 }
 
 /** Edita una salida; si nada cambió no escribe (cada escritura sube la revisión y avisa al panel). */

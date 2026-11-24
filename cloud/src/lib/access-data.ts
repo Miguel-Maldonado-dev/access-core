@@ -85,6 +85,24 @@ export async function fetchAll<T>(
   }
 }
 
+/**
+ * Ids de los paneles que hoy pertenecen a la instalación y siguen vigentes (ni revocados ni
+ * pendientes). Las listas de salidas, reglas y vínculos solo devuelven filas de estos paneles:
+ * defensa por si un panel dejó filas vivas en una instalación que ya no es suya.
+ */
+export async function livePanelIds(supabase: SupabaseClient, installationId: string): Promise<Set<string>> {
+  const filas = await fetchAll<{ id: string }>((desde, hasta) =>
+    supabase
+      .from("panels")
+      .select("id")
+      .eq("installation_id", installationId)
+      .not("status", "in", "(revoked,pending)")
+      .order("id")
+      .range(desde, hasta),
+  );
+  return new Set(filas.map((p) => p.id));
+}
+
 /** Nombres de titulares vivos de la instalación, por id. */
 export async function holderNames(
   supabase: SupabaseClient,

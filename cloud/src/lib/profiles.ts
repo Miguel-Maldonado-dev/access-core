@@ -7,6 +7,7 @@ import {
   fetchAll,
   holderNames,
   isMissingParent,
+  livePanelIds,
   isUniqueViolation,
   HOLDER_GONE,
   requireInstallationAccess,
@@ -94,7 +95,7 @@ export async function listProfilesAs(
   installationId: string,
 ): Promise<ProfileRow[]> {
   const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
-  const [perfiles, reglas, asignaciones] = await Promise.all([
+  const [perfiles, reglasTodas, asignaciones, vigentes] = await Promise.all([
     fetchAll<{ id: string; name: string; local_permission_id: number }>((desde, hasta) =>
       cliente
         .from("access_profiles")
@@ -123,7 +124,9 @@ export async function listProfilesAs(
         .order("id")
         .range(desde, hasta),
     ),
+    livePanelIds(cliente, installationId),
   ]);
+  const reglas = reglasTodas.filter((r) => vigentes.has(r.panel_id));
 
   const reglasDe = new Map<string, RuleRow[]>();
   for (const r of reglas) reglasDe.set(r.profile_id, [...(reglasDe.get(r.profile_id) ?? []), r]);
@@ -150,7 +153,7 @@ export async function getProfileAs(
     .maybeSingle<{ id: string; name: string; local_permission_id: number }>();
   if (error) throw error;
   if (!data) throw new HttpError(404, NO_EXISTE);
-  const [reglas, asignaciones] = await Promise.all([
+  const [reglasTodas, asignaciones, vigentes] = await Promise.all([
     fetchAll<RuleRow>((desde, hasta) =>
       cliente
         .from("profile_panel_rules")
@@ -171,7 +174,9 @@ export async function getProfileAs(
         .order("id")
         .range(desde, hasta),
     ),
+    livePanelIds(cliente, installationId),
   ]);
+  const reglas = reglasTodas.filter((r) => vigentes.has(r.panel_id));
   return { ...data, holder_ids: asignaciones.map((a) => a.holder_id), rules: reglas };
 }
 

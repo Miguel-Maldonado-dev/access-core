@@ -62,34 +62,30 @@ export async function POST(req: Request) {
       );
     }
 
-    let cambios: Record<string, unknown> | null = null;
     if (panel.status === "pending") {
-      cambios = { claim_code_hash: cuerpo.claim_code_hash, ...versiones };
+      // Solo si sigue pendiente (p. ej. no lo reclamaron mientras tanto).
+      const { data: actualizado, error: errorCambio } = await admin
+        .from("panels")
+        .update({ claim_code_hash: cuerpo.claim_code_hash, ...versiones })
+        .eq("id", panel.id)
+        .eq("status", "pending")
+        .select("status");
+      if (errorCambio) throw errorCambio;
+      if (actualizado.length > 0) return deviceJson({ status: "pending" });
     } else if (panel.status === "revoked") {
-      cambios = {
-        status: "pending",
-        installation_id: null,
-        claim_code_hash: cuerpo.claim_code_hash,
-        device_token_hash: null,
-        online: false,
-        synced_revision: 0,
-        last_sync_at: null,
-        sync_blocked: null,
-        confirm_deletions_until: null,
-        ...versiones,
-      };
+      // revoked -> pending en una sola transacción: limpia las filas que el panel dejó vivas
+      // en su instalación anterior antes de quitarle la instalación.
+      const { data: reiniciado, error: errorReinicio } = await admin.rpc("reregister_revoked_panel", {
+        p_panel: panel.id,
+        p_claim_code_hash: cuerpo.claim_code_hash,
+        p_software_version: cuerpo.software_version,
+        p_schema_version: cuerpo.schema_version,
+      });
+      if (errorReinicio) throw errorReinicio;
+      if (reiniciado) return deviceJson({ status: "pending" });
+    } else {
+      return deviceJson({ status: panel.status });
     }
-    if (!cambios) return deviceJson({ status: panel.status });
-
-    // Solo si sigue en el estado leído (p. ej. no lo reclamaron mientras tanto).
-    const { data: actualizado, error: errorCambio } = await admin
-      .from("panels")
-      .update(cambios)
-      .eq("id", panel.id)
-      .eq("status", panel.status)
-      .select("status");
-    if (errorCambio) throw errorCambio;
-    if (actualizado.length > 0) return deviceJson({ status: "pending" });
 
     const { data: actual, error: errorActual } = await admin
       .from("panels")

@@ -4,6 +4,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST as activate } from "@/app/api/device/v1/activate/route";
 import { GET as linkState } from "@/app/api/device/v1/link-state/route";
 import { POST as register } from "@/app/api/device/v1/register/route";
+import { GET as listLogs } from "@/app/api/v1/installations/[installationId]/logs/route";
+import { GET as listSalidas } from "@/app/api/v1/installations/[installationId]/outputs/route";
+import { GET as listPaneles } from "@/app/api/v1/installations/[installationId]/panels/route";
 import { requireTenantRole } from "@/lib/auth/guards";
 import { claimPanelAs, revokePanelAs } from "@/lib/panels/claim";
 import {
@@ -228,6 +231,7 @@ describe("vinculación de paneles", () => {
       const ids = (paneles ?? []).map((p) => p.id);
       await admin.from("outputs").delete().in("panel_id", ids);
       await admin.from("profile_panel_rules").delete().in("panel_id", ids);
+      await admin.from("access_logs").delete().in("panel_id", ids);
       await admin.from("panels").delete().in("id", ids);
     }
     if (tenants.length) await admin.from("tenants").delete().in("id", tenants);
@@ -597,7 +601,8 @@ describe("vinculación de paneles", () => {
         installation_id: instA2,
       });
 
-      const borrado = { deleted_at: expect.any(String), updated_by: "system:reclamo", origin: "cloud" };
+      // Ya las borró la revocación; el reclamo no las vuelve a tocar.
+      const borrado = { deleted_at: expect.any(String), updated_by: "system:revocacion", origin: "cloud" };
       const viejas = await filasDelPanel("outputs", id, instA);
       expect(viejas).toHaveLength(4);
       for (const salida of viejas) expect(salida).toMatchObject(borrado);
@@ -610,17 +615,68 @@ describe("vinculación de paneles", () => {
       expect(nuevas.filter((s) => s.deleted_at === null)).toHaveLength(4);
     });
 
-    it("volver a la misma instalación conserva sus salidas y reglas vivas", async () => {
+    it("volver a la misma instalación no revive sus salidas y reglas: se crean nuevas", async () => {
       const { p, id } = await panelRevocadoConDatos(instA, 11);
 
       await claimPanelAs(clienteAdminA, instA, p.code, p.claimCode);
 
-      const salidas = await filasDelPanel("outputs", id, instA);
-      expect(salidas).toHaveLength(4);
-      for (const salida of salidas) expect(salida).toMatchObject({ deleted_at: null, updated_by: "prueba" });
-      expect(await filasDelPanel("profile_panel_rules", id, instA)).toEqual([
-        { deleted_at: null, updated_by: "prueba", origin: "cloud" },
-      ]);
+      const borrado = { deleted_at: expect.any(String), updated_by: "system:revocacion", origin: "cloud" };
+      const viejas = await filasDelPanel("outputs", id, instA);
+      expect(viejas).toHaveLength(4);
+      for (const salida of viejas) expect(salida).toMatchObject(borrado);
+      expect(await filasDelPanel("profile_panel_rules", id, instA)).toEqual([borrado]);
+
+      await expect(crearSalidas(id, instA)).resolves.toBeUndefined();
+      const todas = await filasDelPanel("outputs", id, instA);
+      expect(todas.filter((s) => s.deleted_at === null)).toHaveLength(4);
+    });
+  });
+
+  describe("revocar limpia la API pública", () => {
+    it("GET outputs y panels ya no lo traen; sus logs siguen en GET logs", async () => {
+      const p = nuevoPanel();
+      expect((await registrarYGuardar(p)).status).toBe(201);
+      const { id } = await claimPanelAs(clienteAdminA, instA, p.code, p.claimCode);
+      await crearSalidas(id, instA);
+      const { error: errorLog } = await admin.from("access_logs").insert({
+        tenant_id: tenantA,
+        installation_id: instA,
+        panel_id: id,
+        local_log_id: 1,
+        ts: new Date(Date.now() - 60_000).toISOString(),
+        allowed: true,
+        source: 0,
+        reason: 0,
+      });
+      expect(errorLog).toBeNull();
+
+      const secret = `acc_${randomBytes(32).toString("base64url")}`;
+      const { error: errorLlave } = await admin
+        .from("api_keys")
+        .insert({ tenant_id: tenantA, name: "Revocar", prefix: secret.slice(0, 12), key_hash: sha256(secret) });
+      expect(errorLlave).toBeNull();
+      type Ruta = (req: Request, ctx: { params: Promise<{ installationId: string }> }) => Promise<Response>;
+      const pedir = async (ruta: Ruta, path: string) => {
+        const res = await ruta(
+          new Request(`http://localhost/api/v1/installations/${instA}/${path}`, {
+            headers: { authorization: `Bearer ${secret}` },
+          }),
+          { params: Promise.resolve({ installationId: instA }) },
+        );
+        expect(res.status).toBe(200);
+        return (await res.json()).data as { id: string; panel_id?: string }[];
+      };
+
+      expect((await pedir(listSalidas, "outputs")).filter((o) => o.panel_id === id)).toHaveLength(4);
+      expect((await pedir(listPaneles, "panels")).map((x) => x.id)).toContain(id);
+
+      await revokePanelAs(clienteAdminA, id);
+
+      expect((await pedir(listSalidas, "outputs")).filter((o) => o.panel_id === id)).toEqual([]);
+      expect((await pedir(listPaneles, "panels")).map((x) => x.id)).not.toContain(id);
+      const logs = (await pedir(listLogs, `logs?panel=${id}`)) as unknown as { panel_code: string }[];
+      expect(logs).toHaveLength(1);
+      expect(logs[0].panel_code).toBe(p.code);
     });
   });
 });

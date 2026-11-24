@@ -4,14 +4,16 @@ import { useEffect, useRef, useState, useTransition, type FormEvent } from "reac
 import Notices, { type Notice } from "@/components/Notices";
 import type { ActionResult } from "@/lib/actions";
 import type { ApiKeyRow, CreatedApiKey } from "@/lib/api/keys";
+import { DEFAULT_REQUESTS_PER_MINUTE, MENSAJE_LIMITE, parseRequestsPerMinute } from "@/lib/api/rate-limit";
 import { formatSync } from "@/lib/panels/view";
 
 interface Props {
   tenantId: string;
   keys: ApiKeyRow[];
-  onCreate: (tenantId: string, name: string) => Promise<ActionResult<CreatedApiKey>>;
+  onCreate: (tenantId: string, name: string, requestsPerMinute: number) => Promise<ActionResult<CreatedApiKey>>;
   onRevoke: (tenantId: string, keyId: string) => Promise<ActionResult<void>>;
   onRotate: (tenantId: string, keyId: string) => Promise<ActionResult<CreatedApiKey>>;
+  onUpdateLimit: (tenantId: string, keyId: string, requestsPerMinute: number) => Promise<ActionResult<ApiKeyRow>>;
 }
 
 /**
@@ -19,8 +21,20 @@ interface Props {
  * o rotado vive solo en el estado de este componente: no se guarda en la URL, el navegador
  * ni el servidor, y desaparece al recargar.
  */
-export default function ApiKeysManager({ tenantId, keys, onCreate, onRevoke, onRotate }: Props) {
+/** Número del campo, o `null` si no cumple 1–5000 (el mensaje lo pone `MENSAJE_LIMITE`). */
+function leerLimite(texto: string): number | null {
+  try {
+    return parseRequestsPerMinute(texto);
+  } catch {
+    return null;
+  }
+}
+
+export default function ApiKeysManager({ tenantId, keys, onCreate, onRevoke, onRotate, onUpdateLimit }: Props) {
   const [nombre, setNombre] = useState("");
+  const [limite, setLimite] = useState(String(DEFAULT_REQUESTS_PER_MINUTE));
+  const [errorLimite, setErrorLimite] = useState<string | null>(null);
+  const [editando, setEditando] = useState<{ id: string; valor: string; error: string | null } | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [secreto, setSecreto] = useState<{ name: string; secret: string } | null>(null);
   const [copia, setCopia] = useState<string | null>(null);
@@ -46,8 +60,37 @@ export default function ApiKeysManager({ tenantId, keys, onCreate, onRevoke, onR
   function crear(e: FormEvent) {
     e.preventDefault();
     setNotice(null);
+    const n = leerLimite(limite);
+    if (n === null) {
+      setErrorLimite(MENSAJE_LIMITE);
+      return;
+    }
+    setErrorLimite(null);
     startTransition(async () => {
-      if (mostrar(await onCreate(tenantId, nombre), "Llave creada.")) setNombre("");
+      if (mostrar(await onCreate(tenantId, nombre, n), "Llave creada.")) {
+        setNombre("");
+        setLimite(String(DEFAULT_REQUESTS_PER_MINUTE));
+      }
+    });
+  }
+
+  function guardarLimite(e: FormEvent, k: ApiKeyRow) {
+    e.preventDefault();
+    if (!editando) return;
+    const n = leerLimite(editando.valor);
+    if (n === null) {
+      setEditando({ ...editando, error: MENSAJE_LIMITE });
+      return;
+    }
+    setNotice(null);
+    startTransition(async () => {
+      const r = await onUpdateLimit(tenantId, k.id, n);
+      if (r.ok) {
+        setEditando(null);
+        setNotice({ kind: "ok", text: `Límite de "${k.name}" actualizado a ${n} por minuto.` });
+      } else {
+        setEditando((actual) => (actual ? { ...actual, error: r.error } : actual));
+      }
     });
   }
 
@@ -102,10 +145,32 @@ export default function ApiKeysManager({ tenantId, keys, onCreate, onRevoke, onR
               required
             />
           </label>
+          <label className="block text-sm font-medium sm:w-48">
+            Peticiones por minuto
+            <input
+              className="field"
+              value={limite}
+              onChange={(e) => setLimite(e.target.value)}
+              inputMode="numeric"
+              autoComplete="off"
+              aria-invalid={errorLimite !== null}
+              aria-describedby={errorLimite ? "limite-error" : "limite-ayuda"}
+              required
+            />
+          </label>
           <button type="submit" className="btn" disabled={pendiente}>
             Crear llave
           </button>
         </div>
+        {errorLimite ? (
+          <p id="limite-error" role="alert" className="mt-2 text-sm text-danger">
+            {errorLimite}
+          </p>
+        ) : (
+          <p id="limite-ayuda" className="mt-2 text-sm text-muted">
+            De 1 a 5000 por minuto; 120 por omisión. Al pasarlo, la API responde 429.
+          </p>
+        )}
       </form>
 
       {secreto && (
@@ -147,6 +212,7 @@ export default function ApiKeysManager({ tenantId, keys, onCreate, onRevoke, onR
               <tr>
                 <th scope="col" className="px-4 py-2 font-medium">Nombre</th>
                 <th scope="col" className="px-4 py-2 font-medium">Prefijo</th>
+                <th scope="col" className="px-4 py-2 font-medium">Peticiones por minuto</th>
                 <th scope="col" className="px-4 py-2 font-medium">Alta</th>
                 <th scope="col" className="px-4 py-2 font-medium">Último uso</th>
                 <th scope="col" className="px-4 py-2 font-medium">Estado</th>
@@ -158,7 +224,7 @@ export default function ApiKeysManager({ tenantId, keys, onCreate, onRevoke, onR
             <tbody>
               {keys.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-muted">
+                  <td colSpan={7} className="px-4 py-6 text-center text-muted">
                     Aún no hay llaves.
                   </td>
                 </tr>
@@ -167,6 +233,48 @@ export default function ApiKeysManager({ tenantId, keys, onCreate, onRevoke, onR
                 <tr key={k.id} className="border-b border-line last:border-0">
                   <td className="px-4 py-3 font-medium [overflow-wrap:anywhere]">{k.name}</td>
                   <td className="px-4 py-3 font-mono">{k.prefix}…</td>
+                  <td className="px-4 py-3">
+                    {editando?.id === k.id ? (
+                      <form onSubmit={(e) => guardarLimite(e, k)} noValidate className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <input
+                            className="field w-24"
+                            aria-label={`Peticiones por minuto de ${k.name}`}
+                            value={editando.valor}
+                            onChange={(e) => setEditando({ ...editando, valor: e.target.value, error: null })}
+                            inputMode="numeric"
+                            autoComplete="off"
+                            aria-invalid={editando.error !== null}
+                          />
+                          <button type="submit" className="link-action" disabled={pendiente}>
+                            Guardar <span className="sr-only">límite de {k.name}</span>
+                          </button>
+                          <button type="button" className="link-action" onClick={() => setEditando(null)}>
+                            Cancelar
+                          </button>
+                        </div>
+                        {editando.error && (
+                          <p role="alert" className="text-sm text-danger">
+                            {editando.error}
+                          </p>
+                        )}
+                      </form>
+                    ) : (
+                      <span className="flex items-center gap-3 whitespace-nowrap">
+                        <span>{k.requests_per_minute}</span>
+                        {!k.revoked_at && (
+                          <button
+                            type="button"
+                            className="link-action"
+                            disabled={pendiente}
+                            onClick={() => setEditando({ id: k.id, valor: String(k.requests_per_minute), error: null })}
+                          >
+                            Editar <span className="sr-only">límite de {k.name}</span>
+                          </button>
+                        )}
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3">{formatSync(k.created_at)}</td>
                   <td className="px-4 py-3">{formatSync(k.last_used_at)}</td>
                   <td className="px-4 py-3">

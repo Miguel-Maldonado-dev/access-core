@@ -152,11 +152,10 @@ export async function revokePanelAs(supabase: SupabaseClient, panelId: string): 
   await requireTenantRole(panel.tenant_id, "admin", cliente);
 
   const admin = createAdminSupabase();
-  const { error: errorRevocar } = await admin
-    .from("panels")
-    .update({ status: "revoked", device_token_hash: null })
-    .eq("id", panel.id)
-    .eq("tenant_id", panel.tenant_id);
+  // Revoca y, en la misma transacción, borra (lógicamente) sus salidas, vínculos de botones
+  // y reglas, y expira sus órdenes pendientes. Los logs se conservan. Es idempotente:
+  // revocar de nuevo completa la limpieza.
+  const { error: errorRevocar } = await admin.rpc("revoke_panel", { p_panel: panel.id });
   if (errorRevocar) throw errorRevocar;
 
   // El snapshot de una importación pendiente (nombres y PIN cifrados) no se conserva: un

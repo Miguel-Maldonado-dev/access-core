@@ -106,7 +106,7 @@ describe("actor de API en la capa de datos", () => {
     instB = await instalacion(tenantB, "Torre B");
     panelA = await panel(instA);
     panelB = await panel(instB);
-    actorA = { kind: "api", tenantId: tenantA, keyId: randomUUID(), keyName: "Integración A" };
+    actorA = { kind: "api", tenantId: tenantA, keyId: randomUUID(), keyName: "Integración A", requestsPerMinute: 120 };
   });
 
   afterAll(async () => {

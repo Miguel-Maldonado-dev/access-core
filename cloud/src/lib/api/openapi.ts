@@ -33,7 +33,7 @@ const E409 = respuestaError(
   "`conflict`: dato repetido, o la petición original con la misma `Idempotency-Key` sigue en curso.",
 );
 const E422 = respuestaError("`idempotency_mismatch`: la `Idempotency-Key` ya se usó con otro cuerpo.");
-const E429 = respuestaError("`rate_limited`: más de 120 peticiones por minuto con esta llave.", {
+const E429 = respuestaError("`rate_limited`: más peticiones por minuto que el límite de esta llave (120 por omisión).", {
   headers: { "Retry-After": { description: "Segundos que hay que esperar.", schema: { type: "string" } } },
 });
 const E500 = respuestaError("`internal_error`: error interno del servidor.");
@@ -524,7 +524,7 @@ export const openapi: object = {
       "",
       "**Idempotencia:** `Idempotency-Key` (1 a 200 caracteres, vigente 24 h) es opcional en `POST`, `PATCH`, `PUT` y `DELETE`. La misma llave con el mismo cuerpo devuelve la respuesta guardada con `Idempotent-Replayed: true`; con otro cuerpo, 422; si la original sigue en curso, 409. No se admite en `PUT` ni `DELETE .../holders/{holderId}/pin` (400), para no guardar el PIN.",
       "",
-      "**Límite:** 120 peticiones por minuto por llave; al pasarlo, 429 con `Retry-After`.",
+      "**Límite:** por llave, configurable por el admin en la pestaña API (de 1 a 5000 peticiones por minuto; 120 por omisión); al pasarlo, 429 con `Retry-After`.",
     ].join("\n"),
   },
   servers: [{ url: "/api/v1", description: "Esta nube" }],

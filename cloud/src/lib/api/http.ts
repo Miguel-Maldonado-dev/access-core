@@ -26,12 +26,6 @@ export class ApiError extends HttpError {
   }
 }
 
-/** Límites ajustables (las pruebas bajan `requestsPerMinute`). */
-export const limits = {
-  /** Peticiones por llave en la ventana de 60 s. */
-  requestsPerMinute: 120,
-};
-
 const VENTANA_LIMITE_MS = 60_000;
 const RETRY_AFTER_S = "60";
 /** Una reserva sin respuesta más vieja que esto se da por abandonada y se retoma. */
@@ -113,10 +107,10 @@ async function autenticar(req: Request): Promise<ApiActor> {
 }
 
 /**
- * Registra la petición y cuenta las de la ventana. Contar después de insertar evita que
+ * Registra la petición y cuenta las de la ventana (60 s); `limite` es el de la llave. Contar después de insertar evita que
  * peticiones simultáneas rebasen el límite. Devuelve `false` si se rebasó.
  */
-async function dentroDelLimite(admin: SupabaseClient, keyId: string): Promise<boolean> {
+async function dentroDelLimite(admin: SupabaseClient, keyId: string, limite: number): Promise<boolean> {
   const ahora = Date.now();
   const desde = new Date(ahora - VENTANA_LIMITE_MS).toISOString();
 
@@ -135,7 +129,7 @@ async function dentroDelLimite(admin: SupabaseClient, keyId: string): Promise<bo
     .gte("at", desde);
   if (errorCuenta) throw errorCuenta;
 
-  return (count ?? 0) <= limits.requestsPerMinute;
+  return (count ?? 0) <= limite;
 }
 
 interface FilaIdempotencia {
@@ -264,7 +258,7 @@ export async function apiRoute(
     const actor = await autenticar(req);
     const admin = createAdminSupabase();
 
-    if (!(await dentroDelLimite(admin, actor.keyId))) {
+    if (!(await dentroDelLimite(admin, actor.keyId, actor.requestsPerMinute))) {
       return apiJson(
         { code: "rate_limited", message: "Demasiadas peticiones; espera un momento." },
         429,

@@ -161,10 +161,10 @@ describe("rutas de lectura de la API pública", () => {
     expect((await pedir(getInstalacion, "installations/x", "no-es-uuid")).status).toBe(404);
   });
 
-  it("paneles: solo los de la instalación, sin secretos", async () => {
+  it("paneles: solo los de la instalación (sin revocados), sin secretos", async () => {
     const res = await pedir(listPaneles, "p", instA);
     const { data } = await res.json();
-    expect(data).toHaveLength(3);
+    expect(data).toHaveLength(2);
     expect(data.map((p: { id: string }) => p.id)).not.toContain(panelB);
     expect(Object.keys(data[0]).sort()).toEqual(
       ["id", "last_sync_at", "online", "panel_code", "software_version", "status", "synced_revision"].sort(),

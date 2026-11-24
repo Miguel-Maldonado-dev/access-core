@@ -70,7 +70,7 @@ describe("API pública: titulares y PIN", () => {
     const res = await pedir(crear as Metodo, { body });
     return { res, json: await res.json() };
   }
-  const actor = () => ({ kind: "api" as const, tenantId: tenantA, keyId, keyName: "Titulares" });
+  const actor = () => ({ kind: "api" as const, tenantId: tenantA, keyId, keyName: "Titulares", requestsPerMinute: 120 });
   const revision = async () => (await admin.from("installations").select("revision").eq("id", instA).single()).data!.revision;
 
   beforeAll(async () => {

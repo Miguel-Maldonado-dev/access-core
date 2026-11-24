@@ -130,27 +130,40 @@ export async function readInstallationRevision(admin: SupabaseClient, installati
 async function readRevisionAndLogsCleared(
   admin: SupabaseClient,
   installationId: string,
-): Promise<{ revision: number; logsClearedAt: string | null }> {
+): Promise<{ revision: number; logsClearedAt: string | null; purgedRevision: number }> {
   const { data, error } = await admin
     .from("installations")
-    .select("revision, logs_cleared_at")
+    .select("revision, logs_cleared_at, purged_revision")
     .eq("id", installationId)
-    .single<{ revision: number; logs_cleared_at: string | null }>();
+    .single<{ revision: number; logs_cleared_at: string | null; purged_revision: number }>();
   if (error) throw error;
   return {
     revision: data.revision,
+    purgedRevision: data.purged_revision,
     logsClearedAt: data.logs_cleared_at === null ? null : new Date(data.logs_cleared_at).toISOString(),
   };
 }
 
+/**
+ * `confirm_deletions` de `/checksums`: el del panel o, si su último cursor de pull
+ * (`synced_revision`) es anterior a borrados ya eliminados (`purged_revision`), verdadero:
+ * esa reconciliación debe aplicar borrados que el feed ya no tiene, y sin la confirmación
+ * la guarda de borrados masivos la bloquearía en cada ciclo.
+ */
 async function leerConfirmarBorrados(admin: SupabaseClient, panelId: string): Promise<boolean> {
   const { data, error } = await admin
     .from("panels")
-    .select("confirm_deletions_until")
+    .select("confirm_deletions_until, synced_revision, installation:installations(purged_revision)")
     .eq("id", panelId)
-    .single<{ confirm_deletions_until: string | null }>();
+    .single<{
+      confirm_deletions_until: string | null;
+      synced_revision: number;
+      installation: { purged_revision: number } | null;
+    }>();
   if (error) throw error;
-  return isConfirmDeletionsActive(data.confirm_deletions_until);
+  const purgada = data.installation?.purged_revision ?? 0;
+  const cursorViejo = data.synced_revision > 0 && data.synced_revision < purgada;
+  return cursorViejo || isConfirmDeletionsActive(data.confirm_deletions_until);
 }
 
 /** Guarda `synced_revision = since` y `last_sync_at`; devuelve `confirm_deletions`. */
@@ -283,13 +296,28 @@ function proyectarDeControles(
  * - `revision` = R si no hay más; si `has_more`, la revisión del último cambio devuelto.
  * - Cada página trae `logs_cleared_at` (ISO o nulo) de la instalación.
  * - Guarda `panels.synced_revision = since` y `last_sync_at`.
+ * - Si `0 < since < installations.purged_revision` responde `revision = since - 1` sin
+ *   cambios, para que el agente reconcilie (le faltan borrados ya eliminados).
  */
 export async function listChanges(panel: Panel, since: number, limit: number): Promise<PullResponse> {
   const admin = createAdminSupabase();
-  const [confirmDeletions, { revision: R, logsClearedAt }] = await Promise.all([
+  const [confirmDeletions, { revision: R, logsClearedAt, purgedRevision }] = await Promise.all([
     registrarPull(admin, panel.id, since),
     readRevisionAndLogsCleared(admin, panel.installation_id),
   ]);
+  // Borrados lógicos ya eliminados (purge_deleted_rows): un cursor 0 < since < purged_revision
+  // pudo perder borrados que el feed ya no tiene. Se responde una revisión menor que `since`
+  // y sin cambios: el agente actual lo trata como "la nube va detrás" y reconcilia por
+  // checksums en el mismo ciclo, sin cambiar el paquete del panel.
+  if (since > 0 && since < purgedRevision) {
+    return {
+      revision: since - 1,
+      has_more: false,
+      confirm_deletions: confirmDeletions,
+      logs_cleared_at: logsClearedAt,
+      changes: [],
+    };
+  }
   if (since >= R) {
     return {
       revision: R,

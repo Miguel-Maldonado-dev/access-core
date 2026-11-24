@@ -6,6 +6,7 @@ import {
   listApiKeysAs,
   revokeApiKeyAs,
   rotateApiKeyAs,
+  updateApiKeyLimitAs,
   verifyApiKey,
 } from "@/lib/api/keys";
 import { HttpError } from "@/lib/errors";
@@ -80,6 +81,7 @@ describe("llaves de API", () => {
       created_at: expect.any(String),
       last_used_at: null,
       revoked_at: null,
+      requests_per_minute: 120,
     });
 
     expect(await verifyApiKey(secret)).toEqual({
@@ -87,6 +89,7 @@ describe("llaves de API", () => {
       tenantId: tenantA,
       keyId: key.id,
       keyName: "Integración ERP",
+      requestsPerMinute: 120,
     });
 
     // Solo se guarda el hash y se registra quién la creó.
@@ -128,7 +131,7 @@ describe("llaves de API", () => {
     const lista = await listApiKeysAs(adminA, tenantA);
     expect(lista.length).toBeGreaterThanOrEqual(2);
     for (const llave of lista) {
-      expect(Object.keys(llave).sort()).toEqual(["created_at", "id", "last_used_at", "name", "prefix", "revoked_at"]);
+      expect(Object.keys(llave).sort()).toEqual(["created_at", "id", "last_used_at", "name", "prefix", "requests_per_minute", "revoked_at"]);
     }
     expect(await listApiKeysAs(adminB, tenantB)).toEqual([]);
   });
@@ -169,6 +172,58 @@ describe("llaves de API", () => {
     // Rotar con 10 vivas sí se puede: no aumenta las vivas.
     const [primera] = await listApiKeysAs(adminLleno, tenantLleno);
     await expect(rotateApiKeyAs(adminLleno, tenantLleno, primera.id)).resolves.toBeDefined();
+  });
+
+  it("crea con el límite indicado y verifyApiKey lo expone", async () => {
+    const { key, secret } = await createApiKeyAs(adminA, tenantA, "Con límite", 600);
+    expect(key.requests_per_minute).toBe(600);
+    expect(await verifyApiKey(secret)).toMatchObject({ keyId: key.id, requestsPerMinute: 600 });
+    expect((await createApiKeyAs(adminA, tenantA, "Texto", "30")).key.requests_per_minute).toBe(30);
+    const leida = (await listApiKeysAs(adminA, tenantA)).find((k) => k.id === key.id);
+    expect(leida?.requests_per_minute).toBe(600);
+  });
+
+  it("valida el límite al crear: de 1 a 5000, entero", async () => {
+    for (const malo of [0, 5001, -1, 1.5, Number.NaN, "", "abc", null, "1e3"]) {
+      const error = await fallo(createApiKeyAs(adminA, tenantA, "Malo", malo));
+      expect(error.status).toBe(400);
+      expect(error.message).toBe("Debe ser un número entre 1 y 5000.");
+    }
+    await expect(createApiKeyAs(adminA, tenantA, "Mínimo", 1)).resolves.toBeDefined();
+    await expect(createApiKeyAs(adminA, tenantA, "Máximo", 5000)).resolves.toBeDefined();
+  });
+
+  it("edita el límite de una llave viva y lo aplica en verifyApiKey", async () => {
+    const { key, secret } = await createApiKeyAs(adminA, tenantA, "Editable");
+    const editada = await updateApiKeyLimitAs(adminA, tenantA, key.id, 2000);
+    expect(editada.requests_per_minute).toBe(2000);
+    expect(editada.id).toBe(key.id);
+    expect(await verifyApiKey(secret)).toMatchObject({ requestsPerMinute: 2000 });
+  });
+
+  it("al editar valida el límite, exige admin y no toca llaves ajenas ni revocadas", async () => {
+    const { key } = await createApiKeyAs(adminA, tenantA, "Validar edición");
+    for (const malo of [0, 5001, "x", 2.5]) {
+      const error = await fallo(updateApiKeyLimitAs(adminA, tenantA, key.id, malo));
+      expect(error.status).toBe(400);
+      expect(error.message).toBe("Debe ser un número entre 1 y 5000.");
+    }
+    expect((await fallo(updateApiKeyLimitAs(tecnicoA, tenantA, key.id, 10))).status).toBe(403);
+    expect((await fallo(updateApiKeyLimitAs(adminB, tenantA, key.id, 10))).status).toBe(403);
+    const ajena = await createApiKeyAs(adminB, tenantB, "Ajena");
+    expect((await fallo(updateApiKeyLimitAs(adminA, tenantA, ajena.key.id, 10))).status).toBe(404);
+    expect((await fallo(updateApiKeyLimitAs(adminA, tenantA, "no-es-uuid", 10))).status).toBe(404);
+    await revokeApiKeyAs(adminA, tenantA, key.id);
+    expect((await fallo(updateApiKeyLimitAs(adminA, tenantA, key.id, 10))).status).toBe(404);
+    const { data } = await admin.from("api_keys").select("requests_per_minute").eq("id", ajena.key.id).single();
+    expect(data?.requests_per_minute).toBe(120);
+  });
+
+  it("rotar conserva el límite de la llave", async () => {
+    const original = await createApiKeyAs(adminA, tenantA, "Rotable con límite", 777);
+    const rotada = await rotateApiKeyAs(adminA, tenantA, original.key.id);
+    expect(rotada.key.requests_per_minute).toBe(777);
+    expect(await verifyApiKey(rotada.secret)).toMatchObject({ requestsPerMinute: 777 });
   });
 
   it("valida el nombre", async () => {

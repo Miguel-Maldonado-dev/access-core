@@ -120,7 +120,12 @@ export async function listLogFilterOptionsAs(
   const { supabase: cliente } = await requireInstallationAccess(supabase, tenantId, installationId, "tecnico");
   const [paneles, titulares] = await Promise.all([
     fetchAll<{ id: string; panel_code: string }>((a, b) =>
-      cliente.from("panels").select("id, panel_code").eq("installation_id", installationId).order("panel_code").order("id").range(a, b),
+      cliente
+        .from("panels")
+        .select("id, panel_code")
+        .eq("installation_id", installationId)
+        .neq("status", "revoked")
+        .order("panel_code").order("id").range(a, b),
     ),
     holderNames(cliente, installationId),
   ]);

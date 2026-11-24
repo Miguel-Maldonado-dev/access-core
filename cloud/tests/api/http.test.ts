@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { GET as getMe } from "@/app/api/v1/me/route";
-import { apiJson, apiRoute, limits, readApiBody } from "@/lib/api/http";
+import { apiJson, apiRoute, readApiBody } from "@/lib/api/http";
 import { HttpError } from "@/lib/errors";
 import { localAdmin, requireLocalSupabase } from "../helpers/supabase-local";
 
@@ -56,7 +56,7 @@ describe("núcleo HTTP de la API pública", () => {
   let tenantId: string;
   const claveLookupOriginal = process.env.PIN_LOOKUP_KEY;
 
-  async function llave(nombre: string, revocada = false): Promise<LlavePrueba> {
+  async function llave(nombre: string, revocada = false, limite?: number): Promise<LlavePrueba> {
     const secret = `acc_${randomBytes(32).toString("base64url")}`;
     const { data, error } = await admin
       .from("api_keys")
@@ -66,6 +66,7 @@ describe("núcleo HTTP de la API pública", () => {
         prefix: secret.slice(0, 12),
         key_hash: sha256(secret),
         revoked_at: revocada ? new Date().toISOString() : null,
+        ...(limite === undefined ? {} : { requests_per_minute: limite }),
       })
       .select("id")
       .single<{ id: string }>();
@@ -145,20 +146,40 @@ describe("núcleo HTTP de la API pública", () => {
 
   describe("límite de peticiones", () => {
     it("al pasar el límite por minuto responde 429 con Retry-After", async () => {
-      const k = await llave("Límite");
-      const original = limits.requestsPerMinute;
-      limits.requestsPerMinute = 3;
-      try {
-        for (let i = 0; i < 3; i++) {
-          expect((await getMe(peticion("me", { secret: k.secret }))).status).toBe(200);
-        }
-        const res = await getMe(peticion("me", { secret: k.secret }));
-        expect(res.status).toBe(429);
-        expect(res.headers.get("retry-after")).toBe("60");
-        expect(await res.json()).toEqual({ code: "rate_limited", message: "Demasiadas peticiones; espera un momento." });
-      } finally {
-        limits.requestsPerMinute = original;
+      const k = await llave("Límite", false, 3);
+      for (let i = 0; i < 3; i++) {
+        expect((await getMe(peticion("me", { secret: k.secret }))).status).toBe(200);
       }
+      const res = await getMe(peticion("me", { secret: k.secret }));
+      expect(res.status).toBe(429);
+      expect(res.headers.get("retry-after")).toBe("60");
+      expect(await res.json()).toEqual({ code: "rate_limited", message: "Demasiadas peticiones; espera un momento." });
+    });
+
+    it("cada llave usa su propio límite: una con límite bajo se corta y otra no", async () => {
+      const baja = await llave("Baja", false, 2);
+      const normal = await llave("Normal");
+      for (let i = 0; i < 2; i++) expect((await getMe(peticion("me", { secret: baja.secret }))).status).toBe(200);
+      expect((await getMe(peticion("me", { secret: baja.secret }))).status).toBe(429);
+      // La otra llave (120 por omisión) sigue pasando aunque la baja ya se cortó.
+      for (let i = 0; i < 5; i++) expect((await getMe(peticion("me", { secret: normal.secret }))).status).toBe(200);
+    });
+
+    it("una llave con límite alto no se corta en 120", async () => {
+      const k = await llave("Alta", false, 5000);
+      // 120 filas recientes ya registradas: con el límite fijo de antes, la siguiente daba 429.
+      const ahora = new Date().toISOString();
+      await admin.from("api_requests").insert(Array.from({ length: 120 }, () => ({ key_id: k.id, at: ahora })));
+      expect((await getMe(peticion("me", { secret: k.secret }))).status).toBe(200);
+      expect((await getMe(peticion("me", { secret: k.secret }))).status).toBe(200);
+    });
+
+    it("el cambio de límite aplica en la siguiente petición", async () => {
+      const k = await llave("Cambiante", false, 1);
+      expect((await getMe(peticion("me", { secret: k.secret }))).status).toBe(200);
+      expect((await getMe(peticion("me", { secret: k.secret }))).status).toBe(429);
+      await admin.from("api_keys").update({ requests_per_minute: 10 }).eq("id", k.id);
+      expect((await getMe(peticion("me", { secret: k.secret }))).status).toBe(200);
     });
 
     it("borra las filas de más de un minuto de esa llave", async () => {

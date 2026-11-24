@@ -1093,6 +1093,34 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
       if (e2) throw e2;
     });
 
+    it("un cursor anterior a borrados ya eliminados (purged_revision) recibe una revisión menor para reconciliar", async () => {
+      const R = await revisionInstalacion(inst1);
+      const fijar = async (valor: number) => {
+        const { error } = await admin.from("installations").update({ purged_revision: valor }).eq("id", inst1);
+        if (error) throw error;
+      };
+      await fijar(R);
+      try {
+        // Cursor viejo: revisión since - 1 y sin cambios (el agente reconcilia por checksums).
+        const viejo = await pull(panelA, R - 1);
+        expect(viejo.revision).toBe(R - 2);
+        expect(viejo.has_more).toBe(false);
+        expect(viejo.changes).toEqual([]);
+        // /checksums confirma los borrados mientras el último cursor siga atrasado.
+        expect((await checksums(panelA)).confirm_deletions).toBe(true);
+        // Cursor al día o pull inicial: respuesta normal.
+        expect((await pull(panelA, R)).revision).toBe(R);
+        const inicial = await pull(panelA, 0);
+        expect(inicial.revision).toBeGreaterThan(0);
+        expect(inicial.changes.length).toBeGreaterThan(0);
+        // Con el cursor al día (R, registrado por el pull) ya no se confirma.
+        await pull(panelA, R);
+        expect((await checksums(panelA)).confirm_deletions).toBe(false);
+      } finally {
+        await fijar(0);
+      }
+    });
+
     it("confirm_deletions es verdadero solo mientras confirm_deletions_until está en el futuro", async () => {
       const R = await revisionInstalacion(inst1);
       const fijar = async (ms: number) => {

@@ -59,11 +59,21 @@ Repítelo en el hook de renovación (ejemplo completo en `cloud/docs/despliegue.
 
 ## API key (para que la aplicación publique)
 
-1. Entra al dashboard (`http://127.0.0.1:18083`, por túnel SSH si es remoto). Escucha solo en
-   `127.0.0.1` del servidor (`dashboard.listeners.http.bind = 18083` en `emqx.conf`; el compose lo
-   publica ligado a `127.0.0.1`).
-2. System > API Key > New: nombre `acceso-cloud`, rol Publisher (o Administrator).
-3. Guarda el key y el secret en `EMQX_API_KEY` y `EMQX_API_SECRET` de la aplicación.
+1. Entra al dashboard (`https://EMQX_DOMAIN:18084`, o `http://127.0.0.1:18083` por túnel SSH).
+2. System > API Key > New: nombre `vercel` (o `acceso-cloud`), rol Publisher (o Administrator).
+3. Guarda el key y el secret (el secret se muestra una sola vez) en `EMQX_API_KEY` y
+   `EMQX_API_SECRET` de la aplicación (Vercel, Production) y redespliega.
+4. Prueba desde tu computadora (debe dar `200` o `202`):
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}\n" -u "<key>:<secret>" -H 'Content-Type: application/json' \
+     -d '{"topic":"acc/prueba/cmd","payload":"{}","qos":1}' https://EMQX_DOMAIN/api/v5/publish
+   ```
+
+El compose fija el nombre del nodo (`EMQX_NODE__NAME=emqx@emqx.acceso.local`). Sin eso el
+nodo se llama `emqx@<IP del contenedor>`, la IP cambia al recrearlo y EMQX arranca con una base vacía
+(se pierden las llaves creadas en el dashboard y la contraseña de admin cambiada). Al aplicar este
+cambio por primera vez el nombre cambia una última vez: la contraseña del dashboard vuelve a
+`EMQX_DASHBOARD_PASSWORD` del `.env`.
 
 ## Vault (avisos de cambio desde la base de datos)
 

@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { type ApiActor, requireTenantRole } from "@/lib/auth/guards";
+import { DEFAULT_REQUESTS_PER_MINUTE, parseRequestsPerMinute } from "@/lib/api/rate-limit";
 import { safeEqualHex, sha256Hex } from "@/lib/crypto";
 import { HttpError } from "@/lib/errors";
 import { createAdminSupabase } from "@/lib/supabase/admin";
@@ -24,6 +25,7 @@ export interface ApiKeyRow {
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
+  requests_per_minute: number;
 }
 
 export interface CreatedApiKey {
@@ -39,7 +41,7 @@ const PREFIX_LENGTH = 12;
 const LAST_USED_INTERVAL_MS = 60_000;
 
 const SECRET_RE = /^acc_[A-Za-z0-9_-]{43}$/;
-const COLUMNAS = "id, name, prefix, created_at, last_used_at, revoked_at";
+const COLUMNAS = "id, name, prefix, created_at, last_used_at, revoked_at, requests_per_minute";
 const NO_EXISTE = "La llave no existe.";
 const esUuid = (s: string) => z.guid().safeParse(s).success;
 
@@ -58,9 +60,15 @@ function parseName(valor: string): string {
 }
 
 /** Crea una llave (admin). Con 10 llaves vivas en el tenant, 409. */
-export async function createApiKeyAs(supabase: SupabaseClient, tenantId: string, name: string): Promise<CreatedApiKey> {
+export async function createApiKeyAs(
+  supabase: SupabaseClient,
+  tenantId: string,
+  name: string,
+  requestsPerMinute: unknown = DEFAULT_REQUESTS_PER_MINUTE,
+): Promise<CreatedApiKey> {
   const acceso = await requireTenantRole(tenantId, "admin", supabase);
   const nombre = parseName(name);
+  const limite = parseRequestsPerMinute(requestsPerMinute);
   const { secret, prefix, keyHash } = nuevoSecreto();
   const { data, error } = await createAdminSupabase()
     .rpc("create_api_key", {
@@ -69,6 +77,7 @@ export async function createApiKeyAs(supabase: SupabaseClient, tenantId: string,
       p_prefix: prefix,
       p_key_hash: keyHash,
       p_created_by: acceso.userId,
+      p_requests_per_minute: limite,
     });
   if (error) {
     if (error.message === "api_key_limit") {
@@ -93,6 +102,29 @@ export async function listApiKeysAs(supabase: SupabaseClient, tenantId: string):
     .overrideTypes<ApiKeyRow[], { merge: false }>();
   if (error) throw error;
   return data;
+}
+
+/** Cambia el límite de peticiones por minuto de una llave viva (admin). Si no existe, es de otro tenant o está revocada, 404. */
+export async function updateApiKeyLimitAs(
+  supabase: SupabaseClient,
+  tenantId: string,
+  keyId: string,
+  requestsPerMinute: unknown,
+): Promise<ApiKeyRow> {
+  await requireTenantRole(tenantId, "admin", supabase);
+  const limite = parseRequestsPerMinute(requestsPerMinute);
+  if (!esUuid(keyId)) throw new HttpError(404, NO_EXISTE);
+  const { data, error } = await createAdminSupabase()
+    .from("api_keys")
+    .update({ requests_per_minute: limite })
+    .eq("id", keyId)
+    .eq("tenant_id", tenantId)
+    .is("revoked_at", null)
+    .select(COLUMNAS)
+    .overrideTypes<ApiKeyRow[], { merge: false }>();
+  if (error) throw error;
+  if (data.length === 0) throw new HttpError(404, NO_EXISTE);
+  return data[0];
 }
 
 /** Revoca una llave viva del tenant (admin). Si no existe, es de otro tenant o ya estaba revocada, 404. */
@@ -144,7 +176,7 @@ export async function verifyApiKey(secret: string): Promise<ApiActor | null> {
   const admin = createAdminSupabase();
   const { data: llave, error } = await admin
     .from("api_keys")
-    .select("id, tenant_id, name, key_hash, last_used_at, revoked_at, tenants!inner(suspended_at)")
+    .select("id, tenant_id, name, key_hash, last_used_at, revoked_at, requests_per_minute, tenants!inner(suspended_at)")
     .eq("key_hash", keyHash)
     .maybeSingle<{
       id: string;
@@ -153,6 +185,7 @@ export async function verifyApiKey(secret: string): Promise<ApiActor | null> {
       key_hash: string;
       last_used_at: string | null;
       revoked_at: string | null;
+      requests_per_minute: number;
       tenants: { suspended_at: string | null };
     }>();
   if (error) throw error;
@@ -172,5 +205,5 @@ export async function verifyApiKey(secret: string): Promise<ApiActor | null> {
     if (errorUso) throw errorUso;
   }
 
-  return { kind: "api", tenantId: llave.tenant_id, keyId: llave.id, keyName: llave.name };
+  return { kind: "api", tenantId: llave.tenant_id, keyId: llave.id, keyName: llave.name, requestsPerMinute: llave.requests_per_minute };
 }

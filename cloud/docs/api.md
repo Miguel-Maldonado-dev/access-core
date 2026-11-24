@@ -23,6 +23,7 @@ Reglas:
 
 - Solo el admin del tenant ve la pestaña y administra llaves.
 - Máximo **10 llaves vivas** por tenant.
+- Cada llave tiene su **límite de peticiones por minuto** (de 1 a 5000, 120 por omisión): se fija al crearla y el admin lo edita en la pestaña **API**. Rotar una llave conserva su límite.
 - Una llave revocada o rotada deja de funcionar de inmediato (401).
 - **Alcance:** la llave actúa como admin del tenant en **todas** sus instalaciones. Una instalación o un recurso de otro tenant responde **404**, nunca 403.
 - Las escrituras por la API quedan firmadas `api:<id>` en la auditoría.
@@ -51,13 +52,13 @@ Todos los errores tienen la forma `{"code": "...", "message": "<texto en españo
 | 404 | `not_found` | El recurso no existe o es de otro tenant |
 | 409 | `conflict` | Dato repetido (tarjeta, PIN), choque de concurrencia, o la petición original con la misma `Idempotency-Key` sigue en curso |
 | 422 | `idempotency_mismatch` | `Idempotency-Key` ya usada con otro cuerpo |
-| 429 | `rate_limited` | Más de 120 peticiones por minuto (trae `Retry-After`) |
+| 429 | `rate_limited` | Más peticiones por minuto que el límite de la llave (120 por omisión; trae `Retry-After`) |
 | 502 | `bad_gateway` | La apertura remota no pudo enviar la orden: EMQX rechazó el mensaje (se puede reintentar) |
 | 500 | `internal_error` | Error interno |
 
 ## Límites
 
-- **120 peticiones por minuto por llave.** Al pasarlo, `429` con `Retry-After` (segundos).
+- **Límite por llave, configurable en la pestaña API** (de 1 a 5000 peticiones por minuto; **120 por omisión**). Al pasarlo, `429` con `Retry-After` (segundos). El cambio aplica en la siguiente petición.
 
 ## Idempotencia
 
@@ -145,7 +146,7 @@ curl -s -X PUT $API/installations/$INST/holders/$HOLDER/pin \
 # → 200 {"data":{"has_pin":true},"revision":45}
 ```
 
-Si otro titular de la instalación ya usa ese PIN, responde `409 conflict`. Es lo esperado (el PIN es único por instalación), y probar PIN de esta forma queda acotado por el límite de 120 peticiones por minuto. Para quitarlo:
+Si otro titular de la instalación ya usa ese PIN, responde `409 conflict`. Es lo esperado (el PIN es único por instalación), y probar PIN de esta forma queda acotado por el límite de peticiones por minuto de la llave (120 por omisión). Para quitarlo:
 
 ```bash
 curl -s -X DELETE -H "Authorization: Bearer $KEY" $API/installations/$INST/holders/$HOLDER/pin

@@ -37,6 +37,8 @@ export interface ApiActor {
   tenantId: string;
   keyId: string;
   keyName: string;
+  /** Límite de peticiones por minuto de la llave. */
+  requestsPerMinute: number;
 }
 
 /** Quien llama a la capa de datos: el cliente con la sesión del usuario o un actor de API. */

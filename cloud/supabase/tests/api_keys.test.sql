@@ -2,7 +2,7 @@
 -- Corren con `supabase test db` en el stack local. Como postgres, auth.uid() es nulo:
 -- equivale a una escritura del servidor (llave secreta).
 begin;
-select plan(30);
+select plan(39);
 
 -- ---------------------------------------------------------------------------
 -- Datos base
@@ -38,7 +38,7 @@ select ok((select relrowsecurity from pg_class where oid = 'public.api_requests'
 select ok((select relrowsecurity from pg_class where oid = 'public.api_idempotency'::regclass),
   'RLS activa en api_idempotency');
 select columns_are('public', 'api_keys',
-  array['id', 'tenant_id', 'name', 'prefix', 'key_hash', 'created_at', 'created_by', 'last_used_at', 'revoked_at'],
+  array['id', 'tenant_id', 'name', 'prefix', 'key_hash', 'created_at', 'created_by', 'last_used_at', 'revoked_at', 'requests_per_minute'],
   'api_keys tiene exactamente las columnas del contrato');
 select col_is_pk('public', 'api_idempotency', array['key_id', 'idem_key'], 'api_idempotency: pk (key_id, idem_key)');
 select fk_ok('public', 'api_requests', array['key_id'], 'public', 'api_keys', array['id'], 'api_requests.key_id es FK');
@@ -65,6 +65,25 @@ select throws_ok(
     values ('10000000-0000-0000-0000-00000000000b', 'X', 'acc_x', repeat('a', 64))$$,
   '23505', null, 'key_hash es único');
 
+select col_default_is('public', 'api_keys', 'requests_per_minute', '120', 'requests_per_minute vale 120 por omisión');
+select is(
+  (select requests_per_minute from public.api_keys where id = 'a0000000-0000-0000-0000-00000000000a'),
+  120, 'una llave sin valor explícito queda en 120');
+select throws_ok(
+  $$update public.api_keys set requests_per_minute = 0 where id = 'a0000000-0000-0000-0000-00000000000b'$$,
+  '23514', null, 'requests_per_minute 0 se rechaza');
+select throws_ok(
+  $$update public.api_keys set requests_per_minute = 5001 where id = 'a0000000-0000-0000-0000-00000000000b'$$,
+  '23514', null, 'requests_per_minute 5001 se rechaza');
+select lives_ok(
+  $$update public.api_keys set requests_per_minute = 5000 where id = 'a0000000-0000-0000-0000-00000000000b';
+    update public.api_keys set requests_per_minute = 1 where id = 'a0000000-0000-0000-0000-00000000000b'$$,
+  'los extremos 1 y 5000 se aceptan');
+select is(
+  (select requests_per_minute from public.create_api_key('10000000-0000-0000-0000-00000000000b', 'Con límite',
+     'acc_limite', repeat('8', 64), null, 600)),
+  600, 'create_api_key guarda el límite indicado');
+
 -- ---------------------------------------------------------------------------
 -- Funciones: límite de 10 llaves vivas y rotación atómica
 -- ---------------------------------------------------------------------------
@@ -81,6 +100,9 @@ select is(
   (select name from public.rotate_api_key('10000000-0000-0000-0000-00000000000a',
      'a0000000-0000-0000-0000-00000000000a', 'acc_rotada', repeat('f', 64), null)),
   'Llave A', 'rotate_api_key crea una llave con el mismo nombre aunque haya 10 vivas');
+select is(
+  (select requests_per_minute from public.api_keys where prefix = 'acc_rotada'),
+  120, 'rotate_api_key conserva el límite de la llave rotada');
 select isnt(
   (select revoked_at from public.api_keys where id = 'a0000000-0000-0000-0000-00000000000a'),
   null, 'rotate_api_key revoca la anterior');
@@ -109,6 +131,9 @@ select throws_ok(
 select throws_ok(
   $$update public.api_keys set revoked_at = now()$$, '42501', null, 'authenticated no actualiza api_keys');
 select throws_ok(
+  $$update public.api_keys set requests_per_minute = 5000$$, '42501', null,
+  'authenticated no puede escribir requests_per_minute');
+select throws_ok(
   $$insert into public.api_requests (key_id) values ('a0000000-0000-0000-0000-00000000000a')$$,
   '42501', null, 'authenticated no inserta en api_requests');
 select throws_ok(
@@ -132,6 +157,9 @@ set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b1","r
 select is(
   (select count(*)::int from public.api_keys where tenant_id = '10000000-0000-0000-0000-00000000000a'),
   0, 'el admin de otro tenant no ve las llaves del tenant A');
+select is(
+  (select requests_per_minute from public.api_keys where prefix = 'acc_limite'), 600,
+  'el admin lee requests_per_minute de sus llaves');
 
 select * from finish();
 rollback;

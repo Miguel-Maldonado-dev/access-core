@@ -3,7 +3,7 @@ import ApiKeysManager from "@/components/api/ApiKeysManager";
 import { guardPage } from "@/lib/auth/guards";
 import { listApiKeysAs } from "@/lib/api/keys";
 import { createServerSupabase } from "@/lib/supabase/server";
-import { createApiKey, revokeApiKey, rotateApiKey } from "./actions";
+import { createApiKey, revokeApiKey, rotateApiKey, updateApiKeyLimit } from "./actions";
 
 export const instant = false;
 export const metadata: Metadata = { title: "API" };
@@ -22,6 +22,7 @@ export default async function ApiPage({ params }: PageProps<"/t/[tenant]/api">) 
         onCreate={createApiKey}
         onRevoke={revokeApiKey}
         onRotate={rotateApiKey}
+        onUpdateLimit={updateApiKeyLimit}
       />
     </div>
   );

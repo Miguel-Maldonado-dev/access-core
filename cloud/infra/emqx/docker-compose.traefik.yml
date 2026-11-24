@@ -59,6 +59,10 @@ services:
   emqx:
     image: emqx/emqx:5.8.6
     container_name: ${EMQX_CONTAINER_NAME:-acceso-emqx}
+    # Nombre de nodo fijo: EMQX guarda su base (llaves de API, usuarios del dashboard) en
+    # data/mnesia/<nodo>. Sin esto el nodo se llama emqx@<IP del contenedor>, la IP cambia al
+    # recrear el contenedor y EMQX arranca con una base vacía (la llave de la aplicación da 401).
+    hostname: emqx.acceso.local
     restart: unless-stopped
     depends_on:
       certs:
@@ -66,6 +70,7 @@ services:
     entrypoint: ["/bin/bash", "/opt/emqx/etc/render-entrypoint.sh"]
     environment:
       EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:?define EMQX_NODE_COOKIE}
+      EMQX_NODE__NAME: emqx@emqx.acceso.local
       APP_URL: ${APP_URL:?define APP_URL}
       EMQX_WEBHOOK_SECRET: ${EMQX_WEBHOOK_SECRET:?define EMQX_WEBHOOK_SECRET}
       EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USER:-admin}

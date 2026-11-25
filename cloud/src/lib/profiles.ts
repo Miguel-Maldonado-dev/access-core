@@ -42,13 +42,14 @@ export interface ProfileRow {
 }
 
 const REGLA_COLUMNAS =
-  "id, profile_id, panel_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, allow_remote, weekday_mask, start_minute, end_minute";
+  "id, profile_id, panel_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, allow_remote, allow_call, weekday_mask, start_minute, end_minute";
 const CAMPOS_REGLA = [
   "output_mask",
   "card_reader_mask",
   "pin_reader_mask",
   "allow_rf",
   "allow_remote",
+  "allow_call",
   "weekday_mask",
   "start_minute",
   "end_minute",
@@ -66,6 +67,7 @@ const reglaEsquema = z.strictObject({
   pin_reader_mask: entero(0, 15),
   allow_rf: z.boolean(),
   allow_remote: z.boolean(),
+  allow_call: z.boolean().optional(),
   weekday_mask: entero(0, 127),
   start_minute: entero(0, 1439),
   end_minute: entero(0, 1439),
@@ -346,8 +348,10 @@ export async function saveProfileRulesAs(
   if (errorVigentes) throw errorVigentes;
   const porPanel = new Map((vigentes as RuleRow[]).map((r) => [r.panel_id, r]));
 
-  for (const [panelId, regla] of pedidos) {
+  for (const [panelId, pedida] of pedidos) {
     const actual = porPanel.get(panelId);
+    // `allow_call` omitido conserva el valor guardado (false en una regla nueva).
+    const regla = pedida === null ? null : { ...pedida, allow_call: pedida.allow_call ?? actual?.allow_call ?? false };
     if (regla === null) {
       if (!actual) continue;
       const { error } = await cliente

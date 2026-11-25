@@ -379,6 +379,7 @@ class SyncEngine:
                 with transaction(conn):
                     set_state(conn, ADOPT_BACKUP_KEY, "1")
             outputs = remote.pop("outputs")
+            settings = remote.pop("call_settings")
             with applying(conn):
                 changes, _ = _replacement(snapshot_tables(conn), remote)
                 apply_changes(conn, changes, keep_pending=False)
@@ -387,6 +388,9 @@ class SyncEngine:
                     conn.execute("UPDATE outputs SET uuid = ? WHERE uuid = ? AND output_id <> ?",
                                  (str(uuid.uuid4()), output_uuid, output_id))
                     conn.execute("UPDATE outputs SET uuid = ? WHERE output_id = ?", (output_uuid, output_id))
+                # call_settings igual que las salidas: toma el UUID de la nube y conserva sus valores.
+                for settings_uuid in list(settings)[:1]:
+                    conn.execute("UPDATE call_settings SET uuid = ? WHERE id = 1", (settings_uuid,))
                 conn.execute("DELETE FROM sync_outbox")
                 # Las salidas conservan sus valores locales: los que difieren de la nube se suben.
                 for output_uuid, data in outputs.items():
@@ -395,6 +399,9 @@ class SyncEngine:
                             "INSERT INTO sync_outbox(change_id, table_name, op, row_uuid, updated_at)"
                             " SELECT ?, 'outputs', 'upsert', uuid, updated_at FROM outputs WHERE uuid = ?",
                             (uuid.uuid4().hex, output_uuid))
+                for settings_uuid, data in list(settings.items())[:1]:
+                    if row_to_data(conn, "call_settings", settings_uuid) not in (None, data):
+                        _requeue(conn, "call_settings", "upsert", settings_uuid, now_ms())
                 set_state(conn, "cloud_revision", str(r0))
                 conn.execute("DELETE FROM sync_state WHERE key = ?", (ADOPT_BACKUP_KEY,))
         log.info("Datos de la nube adoptados (revisión %d)", r0)

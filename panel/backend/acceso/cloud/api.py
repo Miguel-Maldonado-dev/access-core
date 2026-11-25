@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Mapping, Optional
 import httpx
 
 from acceso.cloud.identity import Identity
+from acceso.constants import SCHEMA_VERSION
 
 API_PREFIX = "/api/device/v1"
 DEFAULT_TIMEOUT_S = 30.0
@@ -85,7 +86,8 @@ class CloudApi:
         self._authorization = "Device %s.%s" % (panel_code, token)
 
     def _send(self, method: str, path: str, *, auth: bool, **kwargs: Any) -> httpx.Response:
-        headers = {}  # type: Dict[str, str]
+        # La nube solo envía teléfonos, llamadas y `allow_call` a paneles que declaran el esquema 8.
+        headers = {"X-Acc-Schema": str(SCHEMA_VERSION)}  # type: Dict[str, str]
         if auth:
             if self._authorization is None:
                 raise RuntimeError("Falta llamar a authenticate() antes de usar la API del dispositivo")

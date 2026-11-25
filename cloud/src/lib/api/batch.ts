@@ -23,7 +23,7 @@ import { resumenDeError } from "@/lib/http-errors";
 import { createAdminSupabase } from "@/lib/supabase/admin";
 
 /**
- * Lotes de la API pública: `POST .../{holders,cards,controls}/batch`.
+ * Lotes de la API pública: `POST .../{holders,cards,controls,phones}/batch`.
  *
  * - Cada elemento se procesa con la MISMA operación que la ruta individual (`operaciones*`),
  *   en orden, y falla con su mismo estado, código y mensaje; un fallo no revierte a los demás.
@@ -106,6 +106,18 @@ export function parseCodes(texto: string, nombre: string): Set<number> {
   );
   if (partes.length > MAX_CODIGOS || partes.some((p) => !/^\d{1,10}$/.test(p))) throw invalido;
   return new Set(partes.map(Number));
+}
+
+/** `?numbers=`: números de 10 dígitos separados por comas, de 1 a 200; si no, 400. */
+export function parseNumbers(texto: string): Set<string> {
+  const partes = texto.split(",").map((p) => p.trim());
+  const invalido = new ApiError(
+    400,
+    "bad_request",
+    `El parámetro numbers debe ser una lista de 1 a ${MAX_CODIGOS} números de 10 dígitos separados por comas.`,
+  );
+  if (partes.length > MAX_CODIGOS || partes.some((p) => !/^\d{10}$/.test(p))) throw invalido;
+  return new Set(partes);
 }
 
 function resultadoDeGuardada(ref: string, idPedido: string | undefined, g: RespuestaGuardada): ResultadoElemento {

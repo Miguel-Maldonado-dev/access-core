@@ -26,6 +26,7 @@ export interface Permission {
   end_minute: number;
   allow_rf: boolean;
   allow_remote: boolean;
+  allow_call: boolean;
 }
 
 export interface Output {
@@ -103,4 +104,32 @@ export interface CloudStatus {
   cloud_revision: number;
   pending_changes: number;
   last_error: string | null;
+}
+
+export interface Phone {
+  phone_id: number;
+  holder_id: number;
+  holder_name: string;
+  number: string;
+  description: string;
+}
+
+export type CallMode = "single" | "menu";
+
+export interface CallSettings {
+  enabled: boolean;
+  mode: CallMode;
+  output_id: number;
+  menu_mask: number;
+  default_output: number | null;
+  call_limit_per_minute: number;
+}
+
+export interface GsmStatus {
+  ok: boolean;
+  enabled: boolean | null;
+  port: string | null;
+  connected: boolean;
+  registered: boolean | null;
+  signal: number | null;
 }

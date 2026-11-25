@@ -120,7 +120,11 @@ def run_daemon(settings: Settings, stop: threading.Event, *,
                sleep: Callable[[float], None] = time.sleep,
                socket_server_factory: Callable[..., Any] = DaemonSocketServer,
                purge: Callable[..., int] = purge_old_logs,
-               purge_interval_s: float = 86400) -> None:
+               purge_interval_s: float = 86400,
+               open_gsm: Callable[[str, int], SerialPort] = open_serial_port) -> None:
+    from .calls import CallAuthorizer  # import diferido: gsm importa este módulo
+    from .gsm import GsmService
+
     conn = connect(settings.db_path)
     retention = threading.Thread(target=_retention_loop,
                                  args=(settings, stop, purge, purge_interval_s),
@@ -129,15 +133,23 @@ def run_daemon(settings: Settings, stop: threading.Event, *,
     relay = RelayLink()
     tester = OutputTester(settings.db_path, relay, settings.log_max_entries)
     rf_listener = RfListener(settings.db_path)
+    gsm = GsmService(settings,
+                     CallAuthorizer(settings.db_path, tester.send_if_free,
+                                    settings.log_max_entries),
+                     open_port=open_gsm, sleep=stop.wait)
+    gsm_thread = threading.Thread(target=gsm.run, args=(stop,), name="gsm", daemon=True)
 
     def dispatch(request: Dict[str, Any]) -> Dict[str, Any]:
         if request.get("op") == "listen_rf":
             return rf_listener.handle(request)
+        if request.get("op") == "gsm_status":
+            return gsm.handle(request)
         return tester.handle(request)
 
     server = _start_socket_server(socket_server_factory, settings.daemon_socket, dispatch)
     try:
         retention.start()
+        gsm_thread.start()
         while not stop.is_set():
             try:
                 port = open_serial(settings.uart_port, settings.uart_baud)
@@ -162,6 +174,8 @@ def run_daemon(settings: Settings, stop: threading.Event, *,
         conn.close()
         if retention.is_alive():
             retention.join(2)
+        if gsm_thread.is_alive():
+            gsm_thread.join(2)
 
 
 def main() -> None:

@@ -38,4 +38,19 @@ if grep -q 'install -m 644 "$PKG/deploy/acceso-cloud.service" /etc/systemd/syste
    && grep -q 'systemctl restart acceso-daemon acceso-web acceso-cloud' "$inst"; then echo "ok      install.sh instala, habilita y reinicia acceso-cloud"; else echo "FALLO   install.sh no maneja acceso-cloud"; fail=1; fi
 cl_line="$(grep -n 'crea_cloud_env_si_falta' "$inst" | tail -n1 | cut -d: -f1)"
 if [ -n "$cl_line" ] && [ "$cl_line" -lt "$en_line" ]; then echo "ok      cloud.env se crea antes de arrancar servicios"; else echo "FALLO   cloud.env debe crearse antes de enable/restart"; fail=1; fi
+# --- SIM808 por USB: validación, regla udev y GSM_PORT ---
+if sim808_usb_valido 'zzzz:1'; then echo "FALLO   --sim808-usb zzzz:1 debía rechazarse"; fail=1; else echo "ok      --sim808-usb zzzz:1 rechazado"; fi
+sim808_usb_valido '1a86:7523' && echo "ok      --sim808-usb 1a86:7523 aceptado" || { echo "FALLO   1a86:7523 debía aceptarse"; fail=1; }
+d="$(mktemp -d)"
+escribe_regla_sim808 "$(dirname "${BASH_SOURCE[0]}")/99-sim808.rules.in" "$d/99-sim808.rules" '1A86:7523'
+if grep -qxF 'SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="sim808", GROUP="dialout", MODE="0660"' "$d/99-sim808.rules"; then echo "ok      regla udev del SIM808 generada"; else echo "FALLO   regla udev del SIM808"; fail=1; fi
+if escribe_regla_sim808 "$(dirname "${BASH_SOURCE[0]}")/99-sim808.rules.in" "$d/mala.rules" 'zzzz:1'; then echo "FALLO   regla con VID:PID inválido"; fail=1; else echo "ok      regla rechazada con VID:PID inválido"; fi
+printf 'UART_PORT=/dev/serial0\n# GSM_PORT=\n' > "$d/a.env"; fija_gsm_port_si_vacio "$d/a.env"
+[ "$(sed -n 's/^GSM_PORT=//p' "$d/a.env")" = "/dev/sim808" ] && echo "ok      GSM_PORT fijado a /dev/sim808" || { echo "FALLO   GSM_PORT no fijado"; fail=1; }
+printf 'GSM_PORT=\n' > "$d/b.env"; fija_gsm_port_si_vacio "$d/b.env"
+[ "$(cat "$d/b.env")" = "GSM_PORT=/dev/sim808" ] && echo "ok      GSM_PORT vacío reemplazado" || { echo "FALLO   GSM_PORT vacío"; fail=1; }
+printf 'GSM_PORT=/dev/ttyS1\n' > "$d/c.env"; fija_gsm_port_si_vacio "$d/c.env"
+[ "$(cat "$d/c.env")" = "GSM_PORT=/dev/ttyS1" ] && echo "ok      GSM_PORT con valor no se toca" || { echo "FALLO   GSM_PORT con valor modificado"; fail=1; }
+rm -rf "$d"
+if grep -q -- '--sim808-usb' "$inst" && grep -q 'udevadm control --reload' "$inst"; then echo "ok      install.sh maneja --sim808-usb"; else echo "FALLO   install.sh sin --sim808-usb"; fail=1; fi
 [ "$fail" -eq 0 ] && echo "TODO OK" || { echo "HAY FALLOS"; exit 1; }

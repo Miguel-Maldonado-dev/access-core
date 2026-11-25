@@ -52,6 +52,7 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
   const [start, setStart] = useState(minutesToHHMM(permission?.start_minute ?? 0));
   const [end, setEnd] = useState(minutesToHHMM(permission?.end_minute ?? 0));
   const [allowRf, setAllowRf] = useState(permission?.allow_rf ?? false);
+  const [allowCall, setAllowCall] = useState(permission?.allow_call ?? false);
   const [allowRemote, setAllowRemote] = useState(permission?.allow_remote ?? false);
   const [error, setError] = useState("");
 
@@ -87,6 +88,7 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
       end_minute: endMinute,
       allow_rf: allowRf,
       allow_remote: allowRemote,
+      allow_call: allowCall,
     });
   }
 
@@ -158,6 +160,15 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
         </label>
         <p className="mt-1 text-sm text-muted">
           El control RF no depende del lector: usa las salidas, días y horario de este permiso.
+        </p>
+      </div>
+      <div className="sm:col-span-2">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <input type="checkbox" checked={allowCall} onChange={(e) => setAllowCall(e.target.checked)} />
+          Permitir llamada
+        </label>
+        <p className="mt-1 text-sm text-muted">
+          El titular abre llamando desde uno de sus teléfonos, con las salidas, días y horario de este permiso.
         </p>
       </div>
       <div className="sm:col-span-2">

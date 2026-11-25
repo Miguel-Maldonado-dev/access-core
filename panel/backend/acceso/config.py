@@ -6,6 +6,8 @@ from typing import Mapping, Optional, Sequence, Tuple
 
 import acceso
 
+from .constants import GSM_BAUD
+
 
 class ConfigError(Exception):
     """Configuración faltante o inválida."""
@@ -27,6 +29,8 @@ class Settings:
     static_dir: Path
     # Con valor por omisión y al final: tests/conftest.py construye Settings a mano.
     daemon_socket: str = "/run/acceso/daemon.sock"
+    gsm_port: str = ""
+    gsm_baud: int = GSM_BAUD
 
 
 def _int(env: Mapping[str, str], name: str, default: int) -> int:
@@ -71,4 +75,6 @@ def load_settings(
         cors_origins=origins,
         static_dir=Path(text("STATIC_DIR")) if text("STATIC_DIR") else default_static,
         daemon_socket=text("DAEMON_SOCKET", "/run/acceso/daemon.sock"),
+        gsm_port=text("GSM_PORT"),
+        gsm_baud=_int(env, "GSM_BAUD", GSM_BAUD),
     )

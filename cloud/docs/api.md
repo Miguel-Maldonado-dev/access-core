@@ -1,6 +1,6 @@
 # API pública de Access Core (`/api/v1`)
 
-API REST para administrar una instalación desde sistemas externos: titulares, tarjetas, PIN, controles, perfiles, apertura remota de salidas, y consulta de paneles, salidas, logs y estado de sincronización.
+API REST para administrar una instalación desde sistemas externos: titulares, tarjetas, teléfonos (abrir llamando), PIN, controles, perfiles, apertura remota de salidas, y consulta de paneles, salidas, logs y estado de sincronización.
 
 - **Base:** `https://<APP_URL>/api/v1` (en local, `http://localhost:3001/api/v1`).
 - **OpenAPI 3.1:** `GET /api/v1/openapi.json` (público, sin llave). Es el contrato completo de rutas, cuerpos y respuestas.
@@ -100,7 +100,7 @@ curl -s -H "Authorization: Bearer $KEY" $API/installations/$INST/sync-status
 
 ## Lotes
 
-`POST /installations/{id}/holders/batch`, `.../cards/batch` y `.../controls/batch` procesan **hasta 200** operaciones del mismo recurso en una llamada (se usa la subruta `/batch`; la forma `holders:batch` no existe).
+`POST /installations/{id}/holders/batch`, `.../cards/batch`, `.../phones/batch` y `.../controls/batch` procesan **hasta 200** operaciones del mismo recurso en una llamada (se usa la subruta `/batch`; la forma `holders:batch` no existe).
 
 ```bash
 curl -s -X POST $API/installations/$INST/holders/batch \
@@ -116,7 +116,7 @@ curl -s -X POST $API/installations/$INST/holders/batch \
 #   {"ref":"4823","ok":false,"status":404,"code":"not_found","message":"El titular no existe."}]}
 ```
 
-- **Elemento:** `ref` (1 a 64 caracteres, único en el lote, se devuelve igual), `op` (`create`, `update` o `delete`), `id` (obligatorio en `update` y `delete`, prohibido en `create`), `idempotency_key` (obligatoria, 1 a 200 caracteres) y `data` (en `create` y `update`, el mismo cuerpo que el endpoint individual; no en `delete`). `update` es el `PATCH` en titulares y tarjetas y el `PUT` (reemplazo) en controles.
+- **Elemento:** `ref` (1 a 64 caracteres, único en el lote, se devuelve igual), `op` (`create`, `update` o `delete`), `id` (obligatorio en `update` y `delete`, prohibido en `create`), `idempotency_key` (obligatoria, 1 a 200 caracteres) y `data` (en `create` y `update`, el mismo cuerpo que el endpoint individual; no en `delete`). `update` es el `PATCH` en titulares, tarjetas y teléfonos y el `PUT` (reemplazo) en controles.
 - **Resultados:** `200` aunque fallen elementos, uno por elemento, en el mismo orden. `ok: true` trae `id` (nuevo en `create`) y `data` como el endpoint individual (`{id}` en `delete`). `ok: false` trae `status`, `code` y `message` **iguales** a los del endpoint individual (cada elemento usa la misma lógica). Un `id` faltante o sobrante, o `data` faltante o sobrante, falla solo ese elemento con `400 bad_request`. Un error inesperado da `500 internal_error` en ese elemento y los demás siguen.
 - **Éxito parcial y orden:** cada elemento se aplica por separado y en orden; un fallo no revierte a los demás. El mismo `id` dos veces equivale a dos llamadas seguidas. Los elementos no pueden referirse a otros del mismo lote.
 - **Revisión:** `revision` es la de la instalación al terminar y es una **cota inferior** de la revisión publicada (una escritura concurrente o un cierre fallido pueden dejar la publicada por encima); sube **una sola vez** si algo cambió y los paneles reciben un solo aviso; si nada cambió, no sube. (Si otra escritura ajena al lote llega mientras se procesa, la revisión puede subir más de una vez; nunca se pierde un cambio.) Si falla el cierre del lote, la respuesta trae la revisión actual, que todavía **no incluye** los cambios del lote: se publican solos al caducar el lote (como máximo ~70 s más un minuto del trabajo que lo cierra) y entonces los paneles reciben el aviso.
@@ -127,7 +127,7 @@ curl -s -X POST $API/installations/$INST/holders/batch \
 
 ### Buscar por código
 
-`GET .../cards?codes=123456,789012` y `GET .../controls?rf_codes=1001,1002` (de 1 a 200 códigos decimales separados por comas) responden `{data: [...]}` con el esquema del listado; lista vacía si no hay coincidencias; un valor inválido, `400`.
+`GET .../cards?codes=123456,789012` y `GET .../controls?rf_codes=1001,1002` (de 1 a 200 códigos decimales separados por comas), y `GET .../phones?numbers=5512345678,5587654321` (de 1 a 200 números de 10 dígitos) responden `{data: [...]}` con el esquema del listado; lista vacía si no hay coincidencias; un valor inválido, `400`.
 
 ## Ejemplos
 
@@ -161,6 +161,22 @@ curl -s -X POST $API/installations/$INST/cards \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d "{\"card_code\":1234567,\"holder_id\":\"$HOLDER\"}"
 ```
+
+### Teléfono
+
+Permite que un titular abra llamando desde un número registrado (módulo SIM808 del panel). El número se envía con **10 dígitos** (se quitan espacios y guiones: `55 1234-5678` se guarda como `5512345678`). Si otro teléfono vivo de la instalación ya lo tiene, `409 conflict` con el mensaje "El número ya está registrado"; uno que no tenga 10 dígitos da `400`.
+
+```bash
+curl -s -X POST $API/installations/$INST/phones \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d "{\"number\":\"5512345678\",\"holder_id\":\"$HOLDER\",\"description\":\"Celular\"}"
+```
+
+- `PATCH .../phones/{id}` cambia `number`, `holder_id` o `description` (cuerpo vacío: `400 "No hay cambios."`); `DELETE` es un borrado lógico que libera el número; `GET .../phones?numbers=5512345678,5587654321` busca por número.
+- **Reglas:** la regla de un perfil por panel lleva `allow_call` (abrir llamando). Es opcional al escribir: si se omite, se conserva el valor actual (`false` en una regla nueva); las respuestas siempre lo traen. Un teléfono abre solo las salidas que el perfil del titular permite con `allow_call`, dentro de su horario, y que el módulo de llamadas del panel tenga activas.
+- **Los paneles solo reciben los teléfonos** si su módulo de llamadas está activado (se configura en la interfaz web, no en la API) y son v8; con el módulo apagado el panel recibe el borrado de todos sus teléfonos.
+- **Advertencia de seguridad:** el identificador de llamada (CLIP) lo informa la red y **puede falsificarse**. Quien conozca un número registrado y pueda suplantarlo podría abrir las salidas que el permiso del titular permita. Concede `allow_call` solo a salidas de bajo riesgo y no lo uses como único control en accesos críticos.
+- En los logs, el origen `6` es "Llamada", los motivos `12` y `13` son "Teléfono desconocido" y "Límite de llamadas" (máximo 3 aperturas por minuto por número); `credential_label` trae el número completo (`Oculto` si no llegó) y `device_id` la tecla del menú (1 a 4) cuando la hubo.
 
 ### PIN generado
 
@@ -226,7 +242,7 @@ curl -s -X PUT $API/installations/$INST/profiles/<profile-id>/rules \
 
 Las máscaras de salidas y lectores tienen un bit por cada S1 a S4 y L1 a L4 (bit 0 = S1 o L1); `weekday_mask` tiene el bit 0 en lunes.
 
-`allow_remote` (permite la apertura remota) es opcional al escribir: si se omite, se conserva el valor actual (`false` en una regla nueva); las respuestas siempre lo traen. En los logs, el origen `4` es "Remota" y el motivo `11` es "Titular desconocido".
+`allow_remote` (permite la apertura remota) y `allow_call` (permite abrir llamando) son opcionales al escribir: si se omiten, se conserva el valor actual (`false` en una regla nueva); las respuestas siempre los traen. En los logs, el origen `4` es "Remota" y el motivo `11` es "Titular desconocido".
 
 ### Apertura remota
 
@@ -259,7 +275,7 @@ Errores: `400` si el titular no existe en la instalación (o está borrado), `40
 ### Lecturas
 
 - `GET /installations`, `GET /installations/{id}`, `GET .../panels`, `GET .../outputs`.
-- `GET .../logs`: páginas de 50, del más reciente al más viejo. Filtros: `desde`, `hasta` (`AAAA-MM-DD`), `panel`, `titular`, `resultado` (`permitido` o `denegado`), `origen` (`0` tarjeta, `1` control RF, `2` botón, `3` PIN, `4` remota o `5` prueba) y `pagina`. Responde `{data, page, page_size, total}`. Un filtro inválido da `400`. Los logs de PIN llevan `code: null`. La nube conserva los logs 30 días (un trabajo diario borra los más viejos) y no guarda intentos de controles RF desconocidos (motivo `5`, ya no se registra); si un admin usa "Borrar logs", los anteriores a esa purga tampoco vuelven a subirse.
+- `GET .../logs`: páginas de 50, del más reciente al más viejo. Filtros: `desde`, `hasta` (`AAAA-MM-DD`), `panel`, `titular`, `resultado` (`permitido` o `denegado`), `origen` (`0` tarjeta, `1` control RF, `2` botón, `3` PIN, `4` remota, `5` prueba o `6` llamada) y `pagina`. Responde `{data, page, page_size, total}`. Un filtro inválido da `400`. Los logs de PIN llevan `code: null`. La nube conserva los logs 30 días (un trabajo diario borra los más viejos) y no guarda intentos de controles RF desconocidos (motivo `5`, ya no se registra); si un admin usa "Borrar logs", los anteriores a esa purga tampoco vuelven a subirse.
 
 ## Pendiente
 

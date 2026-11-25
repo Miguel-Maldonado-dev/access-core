@@ -109,7 +109,7 @@ class OutputTester:
             return self._remote_open(request)
         return self._test_output(request)
 
-    def _send_if_free(self, output: int, duration_ms: int) -> Optional[bool]:
+    def send_if_free(self, output: int, duration_ms: int) -> Optional[bool]:
         """Envía la orden si la salida no está ocupada: None si ocupada; True/False si se envió."""
         with self._lock:
             if self._clock() < self._busy_until.get(output, float("-inf")):
@@ -144,7 +144,7 @@ class OutputTester:
                                            self._now()):
                     reason = REASON_NO_PERMISSION
                 else:
-                    sent = self._send_if_free(output, out["duration_ms"])
+                    sent = self.send_if_free(output, out["duration_ms"])
                     if sent is None:
                         return REMOTE_BUSY
                     reason = REASON_ALLOWED if sent else REASON_UART_ERROR
@@ -167,7 +167,7 @@ class OutputTester:
                                (output,)).fetchone()
             if row is None:
                 return {"ok": False, "detail": "La salida %d no existe." % (output + 1)}
-            sent = self._send_if_free(output, row["duration_ms"])
+            sent = self.send_if_free(output, row["duration_ms"])
             if sent is None:
                 return BUSY
             append_log(conn, timestamp=int(self._wall()), allowed=sent, source=SOURCE_TEST,

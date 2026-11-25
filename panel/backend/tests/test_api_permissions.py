@@ -138,3 +138,14 @@ def test_put_validates_allow_remote(client, db):
     client.post("/api/permissions", json=PERM)
     body = {k: v for k, v in PERM.items() if k != "permission_id"}
     assert client.put("/api/permissions/3", json={**body, "allow_remote": "si"}).status_code == 422
+
+
+def test_permission_allow_call_roundtrip(client, db):
+    assert client.get("/api/permissions").json()[0]["allow_call"] is False
+    r = client.post("/api/permissions", json={**PERM, "allow_call": True})
+    assert r.status_code == 201 and r.json()["allow_call"] is True
+    body = {k: v for k, v in PERM.items() if k != "permission_id"}
+    # PUT sin el campo conserva el valor; con el campo lo cambia.
+    assert client.put("/api/permissions/3", json=body).json()["allow_call"] is True
+    assert client.put("/api/permissions/3", json={**body, "allow_call": False}).json()["allow_call"] is False
+    assert client.post("/api/permissions", json={**PERM, "permission_id": 4}).json()["allow_call"] is False

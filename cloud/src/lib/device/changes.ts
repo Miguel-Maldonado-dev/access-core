@@ -4,7 +4,7 @@ import { fetchAll } from "@/lib/access-data";
 import type { Panel } from "@/lib/device/auth";
 import { tableChecksum } from "@/lib/device/checksum";
 import {
-  TABLES,
+  tablesForSchema,
   type ChangeItem,
   type ChecksumsResponse,
   type PullResponse,
@@ -18,16 +18,21 @@ import {
   hasNoLiveButtons,
   isControlVisible,
   liveRows,
+  loadCallSettings,
   loadControlContext,
   loadPermissionContext,
+  panelGetsPhones,
   profileFrom,
+  projectCallSettings,
   projectCard,
   projectControl,
   projectHolder,
   projectHolderPermission,
   projectOutput,
-  projectPermission,
+  projectPermissionFor,
+  projectPhone,
   type ButtonLinkRow,
+  type CallSettingsRow,
   type CardRow,
   type ControlButtonRow,
   type ControlContext,
@@ -35,6 +40,7 @@ import {
   type HolderRow,
   type OutputRow,
   type PermissionContext,
+  type PhoneRow,
   type RuleRow,
   type SourceTable,
 } from "@/lib/device/projection";
@@ -50,8 +56,8 @@ import { createAdminSupabase } from "@/lib/supabase/admin";
  * en el siguiente pull.
  */
 
-/** Tablas de origen que consulta el pull, en el orden en que se leen. */
-const ORIGENES_PULL: readonly SourceTable[] = [
+/** Tablas de origen que consulta el pull de un panel v7, en el orden en que se leen. */
+const ORIGENES_PULL_V7: readonly SourceTable[] = [
   "holders",
   "cards",
   "controls",
@@ -62,6 +68,12 @@ const ORIGENES_PULL: readonly SourceTable[] = [
   "holder_profiles",
   "outputs",
 ];
+
+/** Tablas de origen que consulta el pull de un panel v8: también teléfonos y llamadas. */
+const ORIGENES_PULL: readonly SourceTable[] = [...ORIGENES_PULL_V7, "phones", "panel_call_settings"];
+
+/** Los orígenes del pull para ese panel (un panel v7 no conoce teléfonos ni llamadas). */
+const origenesPull = (panel: Panel) => (panel.schema >= 8 ? ORIGENES_PULL : ORIGENES_PULL_V7);
 
 /** Orígenes que se proyectan a `permissions` (por perfil) o necesitan los perfiles. */
 const ORIGENES_DE_PERFILES: ReadonlySet<SourceTable> = new Set([
@@ -107,6 +119,7 @@ const TABLA_LOCAL: Partial<Record<SourceTable, TableName>> = {
   control_buttons: "control_buttons",
   holder_profiles: "holder_permissions",
   outputs: "outputs",
+  phones: "phones",
 };
 
 function isConfirmDeletionsActive(until: string | null, now = Date.now()): boolean {
@@ -249,6 +262,8 @@ function proyectarCambio(
     }
     case "outputs":
       return { table: "outputs", op: "upsert", id, revision, data: projectOutput(fila as unknown as OutputRow) };
+    case "phones":
+      return { table: "phones", op: "upsert", id, revision, data: projectPhone(fila as unknown as PhoneRow) };
     default:
       throw new Error(`Origen sin proyección: ${origen}.`);
   }
@@ -303,6 +318,52 @@ function proyectarDeControles(
   if (!isControlVisible(ctx, suControl) || hasNoLiveButtons(ctx, suControl)) enviarControl(suControl);
 }
 
+/** Un teléfono de la instalación (vivo o borrado) con su revisión. */
+type TelefonoCrudo = PhoneRow & { deleted_at: string | null; revision: number };
+
+/** Todos los teléfonos de la instalación, también los borrados (con su revisión). */
+function leerTodosLosTelefonos(admin: SupabaseClient, panel: Panel): Promise<TelefonoCrudo[]> {
+  return fetchAll<TelefonoCrudo>((desde, hasta) =>
+    admin
+      .from("phones")
+      .select(`${SOURCE_COLUMNS.phones}, deleted_at, revision`)
+      .eq("installation_id", panel.installation_id)
+      .order("id")
+      .range(desde, hasta),
+  );
+}
+
+/**
+ * Un cambio de la configuración de llamadas del panel (solo panel v8): `upsert` de
+ * `call_settings` y, con la misma revisión, los teléfonos que cambian de visibilidad:
+ * - activado: `upsert` de los teléfonos vivos con revisión ≤ la de este cambio (su titular ya
+ *   llegó antes en el feed). Los que cambiaron después salen con su propia entrada, en su orden
+ *   de revisión (después de su titular), en esta página o en un pull posterior;
+ * - desactivado: `delete` de todos los teléfonos de la instalación (vivos y borrados: el panel
+ *   pudo tener cualquiera), para que el número no quede en una placa que no lo usa.
+ * Una configuración borrada (de un vínculo anterior del panel) no se emite: el panel nunca
+ * borra su `call_settings`.
+ */
+async function proyectarAjustesDeLlamadas(
+  admin: SupabaseClient,
+  panel: Panel,
+  fila: FilaCruda["fila"],
+  cambios: ChangeItem[],
+): Promise<void> {
+  if (fila.deleted_at !== null) return;
+  const { id, revision } = fila;
+  const ajustes = fila as unknown as CallSettingsRow;
+  cambios.push({ table: "call_settings", op: "upsert", id, revision, data: projectCallSettings(ajustes) });
+  const telefonos = await leerTodosLosTelefonos(admin, panel);
+  for (const t of telefonos) {
+    if (!ajustes.enabled) {
+      cambios.push({ table: "phones", op: "delete", id: t.id, revision });
+    } else if (t.deleted_at === null && t.revision <= revision) {
+      cambios.push({ table: "phones", op: "upsert", id: t.id, revision, data: projectPhone(t) });
+    }
+  }
+}
+
 /**
  * Cambios de la instalación para un panel desde `since`, en páginas de `limit` cambios
  * de origen ordenados por revisión.
@@ -314,6 +375,10 @@ function proyectarDeControles(
  *   emite `delete`. Si un perfil aparece varias veces en la página, sale una sola entrada
  *   con la revisión más alta.
  * - `revision` = R si no hay más; si `has_more`, la revisión del último cambio devuelto.
+ * - Panel v8: un cambio de `panel_call_settings` emite `call_settings` y, con su revisión,
+ *   todos los teléfonos (ver `proyectarAjustesDeLlamadas`); un cambio de `phones` solo se
+ *   emite si el módulo de llamadas del panel está activado (`panelGetsPhones`). Un panel v7
+ *   no recibe teléfonos, `call_settings` ni `permissions.allow_call`.
  * - Cada página trae `logs_cleared_at` (ISO o nulo) de la instalación.
  * - Guarda `panels.synced_revision = since` y `last_sync_at`.
  * - Si `0 < since < installations.purged_revision` responde `revision = since - 1` sin
@@ -350,7 +415,7 @@ export async function listChanges(panel: Panel, since: number, limit: number): P
 
   // Con limit + 1 filas por origen basta: las primeras limit + 1 de la mezcla están ahí.
   const porOrigen = await Promise.all(
-    ORIGENES_PULL.map((origen) => leerCambiosDeOrigen(admin, panel, origen, since, R, limit + 1)),
+    origenesPull(panel).map((origen) => leerCambiosDeOrigen(admin, panel, origen, since, R, limit + 1)),
   );
   const crudas = porOrigen.flat().sort((a, b) => a.fila.revision - b.fila.revision);
   let hasMore = crudas.length > limit;
@@ -365,7 +430,7 @@ export async function listChanges(panel: Panel, since: number, limit: number): P
       pagina = pagina.filter((c) => c.fila.revision < partida);
     } else {
       const grupo = await Promise.all(
-        ORIGENES_PULL.map((origen) => leerGrupoDeOrigen(admin, panel, origen, partida)),
+        origenesPull(panel).map((origen) => leerGrupoDeOrigen(admin, panel, origen, partida)),
       );
       pagina = grupo.flat();
       hasMore = partida < R;
@@ -375,10 +440,13 @@ export async function listChanges(panel: Panel, since: number, limit: number): P
   // Los perfiles y las reglas se leen después de la página: todo perfil al que apunta
   // una fila de la página ya existe (FK) y la proyección usa su versión vigente.
   // Igual con los controles, los botones y los vínculos del panel (estado vigente).
-  const [ctx, ctxControles] = await Promise.all([
+  // Los teléfonos sueltos se emiten según la configuración vigente del módulo de llamadas.
+  const [ctx, ctxControles, ajustes] = await Promise.all([
     pagina.some((c) => ORIGENES_DE_PERFILES.has(c.origen)) ? loadPermissionContext(admin, panel) : null,
     pagina.some((c) => ORIGENES_DE_CONTROLES.has(c.origen)) ? loadControlContext(admin, panel) : null,
+    panel.schema >= 8 && pagina.some((c) => c.origen === "phones") ? loadCallSettings(admin, panel) : null,
   ]);
+  const recibeTelefonos = panelGetsPhones(panel, ajustes);
 
   const cambios: ChangeItem[] = [];
   const revisionPorPerfil = new Map<string, number>();
@@ -391,6 +459,10 @@ export async function listChanges(panel: Panel, since: number, limit: number): P
         cruda.origen === "access_profiles" ? cruda.fila.id : (cruda.fila as unknown as RuleRow).profile_id;
       // La página va en orden de revisión: la última vista es la más alta.
       revisionPorPerfil.set(perfilId, cruda.fila.revision);
+    } else if (cruda.origen === "panel_call_settings") {
+      await proyectarAjustesDeLlamadas(admin, panel, cruda.fila, cambios);
+    } else if (cruda.origen === "phones") {
+      if (recibeTelefonos) cambios.push(proyectarCambio(cruda, ctx));
     } else {
       cambios.push(proyectarCambio(cruda, ctx));
     }
@@ -405,7 +477,7 @@ export async function listChanges(panel: Panel, since: number, limit: number): P
             op: "upsert",
             id: perfilId,
             revision,
-            data: projectPermission(perfil, ctx!.rulesByProfile.get(perfilId) ?? null),
+            data: projectPermissionFor(panel, perfil, ctx!.rulesByProfile.get(perfilId) ?? null),
           },
     );
   }
@@ -428,7 +500,7 @@ export async function panelSnapshot(panel: Panel, table: TableName): Promise<Sna
   return { revision, rows: await liveRows(admin, panel, table) };
 }
 
-/** `GET /checksums`: el checksum de la proyección viva de cada tabla, con R. */
+/** `GET /checksums`: el checksum de la proyección viva de cada tabla que conoce el panel, con R. */
 export async function panelChecksums(panel: Panel): Promise<ChecksumsResponse> {
   const admin = createAdminSupabase();
   const [revision, confirmDeletions] = await Promise.all([
@@ -436,11 +508,11 @@ export async function panelChecksums(panel: Panel): Promise<ChecksumsResponse> {
     leerConfirmarBorrados(admin, panel.id),
   ]);
   const sumas = await Promise.all(
-    TABLES.map(async (tabla) => [tabla, tableChecksum(await liveRows(admin, panel, tabla))] as const),
+    tablesForSchema(panel.schema).map(async (tabla) => [tabla, tableChecksum(await liveRows(admin, panel, tabla))] as const),
   );
   return {
     revision,
     confirm_deletions: confirmDeletions,
-    tables: Object.fromEntries(sumas) as Record<TableName, string>,
+    tables: Object.fromEntries(sumas) as Partial<Record<TableName, string>>,
   };
 }

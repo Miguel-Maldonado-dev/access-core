@@ -88,7 +88,7 @@ El ATmega queda en UART3, `/dev/ttyS3`.
 
 ### Qué hace `install.sh`
 
-Es idempotente. Pide la contraseña dos veces y rechaza los caracteres que systemd no lee bien. Instala `python3-venv` y `sqlite3`, crea el usuario `acceso` (grupo `dialout`), copia el backend a `/opt/acceso/backend`, crea el venv `/opt/acceso/venv`, prepara `/var/lib/acceso`, configura zona horaria `America/Mexico_City` con NTP, instala los servicios systemd y los arranca. Si no existe `/etc/acceso/acceso.env`, lo crea: te pide usuario (por defecto `admin`) y contraseña, elige el `UART_PORT` según la placa, genera `SESSION_SECRET` y lo deja con modo 600 y dueño `acceso`. Al final imprime `Panel listo en http://<ip>:8080`.
+Es idempotente. Pide la contraseña dos veces y rechaza los caracteres que systemd no lee bien. Instala `python3-venv` y `sqlite3`, crea el usuario `acceso` (grupo `dialout`), copia el backend a `/opt/acceso/backend`, crea el venv `/opt/acceso/venv`, prepara `/var/lib/acceso`, configura zona horaria `America/Mexico_City` con NTP, instala los servicios systemd y los arranca. Si no existe `/etc/acceso/acceso.env`, lo crea: te pide usuario (por defecto `admin`) y contraseña, elige el `UART_PORT` según la placa, genera `SESSION_SECRET` y lo deja con modo 600 y dueño `acceso`. Con `--sim808-usb VID:PID` instala además la regla udev del SIM808 (ver "Apertura por llamada"). Al final imprime `Panel listo en http://<ip>:8080`.
 
 ### Si `pip` no encuentra un paquete para la placa
 
@@ -166,6 +166,35 @@ La página **Salidas** tiene un botón **Probar** en cada salida: activa ese rel
 - **Motivo 5 ya no se registra:** una señal RF que no pertenece a ningún control (vecino, ruido) se ignora y no entra a los logs; solo la ve la escucha activa.
 - **Retención:** el panel borra los logs de más de 30 días (al arrancar y una vez al día). Si un admin usa "Borrar logs" en la nube, el panel borra en su siguiente sincronización los logs hasta esa marca (`sync_state.logs_cleared_at`).
 
+## Apertura por llamada (SIM808)
+
+Un titular abre llamando al número del SIM808 desde uno de sus teléfonos registrados. Esquema v8: `phones`, `call_settings` y la casilla **"Permitir llamada"** (`permissions.allow_call`) del permiso. Todo nace apagado.
+
+- **Hardware:** el SIM808 va conectado a la placa (Raspberry u Orange), no al ATmega; el protocolo UART no cambia. Lleva fuente propia de 3.4–4.4 V capaz de dar picos de 2 A, con un capacitor de 1000 µF o más junto al módulo, tierra común con la placa y conversión de nivel lógico si su tarjeta no la trae.
+- **Puerto:** `GSM_PORT` en `/etc/acceso/acceso.env`, a 9600 baudios. Vacía = función apagada. Aunque tenga valor, el daemon no abre el puerto mientras el módulo esté desactivado en **Llamadas**.
+  - **Raspberry Pi (adaptador USB):** `sudo ./deploy/install.sh --sim808-usb VID:PID` (el `VID:PID` sale de `lsusb`, por ejemplo `1a86:7523`). Escribe `/etc/udev/rules.d/99-sim808.rules`, que crea el enlace fijo `/dev/sim808` (grupo `dialout`, modo 0660), recarga udev y, si `GSM_PORT` está vacío, lo fija a `/dev/sim808`. Sin la regla, `/dev/ttyUSB0` puede cambiar de nombre entre arranques.
+  - **Orange Pi PC (UART del GPIO):** a mano, `GSM_PORT=/dev/ttyS1` o `/dev/ttyS2`, agregando `uart1` o `uart2` a `overlays=` en `/boot/armbianEnv.txt` y reiniciando.
+  - Después de cambiar `GSM_PORT`: `sudo systemctl restart acceso-daemon`.
+- **Llamadas** (menú de la web): activar el módulo; modo **"Una salida"** (no contesta: cuelga con `ATH` y abre la salida elegida) o **"Varias salidas"** (contesta con `ATA` y espera 8 s la tecla 1–4; las salidas del menú se marcan aquí y hay una salida predeterminada opcional; sin ella y sin tecla válida no abre); **"Aperturas por minuto por número"** (1–20, 3 por omisión); y el estado del módulo (puerto, registro en la red y señal). Al desactivar el módulo se pide confirmación y se borran los teléfonos de la placa (si está vinculada, la nube los vuelve a enviar al reactivarlo).
+- **Teléfonos:** la página aparece solo con el módulo activado. Se capturan 10 dígitos (se aceptan espacios y guiones); el número es único. Con el módulo apagado, el alta responde 422 "Activa el módulo de llamadas para agregar teléfonos.".
+- **Regla:** la salida abre solo si está activa en la configuración del módulo **y** en un permiso vigente (día y horario) del titular con "Permitir llamada". Una llamada a la vez.
+- **Logs:** origen **Llamada** (6), con el número completo en la credencial y la tecla en el lector. Motivos nuevos: **Teléfono desconocido** (12, número no registrado u oculto) y **Límite de llamadas** (13).
+- **Riesgos:**
+  - el identificador de llamada (CLIP) **se puede falsificar**: es un método de menor confianza que la tarjeta o el PIN. Por eso está apagado por omisión, tiene límite por minuto, solo abre las salidas del permiso y todo queda en el log;
+  - el modo **"Varias salidas" contesta**, así que al que llama se le puede cobrar la llamada; "Una salida" no contesta;
+  - las teclas (DTMF, `AT+DDET`) dependen del módulo y del operador: pruébalas antes de ofrecer el menú.
+- **Actualizar a v8:** al arrancar, los servicios dejan `<base>_backup_v7.sqlite`. **Para volver a un paquete v7** detén `acceso-daemon`, `acceso-web` y `acceso-cloud`, borra `<base>-wal` y `<base>-shm`, restaura `<base>_backup_v7.sqlite` y reinstala el paquete anterior (se pierden los cambios posteriores). Actualiza **primero la nube** (migración `phones_calls` y Vercel) y después la placa: un panel v8 con la nube vieja no puede subir cambios ni vincularse (la nube vieja rechaza `allow_call`, `phones` y `call_settings`), y su reconciliación devuelve `allow_call` a 0. Por eso primero se actualiza la nube y después los paneles. Un panel v7 con la nube nueva ignora teléfonos y llamada.
+
+### Prueba manual en la placa
+
+Con los servicios detenidos (`sudo systemctl stop acceso-daemon`; el daemon es dueño del puerto), abre el puerto con `sudo picocom -b 9600 --omap crcrlf /dev/sim808` (o `/dev/ttyS1`; `sudo apt-get install picocom` si falta) y escribe:
+
+1. `AT` → `OK`; `AT+CREG?` → `+CREG: 0,1` (o `0,5` en roaming); `AT+CSQ` → señal entre 10 y 31.
+2. `AT+CLIP=1` y llama desde un celular: deben llegar `RING` y `+CLIP: "<número>",129` (o con `+52`/`521`).
+3. `ATH` durante el timbre: la llamada se corta (modo "Una salida").
+4. Llama otra vez y contesta con `ATA`; con `AT+DDET=1` antes, cada tecla del celular debe dar `+DTMF: 1` … `+DTMF: 4` (modo "Varias salidas"). Si no llegan, el operador o el firmware del módulo no pasan DTMF: usa "Una salida".
+5. Sal de picocom, `sudo systemctl start acceso-daemon`, activa el módulo en **Llamadas**, registra tu número en **Teléfonos** con un permiso con "Permitir llamada" y llama: el relevador abre y el log aparece con el origen "Llamada".
+
 ## Servicio `acceso-cloud` (plataforma en la nube)
 
 `acceso-cloud` es un servicio systemd aparte, que `install.sh` instala y arranca junto con `acceso-daemon` y `acceso-web`. Sincroniza la base del panel con la plataforma en la nube (`cloud/` del repositorio): se registra, se vincula a una instalación, sube los cambios que haces en el panel, baja los que se hacen en la nube y sube los logs de acceso. Escucha avisos por MQTT para sincronizar al instante y, si el broker no responde, sigue sincronizando por HTTPS cada 5 minutos. **El panel nunca depende de la nube para abrir**: el daemon y la autorización local no cambian, y con `acceso-cloud` detenido o sin internet todo funciona igual.
@@ -229,3 +258,4 @@ timedatectl                        # zona America/Mexico_City y reloj sincroniza
 - [ ] 8. Desconectar y reconectar la PCB: el daemon se recupera solo.
 - [ ] 9. Reiniciar la placa: los tres servicios (`acceso-daemon`, `acceso-web` y `acceso-cloud`) arrancan solos.
 - [ ] 10. Salidas → **Probar**: el relevador abre y el log aparece con el origen "Prueba".
+- [ ] 11. Si hay SIM808: la prueba manual de "Apertura por llamada" (CLIP, `ATH`, `ATA`, DTMF) y una llamada real que abre con el origen "Llamada".

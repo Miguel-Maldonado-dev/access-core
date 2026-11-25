@@ -4,8 +4,9 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator, model_validator
 
+from acceso.phones import parse_phone_input
 from acceso.constants import (
-    CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE, OUTPUT_ALIAS_MAX, PIN_MAX_DIGITS, PIN_MIN_DIGITS,
+    CALL_MODES, CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE, OUTPUT_ALIAS_MAX, PIN_MAX_DIGITS, PIN_MIN_DIGITS,
 )
 
 
@@ -67,6 +68,7 @@ class PermissionBody(BaseModel):
     end_minute: int = Field(ge=0, le=1439)
     allow_rf: StrictBool = False
     allow_remote: StrictBool = False
+    allow_call: StrictBool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -141,4 +143,39 @@ class ControlIn(BaseModel):
     def _buttons(cls, v: List[ButtonIn]) -> List[ButtonIn]:
         if len(v) != CONTROL_BUTTONS:
             raise ValueError("El control debe tener exactamente %d botones." % CONTROL_BUTTONS)
+        return v
+
+
+class PhoneIn(BaseModel):
+    holder_id: int
+    number: str
+    description: str = ""
+
+    @field_validator("number")
+    @classmethod
+    def _number(cls, v: str) -> str:
+        return parse_phone_input(v)
+
+
+class CallSettingsIn(BaseModel):
+    enabled: StrictBool
+    mode: str
+    output_id: StrictInt = Field(default=0, ge=0, le=3)
+    menu_mask: StrictInt = Field(default=0, ge=0, le=15)
+    default_output: Optional[StrictInt] = Field(default=None, ge=0, le=3)
+    # Ausente = se conserva el valor guardado.
+    call_limit_per_minute: Optional[StrictInt] = None
+
+    @field_validator("mode")
+    @classmethod
+    def _mode(cls, v: str) -> str:
+        if v not in CALL_MODES:
+            raise ValueError("El modo debe ser: %s." % ", ".join(CALL_MODES))
+        return v
+
+    @field_validator("call_limit_per_minute")
+    @classmethod
+    def _limit(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not 1 <= v <= 20:
+            raise ValueError("Debe ser un número entre 1 y 20.")
         return v

@@ -1,15 +1,20 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import ClockBadge from "@/components/ClockBadge";
 import { apiFetch } from "@/lib/api";
+import type { CallSettings } from "@/lib/types";
+import { CALLS_CHANGED_EVENT } from "@/lib/calls";
 
 const SECTIONS = [
   { href: "/titulares/", label: "Titulares" },
   { href: "/tarjetas/", label: "Tarjetas" },
+  { href: "/telefonos/", label: "Teléfonos", needsCalls: true },
   { href: "/controles/", label: "Controles" },
   { href: "/permisos/", label: "Permisos" },
+  { href: "/llamadas/", label: "Llamadas" },
   { href: "/salidas/", label: "Salidas" },
   { href: "/logs/", label: "Logs" },
   { href: "/nube/", label: "Nube" },
@@ -17,6 +22,24 @@ const SECTIONS = [
 
 export default function PanelLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [callsEnabled, setCallsEnabled] = useState(false);
+
+  useEffect(() => {
+    // Se consulta al cambiar de página y al guardar en Llamadas (evento CALLS_CHANGED_EVENT).
+    // Si no se puede consultar, el módulo se trata como desactivado.
+    let ignore = false;
+    const load = () =>
+      apiFetch<CallSettings>("/api/calls/settings").then(
+        (c) => !ignore && setCallsEnabled(c.enabled),
+        () => !ignore && setCallsEnabled(false),
+      );
+    void load();
+    window.addEventListener(CALLS_CHANGED_EVENT, load);
+    return () => {
+      ignore = true;
+      window.removeEventListener(CALLS_CHANGED_EVENT, load);
+    };
+  }, [pathname]);
 
   async function logout() {
     try {
@@ -33,7 +56,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         <p className="px-5 py-5 text-lg font-semibold tracking-tight">Control de acceso</p>
         <nav aria-label="Secciones" className="flex-1">
           <ul>
-            {SECTIONS.map((s) => {
+            {SECTIONS.filter((s) => !s.needsCalls || callsEnabled).map((s) => {
               const active = pathname === s.href || pathname === s.href.slice(0, -1);
               return (
                 <li key={s.href}>

@@ -2,6 +2,8 @@
 # Instala o actualiza el panel en la placa. Ejecutar como root desde el paquete
 # descomprimido:  sudo ./deploy/install.sh [--db RUTA_A_LA_BASE]
 # Para vincular el panel con la nube en la primera instalación, indica sus URL:
+# Con un SIM808 por USB:  sudo ./deploy/install.sh --sim808-usb 1a86:7523  (VID:PID de `lsusb`)
+#   crea /dev/sim808 con una regla udev y, si GSM_PORT está vacío, lo fija a /dev/sim808.
 #   sudo CLOUD_URL=https://nube.ejemplo.com MQTT_URL=mqtts://mqtt.ejemplo.com:8883 ./deploy/install.sh
 # Se guardan en /etc/acceso/cloud.env solo si ese archivo no existe; después se edita a mano.
 set -euo pipefail
@@ -12,13 +14,17 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 DB_SRC=""
+SIM808_USB=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --db)
       [ $# -ge 2 ] || { echo "Falta la ruta después de --db" >&2; exit 1; }
       DB_SRC="$2"; shift 2 ;;
+    --sim808-usb)
+      [ $# -ge 2 ] || { echo "Falta VID:PID después de --sim808-usb" >&2; exit 1; }
+      SIM808_USB="$2"; shift 2 ;;
     *)
-      echo "Uso: install.sh [--db RUTA]" >&2; exit 1 ;;
+      echo "Uso: install.sh [--db RUTA] [--sim808-usb VID:PID]" >&2; exit 1 ;;
   esac
 done
 
@@ -29,6 +35,11 @@ ENV_FILE=/etc/acceso/acceso.env
 CLOUD_ENV_FILE=/etc/acceso/cloud.env
 DB_DEFAULT=/var/lib/acceso/access_control.sqlite
 STATIC_LINE="STATIC_DIR=/opt/acceso/backend/acceso/web/static"
+
+if [ -n "$SIM808_USB" ] && ! sim808_usb_valido "$SIM808_USB"; then
+  echo "$MSG_SIM808_INVALIDO" >&2
+  exit 1
+fi
 
 for NOMBRE in CLOUD_URL MQTT_URL; do
   VALOR="${!NOMBRE:-}"
@@ -125,6 +136,15 @@ chmod 600 "$ENV_FILE"
 chown acceso:acceso "$ENV_FILE"
 # Agente de nube: el archivo (con su credencial) lo crea la instalación y después lo reescribe el agente.
 crea_cloud_env_si_falta "$CLOUD_ENV_FILE" "${CLOUD_URL:-}" "${MQTT_URL:-}" acceso:acceso
+
+if [ -n "$SIM808_USB" ]; then
+  echo "==> Regla udev del SIM808 ($SIM808_USB)"
+  escribe_regla_sim808 "$PKG/deploy/99-sim808.rules.in" /etc/udev/rules.d/99-sim808.rules "$SIM808_USB"
+  udevadm control --reload-rules && udevadm trigger --subsystem-match=tty
+  fija_gsm_port_si_vacio "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  chown acceso:acceso "$ENV_FILE"
+fi
 
 DB_PATH="$(sed -n 's/^DB_PATH=//p' "$ENV_FILE" | tail -n1)"
 DB_PATH="${DB_PATH:-$DB_DEFAULT}"

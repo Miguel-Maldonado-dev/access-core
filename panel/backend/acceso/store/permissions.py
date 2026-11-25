@@ -7,8 +7,8 @@ from acceso.db import now_ms, transaction
 from acceso.store.errors import Conflict, NotFound
 
 _COLS = ("permission_id", "name", "output_mask", "card_reader_mask", "pin_reader_mask", "weekday_mask",
-         "start_minute", "end_minute", "allow_rf", "allow_remote")
-_BOOLS = ("allow_rf", "allow_remote")
+         "start_minute", "end_minute", "allow_rf", "allow_remote", "allow_call")
+_BOOLS = ("allow_rf", "allow_remote", "allow_call")
 
 
 def list_permissions(conn: sqlite3.Connection) -> List[dict]:
@@ -25,7 +25,7 @@ def create_permission(conn: sqlite3.Connection, p: dict) -> None:
         conn.execute(
             "INSERT INTO permissions(%s, uuid, updated_at, origin) VALUES (%s, ?, ?, 'local')"
             % (", ".join(_COLS), ", ".join("?" * len(_COLS))),
-            tuple(int(bool(p[c])) if c in _BOOLS else p[c] for c in _COLS)
+            tuple(int(bool(p.get(c))) if c in _BOOLS else p[c] for c in _COLS)
             + (str(uuid.uuid4()), now_ms()),
         )
 
@@ -33,17 +33,20 @@ def create_permission(conn: sqlite3.Connection, p: dict) -> None:
 def update_permission(conn: sqlite3.Connection, permission_id: int, p: dict) -> None:
     """Un campo de método (máscaras de lector, allow_rf, allow_remote) en None conserva el valor actual."""
     allow_rf, allow_remote = p.get("allow_rf"), p.get("allow_remote")
+    allow_call = p.get("allow_call")
     with transaction(conn):
         cur = conn.execute(
             "UPDATE permissions SET name=?, output_mask=?, card_reader_mask=COALESCE(?, card_reader_mask),"
             " pin_reader_mask=COALESCE(?, pin_reader_mask), weekday_mask=?, start_minute=?,"
             " end_minute=?, allow_rf=COALESCE(?, allow_rf), allow_remote=COALESCE(?, allow_remote),"
+            " allow_call=COALESCE(?, allow_call),"
             " updated_at=?, origin='local'"
             " WHERE permission_id=?",
             (p["name"], p["output_mask"], p.get("card_reader_mask"), p.get("pin_reader_mask"),
              p["weekday_mask"], p["start_minute"], p["end_minute"],
              None if allow_rf is None else int(allow_rf),
-             None if allow_remote is None else int(allow_remote), now_ms(), permission_id),
+             None if allow_remote is None else int(allow_remote),
+             None if allow_call is None else int(allow_call), now_ms(), permission_id),
         )
         if cur.rowcount == 0:
             raise NotFound("El permiso %s no existe." % permission_id)

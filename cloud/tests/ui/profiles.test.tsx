@@ -42,6 +42,7 @@ const regla = (p: Partial<RuleRow> = {}): RuleRow => ({
   pin_reader_mask: 0b0010,
   allow_rf: true,
   allow_remote: false,
+  allow_call: false,
   weekday_mask: 0b0011111,
   start_minute: 8 * 60,
   end_minute: 18 * 60 + 30,
@@ -173,6 +174,7 @@ describe("ProfilesManager", () => {
               pin_reader_mask: 0b0010,
               allow_rf: false,
               allow_remote: true,
+              allow_call: false,
               weekday_mask: 0b0111111,
               start_minute: 480,
               end_minute: 20 * 60 + 15,
@@ -181,6 +183,20 @@ describe("ProfilesManager", () => {
           { panel_id: "pb", rule: null },
         ],
       ]);
+    });
+
+    it("la casilla «Permitir llamada» envía allow_call y respeta el valor guardado", async () => {
+      const { onSaveRules } = montar([perfil({ rules: [regla({ allow_call: true })] })]);
+      editar();
+      const colA = await screen.findByRole("region", { name: "Regla en PNL-AAAA-AAAA" });
+      const casilla = within(colA).getByLabelText("Permitir llamada en PNL-AAAA-AAAA") as HTMLInputElement;
+      expect(casilla.checked).toBe(true);
+      fireEvent.click(casilla);
+      fireEvent.click(within(colA).getByLabelText("Permitir control RF en PNL-AAAA-AAAA"));
+      fireEvent.click(screen.getByRole("button", { name: "Guardar reglas" }));
+      await waitFor(() => expect(onSaveRules).toHaveBeenCalled());
+      const reglaA = (onSaveRules.mock.calls[0] as unknown as [string, { panel_id: string; rule: { allow_call: boolean } }[]])[1][0];
+      expect(reglaA.rule.allow_call).toBe(false);
     });
 
     it("'Sin acceso en este panel' manda la regla en null y 'Dar acceso' la vuelve a abrir con todos los días", async () => {
@@ -205,6 +221,7 @@ describe("ProfilesManager", () => {
               pin_reader_mask: 0,
               allow_rf: false,
               allow_remote: false,
+              allow_call: false,
               weekday_mask: 127,
               start_minute: 0,
               end_minute: 0,

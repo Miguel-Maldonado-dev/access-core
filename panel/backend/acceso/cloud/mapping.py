@@ -22,10 +22,13 @@ from acceso.db import now_ms
 log = logging.getLogger("acceso.cloud")
 
 # Las altas van de padres a hijos y después los borrados de hijos a padres (ver _Applier).
-# `outputs` no se borra: las 4 salidas son fijas en el panel.
-DELETE_ORDER = ("control_buttons", "cards", "holder_permissions", "controls", "holders", "permissions")
-UPSERT_ORDER = ("holders", "permissions", "outputs", "controls", "cards", "control_buttons",
-                "holder_permissions")
+# `outputs` y `call_settings` no se borran: las 4 salidas son fijas y la configuración de llamadas
+# es una sola fila.
+DELETE_ORDER = ("control_buttons", "cards", "phones", "holder_permissions", "controls", "holders",
+                "permissions")
+UPSERT_ORDER = ("holders", "phones", "permissions", "outputs", "controls", "cards", "control_buttons",
+                "holder_permissions", "call_settings")
+_NEVER_DELETED = ("outputs", "call_settings")
 
 # Columnas de `data` por tabla, como `dataSchemas` de cloud/src/lib/device/contract.ts.
 FIELDS = {
@@ -34,9 +37,12 @@ FIELDS = {
     "controls": ("holder_id", "description"),
     "control_buttons": ("control_id", "button", "rf_code", "output_id"),
     "permissions": ("permission_id", "name", "output_mask", "card_reader_mask", "pin_reader_mask",
-                    "allow_rf", "allow_remote", "weekday_mask", "start_minute", "end_minute"),
+                    "allow_rf", "allow_remote", "allow_call", "weekday_mask", "start_minute", "end_minute"),
     "holder_permissions": ("holder_id", "permission_id"),
     "outputs": ("output_id", "alias", "duration_ms", "reader_mask", "enabled"),
+    "phones": ("holder_id", "number", "description"),
+    "call_settings": ("enabled", "mode", "output_id", "menu_mask", "default_output",
+                      "call_limit_per_minute"),
 }
 
 # Cada registro vivo en la forma del contrato (`id` = uuid). Las referencias se traducen a UUID.
@@ -50,19 +56,23 @@ _SELECT = {
     "control_buttons": "SELECT b.uuid AS id, k.uuid AS control_id, b.button, b.rf_code, b.output_id"
                        " FROM control_buttons b JOIN controls k ON k.control_id = b.control_id",
     "permissions": "SELECT p.uuid AS id, p.permission_id, p.name, p.output_mask, p.card_reader_mask,"
-                   " p.pin_reader_mask, p.allow_rf, p.allow_remote, p.weekday_mask, p.start_minute,"
+                   " p.pin_reader_mask, p.allow_rf, p.allow_remote, p.allow_call, p.weekday_mask, p.start_minute,"
                    " p.end_minute"
                    " FROM permissions p",
     "holder_permissions": "SELECT hp.uuid AS id, h.uuid AS holder_id, hp.permission_id"
                           " FROM holder_permissions hp JOIN holders h ON h.holder_id = hp.holder_id",
     "outputs": "SELECT o.uuid AS id, o.output_id, o.alias, o.duration_ms, o.reader_mask, o.enabled"
                " FROM outputs o",
+    "phones": "SELECT f.uuid AS id, h.uuid AS holder_id, f.number, f.description"
+              " FROM phones f JOIN holders h ON h.holder_id = f.holder_id",
+    "call_settings": "SELECT s.uuid AS id, s.enabled, s.mode, s.output_id, s.menu_mask, s.default_output,"
+                     " s.call_limit_per_minute FROM call_settings s",
 }
 _ALIAS = {"holders": "h", "cards": "c", "controls": "k", "control_buttons": "b", "permissions": "p",
-          "holder_permissions": "hp", "outputs": "o"}
-_BOOLEANS = ("allow_rf", "allow_remote", "enabled")
+          "holder_permissions": "hp", "outputs": "o", "phones": "f", "call_settings": "s"}
+_BOOLEANS = ("allow_rf", "allow_remote", "allow_call", "enabled")
 # Campos que una nube anterior puede no enviar, con su valor por omisión. Al subir siempre se envían.
-_OPTIONAL = {"permissions": {"allow_remote": False}}
+_OPTIONAL = {"permissions": {"allow_remote": False, "allow_call": False}}
 
 
 class MissingParent(Exception):
@@ -164,7 +174,8 @@ def _upsert_permission(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], s
     _release(conn, "permissions", "permission_id = ?", (pid,), uuid, resolve)
     conn.execute("DELETE FROM permissions WHERE permission_id = ? AND uuid <> ?", (pid, uuid))
     values = (pid, d["name"], d["output_mask"], d["card_reader_mask"], d["pin_reader_mask"],
-              1 if d["allow_rf"] else 0, 1 if d["allow_remote"] else 0, d["weekday_mask"],
+              1 if d["allow_rf"] else 0, 1 if d["allow_remote"] else 0, 1 if d["allow_call"] else 0,
+              d["weekday_mask"],
               d["start_minute"], d["end_minute"], stamp)
     current = _exists(conn, "permissions", uuid)
     if current is not None:
@@ -173,12 +184,12 @@ def _upsert_permission(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], s
             conn.execute("UPDATE holder_permissions SET permission_id = ? WHERE permission_id = ?",
                          (pid, current["permission_id"]))
         conn.execute("UPDATE permissions SET permission_id=?, name=?, output_mask=?, card_reader_mask=?,"
-                     " pin_reader_mask=?, allow_rf=?, allow_remote=?, weekday_mask=?, start_minute=?, end_minute=?,"
+                     " pin_reader_mask=?, allow_rf=?, allow_remote=?, allow_call=?, weekday_mask=?, start_minute=?, end_minute=?,"
                      " updated_at=?, origin='cloud' WHERE uuid=?", values + (uuid,))
     else:
         conn.execute("INSERT INTO permissions(permission_id, name, output_mask, card_reader_mask,"
-                     " pin_reader_mask, allow_rf, allow_remote, weekday_mask, start_minute, end_minute,"
-                     " updated_at, origin, uuid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?)", values + (uuid,))
+                     " pin_reader_mask, allow_rf, allow_remote, allow_call, weekday_mask, start_minute, end_minute,"
+                     " updated_at, origin, uuid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?)", values + (uuid,))
 
 
 def _upsert_output(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], stamp: int,
@@ -255,6 +266,44 @@ def _upsert_holder_permission(conn: sqlite3.Connection, uuid: str, d: Dict[str, 
                      " VALUES (?, ?, ?, 'cloud', ?)", values + (uuid,))
 
 
+def _upsert_phone(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], stamp: int,
+                  resolve: Optional[Resolver]) -> None:
+    holder_id = _local_id(conn, "holders", "holder_id", d["holder_id"])
+    _release(conn, "phones", "number = ?", (d["number"],), uuid, resolve)
+    conn.execute("DELETE FROM phones WHERE number = ? AND uuid <> ?", (d["number"], uuid))
+    values = (holder_id, d["number"], d["description"], stamp)
+    if _exists(conn, "phones", uuid):
+        conn.execute("UPDATE phones SET holder_id=?, number=?, description=?, updated_at=?,"
+                     " origin='cloud' WHERE uuid=?", values + (uuid,))
+    else:
+        conn.execute("INSERT INTO phones(holder_id, number, description, updated_at, origin, uuid)"
+                     " VALUES (?, ?, ?, ?, 'cloud', ?)", values + (uuid,))
+
+
+def _upsert_call_settings(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], stamp: int,
+                          resolve: Optional[Resolver]) -> None:
+    """Siempre la fila `id = 1`: adopta el UUID de la nube (como `outputs`)."""
+    local = conn.execute("SELECT uuid FROM call_settings WHERE id = 1").fetchone()
+    if local is not None and local["uuid"] != uuid and conn.execute(
+            "SELECT 1 FROM sync_outbox WHERE table_name = 'call_settings' AND row_uuid = ?",
+            (local["uuid"],)).fetchone() is not None:
+        # Edición local pendiente bajo otro UUID: se conservan los valores locales, se adopta el
+        # UUID de la nube y los pendientes pasan a ese UUID (se suben y la nube decide).
+        conn.execute("UPDATE call_settings SET uuid = ? WHERE id = 1", (uuid,))
+        conn.execute("UPDATE sync_outbox SET row_uuid = ? WHERE table_name = 'call_settings' AND row_uuid = ?",
+                     (uuid, local["uuid"]))
+        return
+    values = (1 if d["enabled"] else 0, d["mode"], d["output_id"], d["menu_mask"], d["default_output"],
+              d["call_limit_per_minute"], uuid, stamp)
+    cur = conn.execute("UPDATE call_settings SET enabled=?, mode=?, output_id=?, menu_mask=?,"
+                       " default_output=?, call_limit_per_minute=?, uuid=?, updated_at=?, origin='cloud'"
+                       " WHERE id=1", values)
+    if cur.rowcount == 0:
+        conn.execute("INSERT INTO call_settings(enabled, mode, output_id, menu_mask, default_output,"
+                     " call_limit_per_minute, uuid, updated_at, origin, id)"
+                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cloud', 1)", values)
+
+
 _UPSERT = {
     "holders": _upsert_holder,
     "permissions": _upsert_permission,
@@ -263,6 +312,8 @@ _UPSERT = {
     "cards": _upsert_card,
     "control_buttons": _upsert_button,
     "holder_permissions": _upsert_holder_permission,
+    "phones": _upsert_phone,
+    "call_settings": _upsert_call_settings,
 }
 
 
@@ -277,10 +328,11 @@ def apply_upsert(conn: sqlite3.Connection, table: str, uuid: str, data: Mapping[
 
 
 def apply_delete(conn: sqlite3.Connection, table: str, uuid: str) -> None:
-    """Borrado real (con sus cascadas). Un UUID que no existe no hace nada; outputs no se borra."""
+    """Borrado real (con sus cascadas). Un UUID que no existe no hace nada; outputs y call_settings
+    no se borran."""
     if table not in REPLICATED_TABLES:
         raise InvalidChange(_unknown_table(table))
-    if table != "outputs":
+    if table not in _NEVER_DELETED:
         conn.execute("DELETE FROM %s WHERE uuid = ?" % table, (uuid,))
 
 
@@ -313,7 +365,7 @@ def applying(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 # Hijos que un borrado arrastra en cascada: (tabla padre, su llave) -> [(tabla hija, columna)].
 _CHILDREN = {
     "holders": ("holder_id", (("cards", "holder_id"), ("controls", "holder_id"),
-                              ("holder_permissions", "holder_id"))),
+                              ("holder_permissions", "holder_id"), ("phones", "holder_id"))),
     "controls": ("control_id", (("control_buttons", "control_id"),)),
     "permissions": ("permission_id", (("holder_permissions", "permission_id"),)),
 }
@@ -366,8 +418,8 @@ class _Applier:
                 if t == table and change["op"] == "delete":
                     self.apply(change)
         for (table, row_id), change in self.todo.items():
-            if table == "outputs" and change["op"] == "delete":
-                log.warning("Se ignoró el borrado de la salida %s: las salidas del panel son fijas", row_id)
+            if table in _NEVER_DELETED and change["op"] == "delete":
+                log.warning("Se ignoró el borrado de %s %s: esa fila del panel es fija", table, row_id)
         if self.discarded:
             set_state(self.conn, "last_error", DISCARDED_MESSAGE % self.discarded)
         return self.applied

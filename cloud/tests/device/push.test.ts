@@ -1254,7 +1254,7 @@ describe("subida de cambios del panel (POST /changes)", () => {
       const R1 = await revisionInstalacion(inst1);
       const R2 = await revisionInstalacion(inst2);
 
-      const datos: { [T in TableName]: TableData[T] } = {
+      const datos: Partial<{ [T in TableName]: TableData[T] }> = {
         holders: { kind: "persona", name: "Intruso", department: "", address: "", notes: "", pin: null },
         cards: { card_code: 9901, holder_id: x, description: "" },
         controls: { holder_id: x, description: "" },
@@ -1264,7 +1264,7 @@ describe("subida de cambios del panel (POST /changes)", () => {
         outputs: { output_id: 0, alias: "Intruso", duration_ms: 1, reader_mask: 0, enabled: false },
       };
       const items = ids.flatMap(([tabla, , id]) => [
-        upsert(tabla, id, datos[tabla], hora(5000)),
+        upsert(tabla, id, datos[tabla]!, hora(5000)),
         borrado(tabla, id, hora(6000)),
       ]);
       const r = await push(panelC, items);

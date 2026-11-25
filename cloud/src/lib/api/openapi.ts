@@ -49,6 +49,7 @@ const param = (name: string, descripcion: string) => ({
 });
 const pTitular = param("holderId", "Id del titular.");
 const pTarjeta = param("cardId", "Id de la tarjeta.");
+const pTelefono = param("phoneId", "Id del teléfono.");
 const pControl = param("controlId", "Id del control.");
 const pPerfil = param("profileId", "Id del perfil.");
 const pSalida = param("outputId", "Id de la salida.");
@@ -113,6 +114,14 @@ const pCodigos = (name: string, descripcion: string) => ({
   description: `${descripcion} De 1 a ${MAX_LOTE} códigos decimales separados por comas; sin coincidencias responde \`{data: []}\`; un valor inválido, 400.`,
   schema: { type: "string", pattern: "^\\d{1,10}(,\\d{1,10})*$", example: "123456,789012" },
 });
+
+const pNumeros = {
+  name: "numbers",
+  in: "query",
+  required: false,
+  description: `Filtra por número. De 1 a ${MAX_LOTE} números de 10 dígitos separados por comas; sin coincidencias responde \`{data: []}\`; un valor inválido, 400.`,
+  schema: { type: "string", pattern: "^\\d{10}(,\\d{10})*$", example: "5512345678,5587654321" },
+};
 
 const E400_LOTE = respuestaError(
   "`invalid_batch`: JSON inválido, `items` vacío o con más de 200 elementos, `ref` repetido, falta `idempotency_key`, `op` desconocida o campo de más. No se procesa nada.",
@@ -314,8 +323,8 @@ const paths: Record<string, Obj> = {
         {
           name: "origen",
           in: "query",
-          description: "Origen del evento: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 4 remota, 5 prueba.",
-          schema: { type: "string", enum: ["0", "1", "2", "3", "4", "5"] },
+          description: "Origen del evento: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 4 remota, 5 prueba, 6 llamada.",
+          schema: { type: "string", enum: ["0", "1", "2", "3", "4", "5", "6"] },
         },
         { name: "pagina", in: "query", description: "Número de página (desde 1).", schema: { type: "string", pattern: "^[1-9]\\d*$" } },
       ],
@@ -454,6 +463,48 @@ const paths: Record<string, Obj> = {
       idem: true,
     }),
   },
+  "/installations/{installationId}/phones": {
+    get: op({
+      resumen: "Lista los teléfonos",
+      descripcion: "Números de 10 dígitos de los titulares, para abrir llamando. Con `numbers`, solo los de esos números.",
+      tag: "Teléfonos",
+      params: [pInstalacion, pNumeros],
+      ok: lista(ref("Telefono")),
+    }),
+    post: op({
+      resumen: "Crea un teléfono",
+      descripcion:
+        "Quita espacios y guiones y exige 10 dígitos. 409 `conflict` \"El número ya está registrado\" si otro teléfono vivo de la instalación lo tiene.",
+      tag: "Teléfonos",
+      params: [pInstalacion],
+      body: ref("TelefonoCrear"),
+      ok: escritura(ref("Telefono")),
+      status: "201",
+      idem: true,
+    }),
+  },
+  "/installations/{installationId}/phones/batch": {
+    post: lote("Teléfonos", "LoteTelefonos", "teléfonos", "como `PATCH`"),
+  },
+  "/installations/{installationId}/phones/{phoneId}": {
+    patch: op({
+      resumen: "Edita un teléfono",
+      descripcion: "Cambia número, titular o descripción. Un cuerpo vacío responde 400; un número repetido, 409.",
+      tag: "Teléfonos",
+      params: [pInstalacion, pTelefono],
+      body: ref("TelefonoEditar"),
+      ok: escritura(ref("Telefono")),
+      idem: true,
+    }),
+    delete: op({
+      resumen: "Borra un teléfono",
+      descripcion: "Borrado lógico; libera el número.",
+      tag: "Teléfonos",
+      params: [pInstalacion, pTelefono],
+      ok: escritura(ref("IdObjeto")),
+      idem: true,
+    }),
+  },
   "/installations/{installationId}/controls": {
     get: op({
       resumen: "Lista los controles",
@@ -585,6 +636,7 @@ const camposRegla = {
   pin_reader_mask: { type: "integer", minimum: 0, maximum: 15, description: "Máscara de lectores L1 a L4 con PIN." },
   allow_rf: { type: "boolean" },
   allow_remote: { type: "boolean", description: "Permite la apertura remota de las salidas de la regla." },
+  allow_call: { type: "boolean", description: "Permite abrir las salidas de la regla llamando desde un teléfono del titular." },
   weekday_mask: { type: "integer", minimum: 0, maximum: 127, description: "Días de la semana; bit 0 = lunes." },
   start_minute: { type: "integer", minimum: 0, maximum: 1439, description: "Minuto del día en que empieza el horario." },
   end_minute: { type: "integer", minimum: 0, maximum: 1439, description: "Minuto del día en que termina el horario." },
@@ -612,7 +664,7 @@ export const openapi: object = {
       "",
       "**Idempotencia:** `Idempotency-Key` (1 a 200 caracteres, vigente 24 h) es opcional en `POST`, `PATCH`, `PUT` y `DELETE`. La misma llave con el mismo cuerpo devuelve la respuesta guardada con `Idempotent-Replayed: true`; con otro cuerpo, 422; si la original sigue en curso, 409. No se admite en `PUT` ni `DELETE .../holders/{holderId}/pin` (400), para no guardar el PIN.",
       "",
-      `**Lotes:** \`POST .../holders/batch\`, \`.../cards/batch\` y \`.../controls/batch\` procesan hasta ${MAX_LOTE} operaciones con un resultado por elemento y suben la \`revision\` una sola vez. Errores del lote completo: \`invalid_batch\` (400) y \`batch_in_progress\` (429, otro lote en la misma instalación).`,
+      `**Lotes:** \`POST .../holders/batch\`, \`.../cards/batch\`, \`.../phones/batch\` y \`.../controls/batch\` procesan hasta ${MAX_LOTE} operaciones con un resultado por elemento y suben la \`revision\` una sola vez. Errores del lote completo: \`invalid_batch\` (400) y \`batch_in_progress\` (429, otro lote en la misma instalación).`,
       "",
       "**Límite:** por llave, configurable por el admin en la pestaña API (de 1 a 5000 peticiones por minuto; 120 por omisión); al pasarlo, 429 con `Retry-After`.",
     ].join("\n"),
@@ -627,6 +679,7 @@ export const openapi: object = {
     "Logs",
     "Titulares",
     "Tarjetas",
+    "Teléfonos",
     "Controles",
     "Perfiles",
   ].map((name) => ({ name })),
@@ -750,15 +803,15 @@ export const openapi: object = {
           allowed: { type: "boolean" },
           source: {
             type: "integer",
-            enum: [0, 1, 2, 3, 4, 5],
-            description: "Origen: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 4 remota, 5 prueba.",
+            enum: [0, 1, 2, 3, 4, 5, 6],
+            description: "Origen: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 4 remota, 5 prueba, 6 llamada.",
           },
           reason: {
             type: "integer",
             minimum: 0,
-            maximum: 11,
+            maximum: 13,
             description:
-              "Motivo: 0 permitido, 1 tarjeta desconocida, 2 sin salida, 3 sin permiso, 4 error UART, 5 control desconocido, 6 botón sin salida, 7 botón de salida, 8 PIN desconocido, 9 PIN no permitido, 10 PIN bloqueado, 11 titular desconocido.",
+              "Motivo: 0 permitido, 1 tarjeta desconocida, 2 sin salida, 3 sin permiso, 4 error UART, 5 control desconocido, 6 botón sin salida, 7 botón de salida, 8 PIN desconocido, 9 PIN no permitido, 10 PIN bloqueado, 11 titular desconocido, 12 teléfono desconocido, 13 límite de llamadas. En el origen 6, `credential_label` es el número que llamó (completo, o `Oculto`) y `device_id` la tecla del menú (1 a 4) si la hubo.",
           },
           holder_id: uuidNulo,
           holder_name: { type: ["string", "null"] },
@@ -830,6 +883,32 @@ export const openapi: object = {
           description: { type: "string" },
         },
       },
+      Telefono: {
+        type: "object",
+        required: ["id", "number", "holder_id", "holder_name", "description"],
+        properties: {
+          id: uuid,
+          number: { type: "string", pattern: "^\\d{10}$", description: "10 dígitos." },
+          holder_id: uuid,
+          holder_name: { type: "string" },
+          description: { type: "string" },
+        },
+      },
+      TelefonoCrear: {
+        type: "object",
+        required: ["number", "holder_id"],
+        additionalProperties: false,
+        properties: {
+          number: { type: "string", description: "10 dígitos; se quitan espacios y guiones." },
+          holder_id: uuid,
+          description: { type: "string" },
+        },
+      },
+      TelefonoEditar: {
+        type: "object",
+        additionalProperties: false,
+        properties: { number: { type: "string" }, holder_id: uuid, description: { type: "string" } },
+      },
       TarjetaEditar: {
         type: "object",
         additionalProperties: false,
@@ -863,6 +942,7 @@ export const openapi: object = {
       ControlCuerpo: controlCuerpo,
       LoteTitulares: loteCuerpo(ref("TitularCrear"), ref("TitularEditar")),
       LoteTarjetas: loteCuerpo(ref("TarjetaCrear"), ref("TarjetaEditar")),
+      LoteTelefonos: loteCuerpo(ref("TelefonoCrear"), ref("TelefonoEditar")),
       LoteControles: loteCuerpo(ref("ControlCuerpo"), ref("ControlReemplazo")),
       BatchResponse: {
         type: "object",
@@ -905,12 +985,16 @@ export const openapi: object = {
       // `allow_remote` es opcional al escribir (se conserva el actual) para no romper a los clientes de 2A.
       ReglaEntrada: {
         ...reglaEntrada,
-        required: requeridosRegla.filter((c) => c !== "allow_remote"),
+        required: requeridosRegla.filter((c) => c !== "allow_remote" && c !== "allow_call"),
         properties: {
           ...camposRegla,
           allow_remote: {
             type: "boolean",
             description: "Permite la apertura remota. Si se omite, se conserva el valor actual (false en una regla nueva).",
+          },
+          allow_call: {
+            type: "boolean",
+            description: "Permite abrir llamando. Si se omite, se conserva el valor actual (false en una regla nueva).",
           },
         },
       },

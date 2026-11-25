@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { decryptPin } from "@/lib/crypto";
 import type { Panel } from "@/lib/device/auth";
 import type {
+  CallSettingsData,
   CardData,
   ContractRow,
   ControlButtonData,
@@ -11,6 +12,7 @@ import type {
   HolderPermissionData,
   OutputData,
   PermissionData,
+  PhoneData,
   TableData,
   TableName,
 } from "@/lib/device/contract";
@@ -24,7 +26,10 @@ import type {
  * - access_profiles + la regla viva de ESE panel → permissions (`id` = id del perfil;
  *   sin regla, todas las máscaras en 0);
  * - holder_profiles → holder_permissions (`permission_id` = `local_permission_id`);
- * - outputs de ESE panel → outputs (`output_id` = `output_index`).
+ * - outputs de ESE panel → outputs (`output_id` = `output_index`);
+ * - phones → igual, solo a un panel v8 con su módulo de llamadas activado (`panelGetsPhones`);
+ * - panel_call_settings de ESE panel → call_settings (`output_id` = `output_index`), solo a
+ *   un panel v8; `permissions.allow_call` también solo va a un panel v8.
  * Toda lectura filtra por la instalación del panel (y por el panel en outputs y reglas).
  */
 
@@ -38,7 +43,9 @@ export type SourceTable =
   | "access_profiles"
   | "profile_panel_rules"
   | "holder_profiles"
-  | "outputs";
+  | "outputs"
+  | "phones"
+  | "panel_call_settings";
 
 // Filas de la nube: solo las columnas que se proyectan (nunca pin_lookup).
 export interface HolderRow {
@@ -86,6 +93,7 @@ export interface RuleRow {
   pin_reader_mask: number;
   allow_rf: boolean;
   allow_remote: boolean;
+  allow_call: boolean;
   weekday_mask: number;
   start_minute: number;
   end_minute: number;
@@ -104,6 +112,22 @@ export interface OutputRow {
   enabled: boolean;
 }
 
+export interface PhoneRow {
+  id: string;
+  holder_id: string;
+  number: string;
+  description: string;
+}
+export interface CallSettingsRow {
+  id: string;
+  enabled: boolean;
+  mode: CallSettingsData["mode"];
+  output_index: number;
+  menu_mask: number;
+  default_output: number | null;
+  call_limit_per_minute: number;
+}
+
 /** Columnas que se proyectan de cada tabla de origen (sin `deleted_at` ni `revision`). */
 export const SOURCE_COLUMNS: Readonly<Record<SourceTable, string>> = {
   holders: "id, kind, name, department, address, notes, pin_ciphertext",
@@ -113,9 +137,11 @@ export const SOURCE_COLUMNS: Readonly<Record<SourceTable, string>> = {
   control_button_panels: "id, button_id, output_index",
   access_profiles: "id, name, local_permission_id",
   profile_panel_rules:
-    "id, profile_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, allow_remote, weekday_mask, start_minute, end_minute",
+    "id, profile_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, allow_remote, allow_call, weekday_mask, start_minute, end_minute",
   holder_profiles: "id, holder_id, profile_id",
   outputs: "id, output_index, alias, duration_ms, reader_mask, enabled",
+  phones: "id, holder_id, number, description",
+  panel_call_settings: "id, enabled, mode, output_index, menu_mask, default_output, call_limit_per_minute",
 };
 
 /** Tablas de origen con filas por panel (se filtran también por `panel_id`). */
@@ -123,6 +149,7 @@ export const PANEL_SOURCES: ReadonlySet<SourceTable> = new Set([
   "profile_panel_rules",
   "outputs",
   "control_button_panels",
+  "panel_call_settings",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -162,13 +189,15 @@ export function projectControlButton(row: ControlButtonRow, outputIndex: number 
  * Permiso local de un perfil en un panel: el `name` y el `local_permission_id` del
  * perfil con la regla de ese panel. Sin regla (o con la regla borrada), todas las
  * máscaras en 0 y `allow_rf` y `allow_remote` en false: el perfil no da acceso en ese panel.
- * `allow_remote` se proyecta siempre (entra en la suma de verificación del panel).
+ * `allow_remote` se proyecta siempre (entra en la suma de verificación del panel);
+ * `allow_call` solo con `withAllowCall` (panel v8): un panel v7 no lo tiene en su suma.
  */
 export function projectPermission(
   profile: Pick<ProfileRow, "name" | "local_permission_id">,
-  ruleForPanel: Omit<RuleRow, "id" | "profile_id"> | null,
+  ruleForPanel: Omit<RuleRow, "id" | "profile_id" | "allow_call"> & { allow_call?: boolean } | null,
+  withAllowCall = true,
 ): PermissionData {
-  return {
+  const data: PermissionData = {
     permission_id: profile.local_permission_id,
     name: profile.name,
     output_mask: ruleForPanel?.output_mask ?? 0,
@@ -180,6 +209,17 @@ export function projectPermission(
     start_minute: ruleForPanel?.start_minute ?? 0,
     end_minute: ruleForPanel?.end_minute ?? 0,
   };
+  if (withAllowCall) data.allow_call = ruleForPanel?.allow_call ?? false;
+  return data;
+}
+
+/** Proyección de un permiso para ESE panel (con `allow_call` solo si es v8). */
+export function projectPermissionFor(
+  panel: Panel,
+  profile: Pick<ProfileRow, "name" | "local_permission_id">,
+  ruleForPanel: RuleRow | null,
+): PermissionData {
+  return projectPermission(profile, ruleForPanel, panel.schema >= 8);
 }
 
 export function projectHolderPermission(row: HolderProfileRow, localPermissionId: number): HolderPermissionData {
@@ -194,6 +234,26 @@ export function projectOutput(row: OutputRow): OutputData {
     reader_mask: row.reader_mask,
     enabled: row.enabled,
   };
+}
+
+export function projectPhone(row: PhoneRow): PhoneData {
+  return { holder_id: row.holder_id, number: row.number, description: row.description };
+}
+
+export function projectCallSettings(row: CallSettingsRow): CallSettingsData {
+  return {
+    enabled: row.enabled,
+    mode: row.mode,
+    output_id: row.output_index,
+    menu_mask: row.menu_mask,
+    default_output: row.default_output,
+    call_limit_per_minute: row.call_limit_per_minute,
+  };
+}
+
+/** El panel recibe teléfonos: es v8 y su módulo de llamadas está activado. */
+export function panelGetsPhones(panel: Panel, settings: CallSettingsRow | null): boolean {
+  return panel.schema >= 8 && settings?.enabled === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +468,40 @@ export async function visibleToPanel(admin: SupabaseClient, panel: Panel, contro
   return isControlVisible(buildControlContext([control], botones, vinculos), controlId);
 }
 
+/** La configuración de llamadas viva del panel en su instalación, o `null`. */
+async function fetchCallSettings(admin: SupabaseClient, panel: Panel): Promise<CallSettingsRow | null> {
+  const { data, error } = await admin
+    .from("panel_call_settings")
+    .select(SOURCE_COLUMNS.panel_call_settings)
+    .eq("installation_id", panel.installation_id)
+    .eq("panel_id", panel.id)
+    .is("deleted_at", null)
+    .maybeSingle<CallSettingsRow>();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * La configuración de llamadas viva del panel. Si falta (un panel dado de alta sin
+ * `claim_panel` ni importación), la crea con los valores por omisión, como
+ * `private.ensure_panel_call_settings`: un panel v8 siempre tiene su fila local y sin la de
+ * la nube su suma de `call_settings` nunca coincidiría.
+ */
+export async function loadCallSettings(admin: SupabaseClient, panel: Panel): Promise<CallSettingsRow | null> {
+  const fila = await fetchCallSettings(admin, panel);
+  if (fila) return fila;
+  const { error } = await admin.from("panel_call_settings").insert({
+    installation_id: panel.installation_id,
+    panel_id: panel.id,
+    updated_at: new Date().toISOString(),
+    updated_by: "system:llamadas",
+    origin: "cloud",
+  });
+  // 23505: otra petición la creó mientras tanto.
+  if (error && error.code !== "23505") throw error;
+  return fetchCallSettings(admin, panel);
+}
+
 /** Perfil leído con `SOURCE_COLUMNS` (sin `deleted_at`). */
 type PerfilVivo = Omit<ProfileRow, "deleted_at">;
 
@@ -457,7 +551,7 @@ export async function liveRow(
     }
     case "permissions": {
       const perfil = await fetchSourceRow<PerfilVivo>(admin, panel, "access_profiles", id);
-      return perfil && projectPermission(perfil, await fetchRuleForPanel(admin, panel, id));
+      return perfil && projectPermissionFor(panel, perfil, await fetchRuleForPanel(admin, panel, id));
     }
     case "holder_permissions": {
       const asignacion = await fetchSourceRow<HolderProfileRow>(admin, panel, "holder_profiles", id);
@@ -470,6 +564,17 @@ export async function liveRow(
     case "outputs": {
       const fila = await fetchSourceRow<OutputRow>(admin, panel, "outputs", id);
       return fila && projectOutput(fila);
+    }
+    case "phones": {
+      if (panel.schema < 8 || !panelGetsPhones(panel, await loadCallSettings(admin, panel))) return null;
+      const fila = await fetchSourceRow<PhoneRow>(admin, panel, "phones", id);
+      return fila && projectPhone(fila);
+    }
+    case "call_settings": {
+      // La fila del panel, sin importar el id (el panel tiene una sola).
+      if (panel.schema < 8) return null;
+      const fila = await loadCallSettings(admin, panel);
+      return fila && projectCallSettings(fila);
     }
   }
 }
@@ -518,7 +623,7 @@ export async function liveRows(admin: SupabaseClient, panel: Panel, table: Table
       const c = await loadPermissionContext(admin, panel);
       filas = [...c.profiles.values()]
         .filter((p) => p.deleted_at === null)
-        .map((p) => ({ id: p.id, data: projectPermission(p, c.rulesByProfile.get(p.id) ?? null) }));
+        .map((p) => ({ id: p.id, data: projectPermissionFor(panel, p, c.rulesByProfile.get(p.id) ?? null) }));
       break;
     }
     case "holder_permissions": {
@@ -538,6 +643,16 @@ export async function liveRows(admin: SupabaseClient, panel: Panel, table: Table
         data: projectOutput(r),
       }));
       break;
+    case "phones":
+      filas = panel.schema >= 8 && panelGetsPhones(panel, await loadCallSettings(admin, panel))
+        ? (await fetchSourceRows<PhoneRow>(admin, panel, "phones")).map((r) => ({ id: r.id, data: projectPhone(r) }))
+        : [];
+      break;
+    case "call_settings": {
+      const fila = panel.schema >= 8 ? await loadCallSettings(admin, panel) : null;
+      filas = fila ? [{ id: fila.id, data: projectCallSettings(fila) }] : [];
+      break;
+    }
   }
   return filas.sort(porId);
 }

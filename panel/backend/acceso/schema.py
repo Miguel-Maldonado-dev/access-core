@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS permissions (permission_id INTEGER PRIMARY KEY CHECK(
   start_minute INTEGER NOT NULL CHECK(start_minute BETWEEN 0 AND 1439), end_minute INTEGER NOT NULL CHECK(end_minute BETWEEN 0 AND 1439),
   allow_rf INTEGER NOT NULL DEFAULT 0 CHECK(allow_rf IN (0,1)),
   uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local',
-  allow_remote INTEGER NOT NULL DEFAULT 0 CHECK(allow_remote IN (0,1)));
+  allow_remote INTEGER NOT NULL DEFAULT 0 CHECK(allow_remote IN (0,1)),
+  allow_call INTEGER NOT NULL DEFAULT 0 CHECK(allow_call IN (0,1)));
 CREATE TABLE IF NOT EXISTS holder_permissions (
   holder_id INTEGER NOT NULL REFERENCES holders(holder_id) ON DELETE CASCADE,
   permission_id INTEGER NOT NULL REFERENCES permissions(permission_id) ON DELETE CASCADE,
@@ -42,6 +43,19 @@ CREATE TABLE IF NOT EXISTS control_buttons (
   output_id INTEGER REFERENCES outputs(output_id),
   uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local',
   PRIMARY KEY(control_id, button));
+CREATE TABLE IF NOT EXISTS phones (phone_id INTEGER PRIMARY KEY,
+  holder_id INTEGER NOT NULL REFERENCES holders(holder_id) ON DELETE CASCADE,
+  number TEXT NOT NULL UNIQUE CHECK(length(number) = 10 AND number NOT GLOB '*[^0-9]*'),
+  description TEXT NOT NULL DEFAULT '',
+  uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local');
+CREATE TABLE IF NOT EXISTS call_settings (id INTEGER PRIMARY KEY CHECK(id = 1),
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+  mode TEXT NOT NULL DEFAULT 'single' CHECK(mode IN ('single','menu')),
+  output_id INTEGER NOT NULL DEFAULT 0 CHECK(output_id BETWEEN 0 AND 3),
+  menu_mask INTEGER NOT NULL DEFAULT 0 CHECK(menu_mask BETWEEN 0 AND 15),
+  default_output INTEGER CHECK(default_output IS NULL OR default_output BETWEEN 0 AND 3),
+  call_limit_per_minute INTEGER NOT NULL DEFAULT 3 CHECK(call_limit_per_minute BETWEEN 1 AND 20),
+  uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local');
 CREATE TABLE IF NOT EXISTS access_logs (log_id INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp INTEGER NOT NULL, allowed INTEGER NOT NULL, source INTEGER NOT NULL,
   holder_id INTEGER REFERENCES holders(holder_id) ON DELETE SET NULL, holder_name TEXT, holder_kind TEXT,
@@ -72,14 +86,14 @@ def _trigger(table: str, suffix: str, event: str, op: str, row: str, stamp: str)
     )
 
 
-def _sync_triggers() -> tuple:
+def _sync_triggers(tables: tuple = REPLICATED_TABLES) -> tuple:
     """Triggers que anotan en sync_outbox cada alta, cambio y baja (también las de cascada).
 
     Con sync_guard.applying=1 (el agente aplicando cambios de la nube) no anotan nada. El payload
     no se guarda: el agente lee la fila al enviar.
     """
     statements = []
-    for table in REPLICATED_TABLES:
+    for table in tables:
         statements.append(_trigger(table, "ins", "INSERT", "upsert", "NEW", "NEW.updated_at"))
         statements.append(_trigger(table, "upd", "UPDATE", "upsert", "NEW", "NEW.updated_at"))
         statements.append(_trigger(table, "del", "DELETE", "delete", "OLD", _NOW_MS_SQL))
@@ -119,6 +133,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
                 " allow_rf, allow_remote, uuid, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 DEFAULT_PERMISSION + (str(uuid.uuid4()), stamp),
             )
+        conn.execute("INSERT OR IGNORE INTO call_settings(id, uuid, updated_at) VALUES (1, ?, ?)",
+                     (str(uuid.uuid4()), stamp))
         for statement in TRIGGER_STATEMENTS:
             conn.execute(statement)
         conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)

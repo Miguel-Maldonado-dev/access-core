@@ -34,7 +34,7 @@ describe("parseLogFilters", () => {
   it("acepta los orígenes Remota (4) y Prueba (5)", () => {
     expect(parseLogFilters({ origen: "5" }).source).toBe(5);
     expect(parseLogFilters({ origen: "4" }).source).toBe(4);
-    expect(parseLogFilters({ origen: "6" }).source).toBeUndefined();
+    expect(parseLogFilters({ origen: "7" }).source).toBeUndefined();
   });
 
   it("toma el primer valor si el parámetro se repite", () => {
@@ -98,6 +98,21 @@ describe("etiquetas", () => {
     expect(mediumLabel({ ...base, source: 5 })).toBe("Prueba");
     expect(mediumLabel({ ...base, source: 4, credential_label: "app-porteria" })).toBe("app-porteria");
     expect(mediumLabel({ ...base, source: 4 })).toBe("Remota");
+  });
+
+  it("la llamada muestra el número completo y la tecla del menú", () => {
+    const base = { credential_label: null, control_id: null, device_id: null, reason: 0 };
+    expect(mediumLabel({ ...base, source: 6, credential_label: "5512345678" })).toBe("5512345678");
+    expect(mediumLabel({ ...base, source: 6, credential_label: "5512345678", device_id: 2 })).toBe("5512345678 · tecla 2");
+    expect(mediumLabel({ ...base, source: 6, credential_label: "Oculto", reason: 12 })).toBe("Oculto");
+    expect(mediumLabel({ ...base, source: 6 })).toBe("Llamada");
+  });
+
+  it("traduce el origen 6 y los motivos 12 y 13", () => {
+    expect(sourceLabel(6)).toBe("Llamada");
+    expect(reasonLabel(12)).toBe("Teléfono desconocido");
+    expect(reasonLabel(13)).toBe("Límite de llamadas");
+    expect(parseLogFilters({ origen: "6" }).source).toBe(6);
   });
 
   it("la página es de 50", () => {

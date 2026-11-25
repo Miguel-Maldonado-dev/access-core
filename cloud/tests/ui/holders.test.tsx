@@ -32,10 +32,11 @@ const titular = (p: Partial<HolderRow> = {}): HolderRow => ({
   ...p,
 });
 
-function montarTitulares(holders: HolderRow[], { canSeePin = false } = {}) {
+function montarTitulares(holders: HolderRow[], { canSeePin = false, phonesHref }: { canSeePin?: boolean; phonesHref?: string } = {}) {
   const props = {
     holders,
     canSeePin,
+    phonesHref,
     onSave: vi.fn(async (): Promise<ActionResult<{ id: string }>> => ok({ id: "h-9" })),
     onDelete: vi.fn(async () => ok(undefined)),
     onRevealPin: vi.fn(async () => ok<string | null>("482913")),
@@ -45,6 +46,15 @@ function montarTitulares(holders: HolderRow[], { canSeePin = false } = {}) {
 }
 
 describe("HoldersManager", () => {
+  it("enlaza a los teléfonos del titular con ?holder= y solo si hay ruta", () => {
+    montarTitulares([titular()], { phonesHref: "/t/a/installations/i/telefonos" });
+    const enlace = screen.getByRole("link", { name: /Teléfonos de Ana Pérez/ });
+    expect(enlace.getAttribute("href")).toBe("/t/a/installations/i/telefonos?holder=h-1");
+    cleanup();
+    montarTitulares([titular()]);
+    expect(screen.queryByRole("link", { name: /Teléfonos/ })).toBeNull();
+  });
+
   it("la lista muestra has_pin como Sí o guion y nunca un PIN", () => {
     const { container } = montarTitulares([titular(), titular({ id: "h-2", name: "Beto", has_pin: false })]);
     const filas = screen.getAllByRole("row").slice(1);

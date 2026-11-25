@@ -7,6 +7,7 @@ import { GET as getSnapshot } from "@/app/api/device/v1/snapshot/route";
 import { encryptPin, pinLookup } from "@/lib/crypto";
 import { tableChecksum } from "@/lib/device/checksum";
 import {
+  SCHEMA8_TABLES,
   TABLES,
   dataSchemas,
   type ChangeItem,
@@ -526,9 +527,11 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
     it("el checksum de cada tabla coincide con el calculado de su snapshot", async () => {
       for (const panel of [panelA, panelB, panelC]) {
         const cs = await checksums(panel);
-        expect(Object.keys(cs.tables).sort()).toEqual([...TABLES].sort());
+        // Paneles sin X-Acc-Schema (v7): sin phones ni call_settings.
+        const v7 = TABLES.filter((t) => t !== "phones" && t !== "call_settings");
+        expect(Object.keys(cs.tables).sort()).toEqual([...v7].sort());
         expect(cs.confirm_deletions).toBe(false);
-        for (const tabla of TABLES) {
+        for (const tabla of v7) {
           const snap = await snapshot(panel, tabla);
           expect(snap.revision).toBe(cs.revision);
           expect(tableChecksum(snap.rows), tabla).toBe(cs.tables[tabla]);
@@ -540,7 +543,8 @@ describe("bajada de datos al panel (GET /changes, /checksums y /snapshot)", () =
     it("sin borrados, el snapshot de cada tabla es igual al pull desde 0", async () => {
       for (const panel of [panelA, panelB]) {
         const r = await pull(panel, 0);
-        for (const tabla of TABLES) {
+        // Panel v7: las tablas del esquema 8 no son suyas (400).
+        for (const tabla of TABLES.filter((t) => !SCHEMA8_TABLES.has(t))) {
           const snap = await snapshot(panel, tabla);
           const delPull = colapsar(r)
             .filter((c) => c.table === tabla)

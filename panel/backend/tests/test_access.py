@@ -421,3 +421,13 @@ def test_allow_remote_does_not_open_rf(conn):
     holder_id = add_holder(conn)
     set_permission(conn, 0, output_mask=15, allow_rf=0, allow_remote=1)
     assert permission_allows(conn, holder_id, 0, "rf", None, NOW) is False
+
+
+def test_permission_allows_call_requires_allow_call(conn):
+    from acceso.access import METHOD_CALL, permission_allows
+    set_permission(conn, 0, output_mask=0b0001)
+    holder_id = add_holder(conn)
+    assert not permission_allows(conn, holder_id, 0, METHOD_CALL, None, NOW)
+    conn.execute("UPDATE permissions SET allow_call = 1 WHERE permission_id = 0")
+    assert permission_allows(conn, holder_id, 0, METHOD_CALL, None, NOW)
+    assert not permission_allows(conn, holder_id, 1, METHOD_CALL, None, NOW)

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useTransition } from "react";
 import HolderForm from "@/components/access/HolderForm";
 import Notices, { type Notice } from "@/components/Notices";
@@ -9,6 +10,8 @@ import type { HolderInput, HolderRow } from "@/lib/holders";
 
 interface Props {
   holders: HolderRow[];
+  /** Ruta de la pestaña Teléfonos; con ella, cada titular enlaza a sus teléfonos (`?holder=`). */
+  phonesHref?: string;
   /** Solo el `admin` ve el PIN actual al editar; el técnico solo puede reemplazarlo o quitarlo. */
   canSeePin: boolean;
   /** `holderId` null crea; con id edita. */
@@ -20,7 +23,7 @@ interface Props {
 type Editing = { holder?: HolderRow; currentPin: string | null } | null;
 
 /** Pestaña Titulares: buscar, crear, editar (con PIN) y borrar. */
-export default function HoldersManager({ holders, canSeePin, onSave, onDelete, onRevealPin }: Props) {
+export default function HoldersManager({ holders, phonesHref, canSeePin, onSave, onDelete, onRevealPin }: Props) {
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Editing>(null);
   const [notice, setNotice] = useState<Notice>(null);
@@ -138,6 +141,11 @@ export default function HoldersManager({ holders, canSeePin, onSave, onDelete, o
                   <td className="px-4 py-3">{h.has_pin ? "Sí" : "—"}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-4 whitespace-nowrap">
+                      {phonesHref && (
+                        <Link className="link-action" href={`${phonesHref}?holder=${h.id}`}>
+                          Teléfonos <span className="sr-only">de {h.name}</span>
+                        </Link>
+                      )}
                       <button type="button" className="link-action" disabled={pendiente} onClick={() => abrir(h)}>
                         Editar <span className="sr-only">a {h.name}</span>
                       </button>

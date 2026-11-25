@@ -44,6 +44,8 @@ const REASONS: Record<number, string> = {
   9: "PIN no permitido",
   10: "PIN bloqueado",
   11: "Titular desconocido",
+  12: "Teléfono desconocido",
+  13: "Límite de llamadas",
 };
 
 // Copiado de panel/frontend/src/lib/format.ts
@@ -54,9 +56,10 @@ const SOURCES: Record<number, string> = {
   3: "PIN",
   4: "Remota",
   5: "Prueba",
+  6: "Llamada",
 };
 
-export const SOURCE_OPTIONS = [0, 1, 2, 3, 4, 5] as const;
+export const SOURCE_OPTIONS = [0, 1, 2, 3, 4, 5, 6] as const;
 
 export const reasonLabel = (reason: number) => REASONS[reason] ?? `Motivo ${reason}`;
 export const sourceLabel = (source: number) => SOURCES[source] ?? `Origen ${source}`;
@@ -93,6 +96,11 @@ export function mediumLabel(log: MediumInput): string {
   if (log.source === 4) return log.credential_label ?? "Remota";
   // La etiqueta dice quién pidió la prueba: "Prueba — web local" o "Prueba — <correo>".
   if (log.source === 5) return log.credential_label ?? "Prueba";
+  // Llamada: el número completo y, si contestó el menú, la tecla marcada (se guarda en `device_id`).
+  if (log.source === 6) {
+    const numero = log.credential_label ?? "Llamada";
+    return device === null ? numero : `${numero} · tecla ${device}`;
+  }
   return device === null ? "Botón de salida" : `Botón de salida ${device + 1}`;
 }
 

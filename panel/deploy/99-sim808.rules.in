@@ -1,0 +1,2 @@
+# Módulo GSM SIM808 por USB (apertura por llamada). Lo genera install.sh --sim808-usb VID:PID.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="@VID@", ATTRS{idProduct}=="@PID@", SYMLINK+="sim808", GROUP="dialout", MODE="0660"

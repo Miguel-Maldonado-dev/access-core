@@ -42,6 +42,9 @@ describe("format", () => {
     expect(reasonLabel(10)).toBe("PIN bloqueado");
     expect(sourceLabel(4)).toBe("Remota");
     expect(reasonLabel(11)).toBe("Titular desconocido");
+    expect(sourceLabel(6)).toBe("Llamada");
+    expect(reasonLabel(12)).toBe("Teléfono desconocido");
+    expect(reasonLabel(13)).toBe("Límite de llamadas");
     expect(outputLabel(3)).toBe("Relay4");
     expect(outputLabel(null)).toBe("-");
     expect(holderKindLabel("persona")).toBe("Persona");
@@ -63,6 +66,9 @@ describe("format", () => {
     expect(mediumLabel(log({ source: 5, credential_label: null }))).toBe("Prueba");
     expect(mediumLabel(log({ source: 4, credential_label: "App Vecinos · Ana" }))).toBe("App Vecinos · Ana");
     expect(mediumLabel(log({ source: 4, credential_label: null }))).toBe("Remota");
+    expect(mediumLabel(log({ source: 6, credential_label: "5512345678", device_id: 2 }))).toBe("5512345678 · tecla 2");
+    expect(mediumLabel(log({ source: 6, credential_label: "5512345678", device_id: null }))).toBe("5512345678");
+    expect(mediumLabel(log({ source: 6, credential_label: null }))).toBe("Llamada");
   });
 
   it("formatea fecha y hora en es-MX", () => {

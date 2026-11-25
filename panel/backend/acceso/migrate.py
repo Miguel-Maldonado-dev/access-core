@@ -1,7 +1,7 @@
-"""Migración de la base v2 (Tkinter), v3, v4, v5 y v6 al esquema v7 del panel web.
+"""Migración de la base v2 (Tkinter), v3, v4, v5, v6 y v7 al esquema v8 del panel web.
 
 v2, v3 y v4 se convierten primero a v5 (con el esquema v5 congelado en _SCHEMA_SQL_V5), v5 pasa a
-v6 (con el esquema v6 congelado en _SCHEMA_SQL_V6) y v6 pasa a v7, cada paso en su transacción; el
+v6 (con el esquema v6 congelado en _SCHEMA_SQL_V6), v6 pasa a v7 y v7 a v8, cada paso en su transacción; el
 respaldo es siempre el de la versión de origen.
 """
 import fcntl
@@ -15,9 +15,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from .constants import REPLICATED_TABLES, SCHEMA_VERSION
+from .constants import SCHEMA_VERSION
 from .db import connect, now_ms, transaction
-from .schema import TRIGGER_STATEMENTS, create_schema
+from .schema import _sync_triggers, create_schema
 
 V1_MESSAGE = "Base v1 no soportada: ábrela primero con access_control_admin_gui.py"
 LEGACY_TABLES = ("users", "user_permissions", "permissions", "outputs", "cards",
@@ -127,6 +127,31 @@ _V7_ALTERS = (
     " CHECK(allow_remote IN (0,1))",
 )
 
+V7_VERSION = 7
+
+# Tablas replicadas del esquema v6/v7 (las que conoce _convert_v5; no se edita) y sus triggers.
+_V6_REPLICATED = ("holders", "cards", "controls", "control_buttons", "permissions",
+                  "holder_permissions", "outputs")
+
+# v7 -> v8: allow_call (misma definición que SCHEMA_SQL), tablas phones y call_settings.
+_V8_STATEMENTS = (
+    "ALTER TABLE permissions ADD COLUMN allow_call INTEGER NOT NULL DEFAULT 0"
+    " CHECK(allow_call IN (0,1))",
+    """CREATE TABLE IF NOT EXISTS phones (phone_id INTEGER PRIMARY KEY,
+  holder_id INTEGER NOT NULL REFERENCES holders(holder_id) ON DELETE CASCADE,
+  number TEXT NOT NULL UNIQUE CHECK(length(number) = 10 AND number NOT GLOB '*[^0-9]*'),
+  description TEXT NOT NULL DEFAULT '',
+  uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local')""",
+    """CREATE TABLE IF NOT EXISTS call_settings (id INTEGER PRIMARY KEY CHECK(id = 1),
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+  mode TEXT NOT NULL DEFAULT 'single' CHECK(mode IN ('single','menu')),
+  output_id INTEGER NOT NULL DEFAULT 0 CHECK(output_id BETWEEN 0 AND 3),
+  menu_mask INTEGER NOT NULL DEFAULT 0 CHECK(menu_mask BETWEEN 0 AND 15),
+  default_output INTEGER CHECK(default_output IS NULL OR default_output BETWEEN 0 AND 3),
+  call_limit_per_minute INTEGER NOT NULL DEFAULT 3 CHECK(call_limit_per_minute BETWEEN 1 AND 20),
+  uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local')""",
+)
+
 _COPY_SQL = (
     "INSERT INTO holders_v3(holder_id, kind, name, department, address, notes)"
     " SELECT user_id, 'persona', name, department, address, '' FROM users",
@@ -225,7 +250,7 @@ def _detect_version(conn: sqlite3.Connection) -> int:
     user_version = conn.execute("PRAGMA user_version").fetchone()[0]
     if user_version == SCHEMA_VERSION:
         return SCHEMA_VERSION
-    if user_version in (3, 4, LAST_LEGACY_VERSION, V6_VERSION) and "holders" in tables:
+    if user_version in (3, 4, LAST_LEGACY_VERSION, V6_VERSION, V7_VERSION) and "holders" in tables:
         return user_version
     if "users" in tables:
         columns = [r[1] for r in conn.execute("PRAGMA table_info(users)")]
@@ -352,15 +377,15 @@ def _convert_v5(conn: sqlite3.Connection) -> None:
             conn.create_function("uuid4", 0, lambda: str(uuid.uuid4()))
             stamp = now_ms()
             counts = {}
-            for statement in _suffixed_table_statements("_v6", _SCHEMA_SQL_V6, REPLICATED_TABLES):
+            for statement in _suffixed_table_statements("_v6", _SCHEMA_SQL_V6, _V6_REPLICATED):
                 conn.execute(statement)
-            for table in REPLICATED_TABLES:
+            for table in _V6_REPLICATED:
                 columns = ", ".join(r[1] for r in conn.execute("PRAGMA table_info(%s)" % table))
                 counts[table] = conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]
                 conn.execute(
                     "INSERT INTO %(t)s_v6(%(c)s, uuid, updated_at) SELECT %(c)s, uuid4(), ?"
                     " FROM %(t)s ORDER BY rowid" % {"t": table, "c": columns}, (stamp,))
-            for table in REPLICATED_TABLES:
+            for table in _V6_REPLICATED:
                 if conn.execute("SELECT COUNT(*) FROM %s_v6" % table).fetchone()[0] != counts[table]:
                     raise sqlite3.IntegrityError("la copia de %s perdió filas" % table)
                 conn.execute("DROP TABLE %s" % table)
@@ -371,7 +396,7 @@ def _convert_v5(conn: sqlite3.Connection) -> None:
                 if statement.startswith("CREATE TABLE IF NOT EXISTS sync_"):
                     conn.execute(statement)
             conn.execute("INSERT OR IGNORE INTO sync_guard(id, applying) VALUES (1, 0)")
-            for statement in TRIGGER_STATEMENTS:  # no enumeran columnas: valen para v6 y v7
+            for statement in _sync_triggers(_V6_REPLICATED):  # no enumeran columnas
                 conn.execute(statement)
             conn.execute("PRAGMA user_version=%d" % V6_VERSION)
     finally:
@@ -385,6 +410,22 @@ def _convert_v6(conn: sqlite3.Connection) -> None:
     """
     with transaction(conn):
         for statement in _V7_ALTERS:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version=%d" % V7_VERSION)
+
+
+def _convert_v7(conn: sqlite3.Connection) -> None:
+    """v7 -> v8: permissions.allow_call (apagado), phones y call_settings (fila 1 apagada).
+
+    La fila 1 se inserta antes de crear los triggers de las tablas nuevas: no llena la bandeja.
+    Los permisos existentes conservan uuid y updated_at (ALTER no dispara triggers).
+    """
+    with transaction(conn):
+        for statement in _V8_STATEMENTS:
+            conn.execute(statement)
+        conn.execute("INSERT OR IGNORE INTO call_settings(id, uuid, updated_at) VALUES (1, ?, ?)",
+                     (str(uuid.uuid4()), now_ms()))
+        for statement in _sync_triggers(("phones", "call_settings")):
             conn.execute(statement)
         conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
 
@@ -404,7 +445,7 @@ def migrate(db_path: Path) -> MigrationResult:
                 create_schema(conn)
                 return MigrationResult(0, SCHEMA_VERSION, None)
             # v2 se convierte directo a las tablas v5 y v3 y v4 agregan lo que falta y reconstruyen
-            # permissions; después, todas pasan de v5 a v6 y de v6 a v7. El respaldo es el de la
+            # permissions; después, todas pasan de v5 a v6 y de v6 a v7 y de v7 a v8. El respaldo es el de la
             # versión de origen. Si falla un paso, la base queda en la última versión alcanzada y el
             # siguiente arranque lo reintenta.
             reached = version
@@ -417,8 +458,11 @@ def migrate(db_path: Path) -> MigrationResult:
                 if version <= LAST_LEGACY_VERSION:
                     reached = LAST_LEGACY_VERSION
                     _convert_v5(conn)
-                reached = V6_VERSION
-                _convert_v6(conn)
+                if version <= V6_VERSION:
+                    reached = V6_VERSION
+                    _convert_v6(conn)
+                reached = V7_VERSION
+                _convert_v7(conn)
             except (sqlite3.Error, OSError) as exc:
                 raise MigrationError(
                     "No se pudo migrar la base (sigue en v%d): %s" % (reached, exc)) from exc

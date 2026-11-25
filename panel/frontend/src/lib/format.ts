@@ -13,6 +13,8 @@ const REASONS: Record<number, string> = {
   9: "PIN no permitido",
   10: "PIN bloqueado",
   11: "Titular desconocido",
+  12: "Teléfono desconocido",
+  13: "Límite de llamadas",
 };
 
 const SOURCES: Record<number, string> = {
@@ -22,6 +24,7 @@ const SOURCES: Record<number, string> = {
   3: "PIN",
   4: "Remota",
   5: "Prueba",
+  6: "Llamada",
 };
 
 export function reasonLabel(reason: number): string {
@@ -56,6 +59,10 @@ export function mediumLabel(log: LogItem): string {
   }
   if (log.source === 4) return log.credential_label ?? "Remota";
   if (log.source === 5) return log.credential_label ?? "Prueba";
+  if (log.source === 6) {
+    const number = log.credential_label ?? "Llamada";
+    return device === null ? number : `${number} · tecla ${device}`;
+  }
   return device === null ? "Botón de salida" : `Botón de salida ${device + 1}`;
 }
 

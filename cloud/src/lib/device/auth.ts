@@ -22,6 +22,20 @@ export interface Panel {
   installation_id: string;
   tenant_id: string;
   status: DevicePanelStatus;
+  /**
+   * Esquema de la base local del panel, de `X-Acc-Schema` (7 si falta o no es un entero).
+   * Solo un panel con 8 o más recibe `phones`, `call_settings` y `permissions.allow_call`.
+   */
+  schema: number;
+}
+
+/** Esquema que se supone cuando el panel no envía `X-Acc-Schema` (agentes anteriores a v8). */
+export const DEFAULT_PANEL_SCHEMA = 7;
+
+/** `X-Acc-Schema` como entero; ausente o inválido → `DEFAULT_PANEL_SCHEMA`. */
+export function panelSchemaFrom(req: Request): number {
+  const valor = (req.headers.get("x-acc-schema") ?? "").trim();
+  return /^[0-9]{1,4}$/.test(valor) ? Number(valor) : DEFAULT_PANEL_SCHEMA;
 }
 
 /**
@@ -65,6 +79,7 @@ export async function authenticateDevice(req: Request): Promise<Panel> {
     installation_id: panel.installation_id,
     tenant_id: panel.tenant_id,
     status: panel.status,
+    schema: panelSchemaFrom(req),
   };
 }
 

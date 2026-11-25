@@ -25,12 +25,15 @@ export interface RuleInput {
   allow_rf: boolean;
   /** Permite la apertura remota desde la nube. */
   allow_remote: boolean;
+  /** Permite abrir llamando desde un teléfono del titular. Si se omite al guardar, se conserva el actual. */
+  allow_call?: boolean;
   weekday_mask: number;
   start_minute: number;
   end_minute: number;
 }
 
-export interface RuleRow extends RuleInput {
+export interface RuleRow extends Omit<RuleInput, "allow_call"> {
+  allow_call: boolean;
   id: string;
   profile_id: string;
   panel_id: string;

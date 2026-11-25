@@ -402,7 +402,7 @@ def test_a_permission_with_zero_masks_is_applied_and_the_daemon_denies_the_card(
     assert read_card().reason == REASON_ALLOWED
     permission_uuid = uuid_of(conn, "permissions", "permission_id=0")
     zero = {"permission_id": 0, "name": "Acceso total", "output_mask": 0, "card_reader_mask": 0,
-            "pin_reader_mask": 0, "allow_rf": False, "allow_remote": False, "weekday_mask": 0,
+            "pin_reader_mask": 0, "allow_rf": False, "allow_remote": False, "allow_call": False, "weekday_mask": 0,
             "start_minute": 0, "end_minute": 0}
     cloud.put("permissions", permission_uuid, zero)
 
@@ -419,7 +419,7 @@ def test_a_permission_with_zero_masks_is_applied_and_the_daemon_denies_the_card(
 
 def _permission(**changes):
     data = {"permission_id": 0, "name": "Acceso total", "output_mask": 15, "card_reader_mask": 15,
-            "pin_reader_mask": 0, "allow_rf": False, "allow_remote": False, "weekday_mask": 127,
+            "pin_reader_mask": 0, "allow_rf": False, "allow_remote": False, "allow_call": False, "weekday_mask": 127,
             "start_minute": 0, "end_minute": 0}
     data.update(changes)
     return data
@@ -647,7 +647,7 @@ def test_adopt_cloud_backs_up_keeps_local_outputs_empties_the_outbox_and_saves_r
     cloud.put("cards", str(uuid.uuid4()), {"card_code": 2, "holder_id": cloud_holder, "description": ""})
     cloud.put("permissions", cloud_perm, {"permission_id": 0, "name": "Todo", "output_mask": 15,
                                           "card_reader_mask": 15, "pin_reader_mask": 0, "allow_rf": True,
-                                          "allow_remote": False,
+                                          "allow_remote": False, "allow_call": False,
                                           "weekday_mask": 127, "start_minute": 0, "end_minute": 0})
     cloud.put("holder_permissions", str(uuid.uuid4()), {"holder_id": cloud_holder, "permission_id": 0})
     output_uuids = {}
@@ -1296,3 +1296,234 @@ def test_reconcile_keeps_a_pending_local_row_the_cloud_does_not_have(conn, db_pa
 
     assert card_codes(conn) == [5]
     assert [e["table_name"] for e in outbox(conn)] == ["cards"]
+
+
+# --- llamadas (phones, call_settings, X-Acc-Schema) -------------------------------------------
+
+from acceso.store import phones as phones_store  # noqa: E402
+from acceso.store.call_settings import get_settings, update_settings  # noqa: E402
+
+
+def _settings(**changes):
+    data = {"enabled": True, "mode": "single", "output_id": 0, "menu_mask": 0, "default_output": None,
+            "call_limit_per_minute": 3}
+    data.update(changes)
+    return data
+
+
+def test_pull_applies_phone_upsert_and_delete(conn, db_path, cloud):
+    holder_id = new_holder(conn)
+    mark_synced(conn, cloud)
+    holder_uuid = uuid_of(conn, "holders", "holder_id=?", (holder_id,))
+    phone_uuid = str(uuid.uuid4())
+    cloud.put("phones", phone_uuid, {"holder_id": holder_uuid, "number": "5512345678", "description": "Cel"})
+
+    engine_for(db_path, cloud).pull()
+
+    row = conn.execute("SELECT holder_id, number, description, origin FROM phones WHERE uuid=?",
+                       (phone_uuid,)).fetchone()
+    assert tuple(row) == (holder_id, "5512345678", "Cel", "cloud")
+    assert outbox(conn) == []
+
+    cloud.remove("phones", phone_uuid)
+    engine_for(db_path, cloud).pull()
+    assert conn.execute("SELECT COUNT(*) FROM phones").fetchone()[0] == 0
+    assert outbox(conn) == []
+
+
+def test_pull_phone_takes_a_number_used_by_another_local_phone(conn, db_path, cloud):
+    holder_id = new_holder(conn)
+    phones_store.create_phone(conn, holder_id, "5512345678", "viejo")
+    mark_synced(conn, cloud)
+    old_uuid = uuid_of(conn, "phones", "number='5512345678'")
+    new_uuid = str(uuid.uuid4())
+    holder_uuid = uuid_of(conn, "holders", "holder_id=?", (holder_id,))
+    cloud.remove("phones", old_uuid)
+    cloud.put("phones", new_uuid, {"holder_id": holder_uuid, "number": "5512345678", "description": "nuevo"})
+
+    engine_for(db_path, cloud).pull()
+
+    assert [tuple(r) for r in conn.execute("SELECT uuid, description FROM phones")] == [(new_uuid, "nuevo")]
+
+
+def test_pull_call_settings_adopts_cloud_uuid(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    local_uuid = uuid_of(conn, "call_settings", "id=1")
+    cloud.remove("call_settings", local_uuid)
+    cloud_uuid = str(uuid.uuid4())
+    cloud.put("call_settings", cloud_uuid, _settings(mode="menu", menu_mask=3, default_output=1,
+                                                     call_limit_per_minute=5))
+
+    engine_for(db_path, cloud).pull()
+
+    assert conn.execute("SELECT COUNT(*) FROM call_settings").fetchone()[0] == 1
+    assert uuid_of(conn, "call_settings", "id=1") == cloud_uuid
+    assert get_settings(conn) == {"enabled": True, "mode": "menu", "output_id": 0, "menu_mask": 3,
+                                  "default_output": 1, "call_limit_per_minute": 5}
+    assert outbox(conn) == []
+
+
+def test_pull_ignores_call_settings_delete(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    local_uuid = uuid_of(conn, "call_settings", "id=1")
+    cloud.remove("call_settings", local_uuid)
+
+    engine_for(db_path, cloud).pull()
+
+    assert uuid_of(conn, "call_settings", "id=1") == local_uuid
+
+
+def test_push_phone_change(conn, db_path, cloud):
+    holder_id = new_holder(conn)
+    mark_synced(conn, cloud)
+    phone_id = phones_store.create_phone(conn, holder_id, "5512345678", "Casa")
+    update_settings(conn, _settings(mode="menu", menu_mask=5, default_output=2, call_limit_per_minute=7))
+
+    engine_for(db_path, cloud).push()
+
+    items = [i for batch in cloud.pushed for i in batch]
+    phone_uuid = uuid_of(conn, "phones", "phone_id=?", (phone_id,))
+    holder_uuid = uuid_of(conn, "holders", "holder_id=?", (holder_id,))
+    assert cloud.live_row("phones", phone_uuid) == {"holder_id": holder_uuid, "number": "5512345678",
+                                                    "description": "Casa"}
+    settings_uuid = uuid_of(conn, "call_settings", "id=1")
+    assert cloud.live_row("call_settings", settings_uuid) == _settings(
+        mode="menu", menu_mask=5, default_output=2, call_limit_per_minute=7)
+    assert {i["table"] for i in items} == {"phones", "call_settings"}
+    assert outbox(conn) == []
+
+
+def test_push_of_a_permission_sends_allow_call(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    conn.execute("UPDATE permissions SET allow_call=1 WHERE permission_id=0")
+
+    engine_for(db_path, cloud).push()
+
+    permission_uuid = uuid_of(conn, "permissions", "permission_id=0")
+    assert cloud.live_row("permissions", permission_uuid)["allow_call"] is True
+
+
+def test_pull_of_a_permission_without_allow_call_applies_it_as_0(conn, db_path, cloud):
+    conn.execute("UPDATE permissions SET allow_call=1 WHERE permission_id=0")
+    mark_synced(conn, cloud)
+    permission_uuid = uuid_of(conn, "permissions", "permission_id=0")
+    data = _permission(name="Sin llamada")
+    del data["allow_call"]
+    cloud.put("permissions", permission_uuid, _permission())
+    cloud.rows["permissions"][permission_uuid]["data"] = data
+
+    engine_for(db_path, cloud).pull()
+
+    assert conn.execute("SELECT allow_call FROM permissions WHERE permission_id=0").fetchone()[0] == 0
+
+
+def test_disabling_calls_locally_drops_pending_phone_upserts_and_push_does_not_block(conn, db_path, cloud):
+    holder_id = new_holder(conn)
+    update_settings(conn, _settings())
+    mark_synced(conn, cloud)
+    phones_store.create_phone(conn, holder_id, "5512345678", "")
+    assert any(e["table_name"] == "phones" for e in outbox(conn))
+
+    update_settings(conn, _settings(enabled=False))
+
+    assert conn.execute("SELECT COUNT(*) FROM phones").fetchone()[0] == 0
+    assert [e["table_name"] for e in outbox(conn)] == ["call_settings"]
+    engine_for(db_path, cloud).push()
+    assert outbox(conn) == []
+
+
+def test_push_skips_a_pending_phone_upsert_whose_row_no_longer_exists(conn, db_path, cloud):
+    holder_id = new_holder(conn)
+    mark_synced(conn, cloud)
+    phones_store.create_phone(conn, holder_id, "5512345678", "")
+    edit_under_guard(conn, "DELETE FROM phones")
+
+    assert engine_for(db_path, cloud).push() == 0
+    assert outbox(conn) == []
+
+
+def test_reconcile_phones_by_checksum(conn, db_path, cloud):
+    holder_id = new_holder(conn)
+    phones_store.create_phone(conn, holder_id, "5512345678", "bien")
+    phones_store.create_phone(conn, holder_id, "5587654321", "")
+    mark_synced(conn, cloud)
+    edit_under_guard(conn, "UPDATE phones SET description='mal' WHERE number='5512345678'")
+    edit_under_guard(conn, "DELETE FROM phones WHERE number='5587654321'")
+    edit_under_guard(conn, "INSERT INTO phones(holder_id, number, description, uuid, updated_at)"
+                           " VALUES (?, '5500000000', '', ?, 1)", (holder_id, str(uuid.uuid4())))
+
+    assert engine_for(db_path, cloud).reconcile() == ["phones"]
+
+    assert [tuple(r) for r in conn.execute("SELECT number, description FROM phones ORDER BY number")] == [
+        ("5512345678", "bien"), ("5587654321", "")]
+    assert outbox(conn) == []
+
+
+def test_reconcile_call_settings_takes_cloud_values_and_uuid(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    local_uuid = uuid_of(conn, "call_settings", "id=1")
+    del cloud.rows["call_settings"][local_uuid]
+    cloud_uuid = str(uuid.uuid4())
+    cloud.put("call_settings", cloud_uuid, _settings(call_limit_per_minute=9))
+
+    assert engine_for(db_path, cloud).reconcile() == ["call_settings"]
+
+    assert uuid_of(conn, "call_settings", "id=1") == cloud_uuid
+    assert get_settings(conn)["call_limit_per_minute"] == 9 and get_settings(conn)["enabled"] is True
+
+
+def test_adopt_cloud_takes_call_settings_uuid_and_keeps_local_values(conn, db_path, cloud):
+    update_settings(conn, _settings(call_limit_per_minute=4))
+    cloud_uuid = str(uuid.uuid4())
+    cloud.put("call_settings", cloud_uuid, _settings(enabled=False))
+
+    engine_for(db_path, cloud).adopt_cloud()
+
+    assert uuid_of(conn, "call_settings", "id=1") == cloud_uuid
+    assert get_settings(conn)["call_limit_per_minute"] == 4
+    assert ("call_settings", cloud_uuid) in [(e["table_name"], e["row_uuid"]) for e in outbox(conn)]
+
+
+def test_requests_send_schema_header(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    engine = engine_for(db_path, cloud)
+    engine.pull()
+    engine.reconcile()
+
+    assert cloud.headers and all(h.get("x-acc-schema") == "8" for h in cloud.headers)
+
+
+def test_pull_call_settings_with_other_uuid_keeps_a_pending_local_edit_and_uploads_it(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    local_uuid = uuid_of(conn, "call_settings", "id=1")
+    del cloud.rows["call_settings"][local_uuid]
+    cloud_uuid = str(uuid.uuid4())
+    cloud.put("call_settings", cloud_uuid, _settings(enabled=False))
+    update_settings(conn, _settings(call_limit_per_minute=6))
+
+    engine = engine_for(db_path, cloud)
+    engine.pull()
+
+    assert uuid_of(conn, "call_settings", "id=1") == cloud_uuid
+    assert get_settings(conn)["call_limit_per_minute"] == 6 and get_settings(conn)["enabled"] is True
+    assert {e["row_uuid"] for e in outbox(conn)} == {cloud_uuid}
+    engine.push()
+    assert cloud.live_row("call_settings", cloud_uuid) == _settings(call_limit_per_minute=6)
+    assert outbox(conn) == []
+
+
+def test_pull_call_settings_moves_only_its_own_outbox_entries(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    local_uuid = uuid_of(conn, "call_settings", "id=1")
+    del cloud.rows["call_settings"][local_uuid]
+    cloud_uuid = str(uuid.uuid4())
+    cloud.put("call_settings", cloud_uuid, _settings(call_limit_per_minute=9))
+    # Entrada ajena con el mismo row_uuid (otra tabla): no debe moverse ni tomarse como pendiente.
+    conn.execute("INSERT INTO sync_outbox(change_id, table_name, op, row_uuid, updated_at)"
+                 " VALUES ('x1', 'holders', 'delete', ?, 1)", (local_uuid,))
+    conn.commit()
+
+    engine_for(db_path, cloud).pull()
+
+    assert get_settings(conn)["call_limit_per_minute"] == 9
+    assert {(e["table_name"], e["row_uuid"]) for e in outbox(conn)} == {("holders", local_uuid)}

@@ -116,12 +116,25 @@ describe("documento OpenAPI", () => {
     expect(esquemas.Regla.required).toContain("allow_remote");
     expect(esquemas.ReglaEntrada.required).not.toContain("allow_remote");
     expect(esquemas.ReglaEntrada.properties.allow_remote).toBeDefined();
-    expect(esquemas.Log.properties.source.enum).toEqual([0, 1, 2, 3, 4, 5]);
-    expect(esquemas.Log.properties.reason.maximum).toBe(11);
+    expect(esquemas.Log.properties.source.enum).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(esquemas.Log.properties.reason.maximum).toBe(13);
     const params = doc.paths["/installations/{installationId}/logs"].get as unknown as { parameters: { name?: string; schema?: { enum?: string[] } }[] };
     const origen = params.parameters.find((p) => p.name === "origen");
     expect(origen?.schema?.enum).toEqual(SOURCE_OPTIONS.map(String));
     expect(esquemas.Log.properties.source.enum).toEqual([...SOURCE_OPTIONS]);
+  });
+
+  it("describe teléfonos y allow_call; el log admite origen 6 y motivos 12 y 13", () => {
+    const esquemas = (doc as unknown as { components: { schemas: Record<string, { required: string[]; properties: Record<string, { enum?: number[]; maximum?: number }> }> } }).components.schemas;
+    for (const ruta of ["phones", "phones/batch", "phones/{phoneId}"]) {
+      expect(doc.paths[`/installations/{installationId}/${ruta}`], ruta).toBeDefined();
+    }
+    expect(esquemas.Telefono).toBeDefined();
+    expect(esquemas.Regla.required).toContain("allow_call");
+    expect(esquemas.ReglaEntrada.required).not.toContain("allow_call");
+    expect(esquemas.ReglaEntrada.properties.allow_call).toBeDefined();
+    expect(esquemas.Log.properties.source.enum).toContain(6);
+    expect(esquemas.Log.properties.reason.maximum).toBe(13);
   });
 
   it("PUT y DELETE de PIN no declaran Idempotency-Key", () => {

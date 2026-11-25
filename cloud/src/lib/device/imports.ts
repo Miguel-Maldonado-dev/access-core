@@ -74,6 +74,8 @@ export interface CloudState {
   control_buttons: { id: string; control_id: string; button: number; rf_code: number }[];
   access_profiles: { id: string; local_permission_id: number }[];
   holder_profiles: { id: string; holder_id: string; profile_id: string }[];
+  /** Teléfonos vivos (opcional en las pruebas puras: sin ellos, ninguno). */
+  phones?: { id: string; number: string }[];
 }
 
 export interface ImportCardSummary {
@@ -172,6 +174,9 @@ interface ImportPlan {
     reader_mask: number;
     enabled: boolean;
   }[];
+  phones: { id: string; holder_id: string; number: string; description: string }[];
+  /** Configuración de llamadas del panel, con `output_id` (la traduce `import_rows`). */
+  call_settings: ContractRow<"call_settings">["data"] | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +202,7 @@ function primeroRepetido<T>(valores: Iterable<T>): T | undefined {
  */
 export function snapshotProblem(t: SnapshotTables): string | null {
   for (const tabla of TABLES) {
-    const id = primeroRepetido<string>(t[tabla].map((f) => f.id));
+    const id = primeroRepetido<string>((t[tabla] ?? []).map((f) => f.id));
     if (id !== undefined) return `Identificador repetido en ${tabla}: ${id}.`;
   }
   const titulares = new Set(t.holders.map((h) => h.id));
@@ -234,6 +239,11 @@ export function snapshotProblem(t: SnapshotTables): string | null {
   if (asignacion !== undefined) return `Asignación repetida: ${asignacion}.`;
   const salida = primeroRepetido(t.outputs.map((o) => o.data.output_id));
   if (salida !== undefined) return `output_id repetido: ${salida}.`;
+  for (const f of t.phones ?? []) {
+    if (!titulares.has(f.data.holder_id)) return `El teléfono ${f.id} apunta a un titular que no está en el snapshot.`;
+  }
+  const numero = primeroRepetido((t.phones ?? []).map((f) => f.data.number));
+  if (numero !== undefined) return `Número de teléfono repetido: ${numero}.`;
   return null;
 }
 
@@ -563,6 +573,16 @@ const planSalida = ({ id, data: { output_id, ...resto } }: ContractRow<"outputs"
   ...resto,
 });
 
+const planTelefono = (f: ContractRow<"phones">, holderId: string) => ({
+  id: f.id,
+  holder_id: holderId,
+  number: f.data.number,
+  description: f.data.description,
+});
+
+/** La configuración de llamadas del snapshot (un panel v7 no la tiene). */
+const planLlamadas = (snap: StoredSnapshot) => snap.call_settings?.[0]?.data ?? null;
+
 /**
  * Importación directa (instalación vacía): todo, con `local_permission_id = permission_id`,
  * y cada botón vinculado a este panel.
@@ -583,6 +603,8 @@ function directPlan(snap: StoredSnapshot): ImportPlan {
       profile_id: perfilDe.get(a.data.permission_id)!,
     })),
     outputs: snap.outputs.map(planSalida),
+    phones: (snap.phones ?? []).map((f) => planTelefono(f, f.data.holder_id)),
+    call_settings: planLlamadas(snap),
   };
 }
 
@@ -595,7 +617,10 @@ function directPlan(snap: StoredSnapshot): ImportPlan {
  * (nuevo seleccionado o emparejado) recibe las que tenía en el panel y la nube no tiene,
  * con el perfil nuevo o el perfil vivo con el mismo UUID. Las salidas del panel se
  * importan siempre. Se vinculan a este panel los botones importados y, siempre, los que
- * la nube ya tenía con el mismo titular.
+ * la nube ya tenía con el mismo titular. [decisión de Claude] Los teléfonos no se revisan
+ * en el diff: se importan los de cada titular que queda en la nube (nuevo seleccionado o
+ * emparejado) cuyo número la nube no tiene; la configuración de llamadas se importa siempre,
+ * como las salidas.
  */
 function confirmPlan(nube: CloudState, snap: StoredSnapshot, seleccion: readonly string[]) {
   const { diff, titularDe, perfilesNuevos, destinoDeBoton, vinculosExistentes } = analizar(nube, snap);
@@ -617,6 +642,8 @@ function confirmPlan(nube: CloudState, snap: StoredSnapshot, seleccion: readonly
     access_profiles: [],
     holder_profiles: [],
     outputs: snap.outputs.map(planSalida),
+    phones: [],
+    call_settings: planLlamadas(snap),
   };
 
   // Un control nuevo cuyo UUID es un control vivo de la instalación (de otro titular)
@@ -697,6 +724,17 @@ function confirmPlan(nube: CloudState, snap: StoredSnapshot, seleccion: readonly
     plan.holder_profiles.push({ id: a.id, holder_id: titular, profile_id: perfil });
   }
 
+  // Teléfonos: un número que la nube ya tiene se queda con su dueño de la nube; un UUID que
+  // la nube ya usa recibe uno nuevo.
+  const numerosNube = new Set((nube.phones ?? []).map((f) => f.number));
+  const telefonosNube = new Set((nube.phones ?? []).map((f) => f.id));
+  for (const f of snap.phones ?? []) {
+    const titular = titularesNuevos.has(f.data.holder_id) ? f.data.holder_id : titularDe.get(f.data.holder_id);
+    if (titular === undefined || numerosNube.has(f.data.number)) continue;
+    numerosNube.add(f.data.number);
+    plan.phones.push(planTelefono({ ...f, id: telefonosNube.has(f.id) ? randomUUID() : f.id }, titular));
+  }
+
   return { plan, imported, ignored };
 }
 
@@ -728,7 +766,7 @@ async function leerVivas<T extends { id: string }>(
 }
 
 async function loadCloudState(admin: SupabaseClient, installationId: string): Promise<CloudState> {
-  const [holders, cards, controls, control_buttons, access_profiles, holder_profiles] = await Promise.all([
+  const [holders, cards, controls, control_buttons, access_profiles, holder_profiles, phones] = await Promise.all([
     leerVivas<CloudState["holders"][number]>(admin, "holders", installationId, "id, kind, name, pin_lookup"),
     leerVivas<CloudState["cards"][number]>(admin, "cards", installationId, "id, card_code, holder_id"),
     leerVivas<CloudState["controls"][number]>(admin, "controls", installationId, "id, holder_id"),
@@ -740,8 +778,9 @@ async function loadCloudState(admin: SupabaseClient, installationId: string): Pr
     ),
     leerVivas<CloudState["access_profiles"][number]>(admin, "access_profiles", installationId, "id, local_permission_id"),
     leerVivas<CloudState["holder_profiles"][number]>(admin, "holder_profiles", installationId, "id, holder_id, profile_id"),
+    leerVivas<NonNullable<CloudState["phones"]>[number]>(admin, "phones", installationId, "id, number"),
   ]);
-  return { holders, cards, controls, control_buttons, access_profiles, holder_profiles };
+  return { holders, cards, controls, control_buttons, access_profiles, holder_profiles, phones };
 }
 
 /** Llama una función de importación de 0004 (devuelven un estado en texto). */

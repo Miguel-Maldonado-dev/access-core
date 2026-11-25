@@ -3,8 +3,8 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import PermissionsPage from "./page";
 
 const perms = vi.hoisted(() => [
-  { permission_id: 0, name: "Acceso total", output_mask: 15, card_reader_mask: 5, pin_reader_mask: 0, weekday_mask: 127, start_minute: 0, end_minute: 0, allow_rf: true, allow_remote: false },
-  { permission_id: 1, name: "Solo PIN", output_mask: 1, card_reader_mask: 0, pin_reader_mask: 10, weekday_mask: 31, start_minute: 0, end_minute: 0, allow_rf: false, allow_remote: true },
+  { permission_id: 0, name: "Acceso total", output_mask: 15, card_reader_mask: 5, pin_reader_mask: 0, weekday_mask: 127, start_minute: 0, end_minute: 0, allow_rf: true, allow_remote: false, allow_call: true },
+  { permission_id: 1, name: "Solo PIN", output_mask: 1, card_reader_mask: 0, pin_reader_mask: 10, weekday_mask: 31, start_minute: 0, end_minute: 0, allow_rf: false, allow_remote: true, allow_call: false },
 ]);
 const cloud = vi.hoisted(() => ({ state: "unlinked" }));
 vi.mock("@/lib/api", () => ({
@@ -22,8 +22,9 @@ describe("PermissionsPage", () => {
   it("muestra Salidas, Tarjeta, PIN, RF y Remota abreviados por permiso", async () => {
     render(<PermissionsPage />);
     const headers = (await screen.findAllByRole("columnheader")).map((h) => h.textContent);
-    expect(headers).toEqual(expect.arrayContaining(["Tarjeta", "PIN", "RF", "Remota"]));
-    expect(headers.indexOf("Remota")).toBe(headers.indexOf("RF") + 1);
+    expect(headers).toEqual(expect.arrayContaining(["Tarjeta", "PIN", "RF", "Llam.", "Remota"]));
+    expect(headers.indexOf("Llam.")).toBe(headers.indexOf("RF") + 1);
+    expect(headers.indexOf("Remota")).toBe(headers.indexOf("Llam.") + 1);
     expect(headers).not.toContain("Lectores");
     const col = (name: string) => headers.indexOf(name);
     const first = within((await screen.findByText("Acceso total")).closest("tr")!).getAllByRole("cell");
@@ -33,6 +34,7 @@ describe("PermissionsPage", () => {
     expect(first[col("Tarjeta")]).toHaveAttribute("title", "Reader1, Reader3");
     expect(first[col("PIN")]).toHaveTextContent("—");
     expect(first[col("RF")]).toHaveTextContent("Sí");
+    expect(first[col("Llam.")]).toHaveTextContent("Sí");
     expect(first[col("Remota")]).toHaveTextContent("—");
     const second = within(screen.getByText("Solo PIN").closest("tr")!).getAllByRole("cell");
     expect(second[col("Salidas")]).toHaveTextContent("S1");
@@ -40,6 +42,7 @@ describe("PermissionsPage", () => {
     expect(second[col("PIN")]).toHaveTextContent("L2, L4");
     expect(second[col("PIN")]).toHaveAttribute("title", "Reader2, Reader4");
     expect(second[col("RF")]).toHaveTextContent("—");
+    expect(second[col("Llam.")]).toHaveTextContent("—");
     expect(second[col("Remota")]).toHaveTextContent("Sí");
   });
 

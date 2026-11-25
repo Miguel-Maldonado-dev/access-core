@@ -22,6 +22,7 @@ export default async function HoldersPage({ params }: PageProps<"/t/[tenant]/ins
   return (
     <HoldersManager
       holders={titulares}
+      phonesHref={`/t/${tenant}/installations/${instalacion.id}/telefonos`}
       canSeePin={acceso.role === "admin"}
       onSave={saveHolder.bind(null, tenant, instalacion.id)}
       onDelete={deleteHolder.bind(null, tenant, instalacion.id)}

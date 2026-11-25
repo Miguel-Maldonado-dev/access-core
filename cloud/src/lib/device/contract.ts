@@ -27,7 +27,17 @@ export const TABLES = [
   "permissions",
   "holder_permissions",
   "outputs",
+  "phones",
+  "call_settings",
 ] as const;
+
+/** Tablas que solo conoce un panel con el esquema local 8 o mayor (`X-Acc-Schema: 8`). */
+export const SCHEMA8_TABLES: ReadonlySet<TableName> = new Set(["phones", "call_settings"]);
+
+/** Tablas que recibe un panel con ese esquema local. */
+export function tablesForSchema(schema: number): TableName[] {
+  return TABLES.filter((t) => schema >= 8 || !SCHEMA8_TABLES.has(t));
+}
 
 export type TableName = (typeof TABLES)[number];
 
@@ -88,6 +98,8 @@ export const dataSchemas = {
     allow_rf: z.boolean(),
     // Opcional: un panel v6 no lo envía (la nube conserva su valor). La nube siempre lo proyecta.
     allow_remote: z.boolean().optional(),
+    // Opcional: un panel v7 no lo envía (la nube conserva su valor). Solo se proyecta a paneles v8.
+    allow_call: z.boolean().optional(),
     weekday_mask: entero(0, 127),
     start_minute: minutoDelDia,
     end_minute: minutoDelDia,
@@ -103,6 +115,27 @@ export const dataSchemas = {
     reader_mask: mascara4,
     enabled: z.boolean(),
   }),
+  phones: z.strictObject({
+    holder_id: uuidSchema,
+    number: z.string().regex(/^[0-9]{10}$/),
+    description: texto,
+  }),
+  // `output_id` es el `output_index` de la salida de "Una salida". La salida predeterminada
+  // del menú debe estar entre las del menú (CHECK de panel_call_settings): se valida aquí
+  // para que el lote dé 400 y no un error de la base.
+  call_settings: z
+    .strictObject({
+      enabled: z.boolean(),
+      mode: z.enum(["single", "menu"]),
+      output_id: entero(0, 3),
+      menu_mask: mascara4,
+      default_output: entero(0, 3).nullable(),
+      call_limit_per_minute: entero(1, 20),
+    })
+    .refine((d) => d.default_output === null || ((d.menu_mask >> d.default_output) & 1) === 1, {
+      message: "La salida predeterminada debe estar entre las salidas del menú.",
+      path: ["default_output"],
+    }),
 } satisfies Record<TableName, z.ZodType>;
 
 export type TableData = { [T in TableName]: z.infer<(typeof dataSchemas)[T]> };
@@ -113,6 +146,8 @@ export type ControlButtonData = TableData["control_buttons"];
 export type PermissionData = TableData["permissions"];
 export type HolderPermissionData = TableData["holder_permissions"];
 export type OutputData = TableData["outputs"];
+export type PhoneData = TableData["phones"];
+export type CallSettingsData = TableData["call_settings"];
 
 /** Un registro de una tabla en la forma del contrato (snapshot, `current`, checksum). */
 export interface ContractRow<T extends TableName = TableName> {
@@ -141,7 +176,8 @@ export interface PullResponse {
 export interface ChecksumsResponse {
   revision: number;
   confirm_deletions: boolean;
-  tables: Record<TableName, string>;
+  /** Solo las tablas que conoce el panel (sin `phones` ni `call_settings` para un panel v7). */
+  tables: Partial<Record<TableName, string>>;
 }
 
 /** Respuesta de `GET /snapshot?table=T`. */
@@ -179,6 +215,8 @@ export const pushItemSchema = z.discriminatedUnion("op", [
     upsertSchema("permissions"),
     upsertSchema("holder_permissions"),
     upsertSchema("outputs"),
+    upsertSchema("phones"),
+    upsertSchema("call_settings"),
   ]),
   z.object({
     change_id: changeIdSchema,
@@ -247,11 +285,20 @@ export const importSnapshotRequestSchema = z.object({
     permissions: filasDe("permissions"),
     holder_permissions: filasDe("holder_permissions"),
     outputs: filasDe("outputs"),
+    // Un panel v7 no las envía.
+    phones: filasDe("phones").default([]),
+    call_settings: z.array(z.object({ id: uuidSchema, data: dataSchemas.call_settings })).max(1).default([]),
   }),
 });
 
-/** Las tablas del snapshot de un panel (`POST /import-snapshot`). */
-export type SnapshotTables = { [T in TableName]: ContractRow<T>[] };
+/**
+ * Las tablas del snapshot de un panel (`POST /import-snapshot`). `phones` y
+ * `call_settings` faltan en un snapshot guardado antes de v8 (la ruta las completa con `[]`).
+ */
+export type SnapshotTables = { [T in Exclude<TableName, "phones" | "call_settings">]: ContractRow<T>[] } & {
+  phones?: ContractRow<"phones">[];
+  call_settings?: ContractRow<"call_settings">[];
+};
 
 /**
  * Un log de acceso del panel (`POST /logs`), con los nombres del log local. Los rangos

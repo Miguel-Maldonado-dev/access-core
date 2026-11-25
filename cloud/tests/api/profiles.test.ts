@@ -176,6 +176,16 @@ describe("API pública: perfiles", () => {
     expect(
       (await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ allow_remote: "si" }) }] })).res.status,
     ).toBe(400);
+    // `allow_call`: nueva regla en false; explícito lo enciende; omitido lo conserva; inválido, 400.
+    expect(reglas.json.data.rules.every((r: { allow_call: boolean }) => r.allow_call === false)).toBe(true);
+    const llamada = await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ allow_call: true }) }] });
+    expect(llamada.res.status).toBe(200);
+    expect(llamada.json.data.rules.find((r: { panel_id: string }) => r.panel_id === panel1).allow_call).toBe(true);
+    const sinLlamada = await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ output_mask: 6 }) }] });
+    expect(sinLlamada.json.data.rules.find((r: { panel_id: string }) => r.panel_id === panel1)).toMatchObject({ allow_call: true, output_mask: 6 });
+    expect(
+      (await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ allow_call: "si" }) }] })).res.status,
+    ).toBe(400);
     expect(reglas.json.revision).toBeGreaterThan(json.revision);
 
     const quitar = await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel2, rule: null }] });

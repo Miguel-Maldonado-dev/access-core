@@ -351,3 +351,21 @@ def test_daemon_purges_on_start(settings, db):
     thread.join(2)
     assert not thread.is_alive()
     assert len(calls) == 1 and calls[0] > 1_700_000_000
+
+
+def test_socket_gsm_status(settings, db, sock_dir):
+    from acceso.daemon_socket import request_daemon
+    sock_path = os.path.join(sock_dir, "d.sock")
+    settings = load_settings({"UART_PORT": "/dev/fake", "DB_PATH": str(settings.db_path),
+                              "DAEMON_SOCKET": sock_path})
+    opened = []
+    port = FakeSerial()
+    stop, thread = start_daemon(settings, open_serial=lambda p, b: port,
+                                open_gsm=lambda p, b: opened.append(p))
+    assert wait_for(lambda: os.path.exists(sock_path))
+    reply = request_daemon(sock_path, {"op": "gsm_status"})
+    assert reply == {"ok": True, "enabled": False, "port": "", "connected": False,
+                     "registered": None, "signal": None}
+    stop.set()
+    thread.join(3)
+    assert not thread.is_alive() and opened == []

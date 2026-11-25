@@ -21,7 +21,7 @@ from acceso.cloud.checksum import table_checksum
 BASE = "https://nube.example.com"
 PREFIX = "/api/device/v1"
 TABLES = ("holders", "cards", "controls", "control_buttons", "permissions",
-          "holder_permissions", "outputs")
+          "holder_permissions", "outputs", "phones", "call_settings")
 
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _ISO_MS_Z = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
@@ -59,10 +59,15 @@ DATA_SCHEMAS = {
                         "output_id": _nullable(_int(0, 3))},
     "permissions": {"permission_id": _int(0, 31), "name": _text, "output_mask": _mask,
                     "card_reader_mask": _mask, "pin_reader_mask": _mask, "allow_rf": _bool,
-                    "allow_remote": _bool, "weekday_mask": _int(0, 127), "start_minute": _minute, "end_minute": _minute},
+                    "allow_remote": _bool, "allow_call": _bool, "weekday_mask": _int(0, 127), "start_minute": _minute, "end_minute": _minute},
     "holder_permissions": {"holder_id": _uuid, "permission_id": _int(0, 31)},
     "outputs": {"output_id": _int(0, 3), "alias": _text, "duration_ms": _int(0, 65535),
                 "reader_mask": _mask, "enabled": _bool},
+    "phones": {"holder_id": _uuid, "number": lambda v: isinstance(v, str) and bool(re.match(r"^[0-9]{10}$", v)),
+               "description": _text},
+    "call_settings": {"enabled": _bool, "mode": lambda v: v in ("single", "menu"), "output_id": _int(0, 3),
+                      "menu_mask": _mask, "default_output": _nullable(_int(0, 3)),
+                      "call_limit_per_minute": _int(1, 20)},
 }
 
 LOG_SCHEMA = {
@@ -130,6 +135,7 @@ class FakeCloud:
         self.forced = {}        # id -> (status, reason): resultado forzado del push
         self.fail = None        # callable(request) -> httpx.Response | None
         self.requests = []      # (method, path, params, body)
+        self.headers = []       # encabezados de cada petición
         self.pushed = []        # cada lote de POST /changes
         self.logs = []
         self.logs_uploads = 0
@@ -178,6 +184,7 @@ class FakeCloud:
         params = dict(request.url.params)
         body = json.loads(request.content) if request.content else None
         self.requests.append((request.method, path, params, body))
+        self.headers.append(dict(request.headers))
         assert request.headers["authorization"].startswith("Device PNL-")
         if self.fail is not None:
             response = self.fail(request)

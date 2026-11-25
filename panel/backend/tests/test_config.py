@@ -25,3 +25,10 @@ def test_invalid_integer_names_variable():
 
 def test_cors_origins_split_and_trimmed():
     assert load_settings({**BASE, "CORS_ORIGINS": "http://localhost:3000, http://a"}).cors_origins == ("http://localhost:3000", "http://a")
+
+
+def test_gsm_port_empty_and_default_baud():
+    s = load_settings(BASE)
+    assert (s.gsm_port, s.gsm_baud) == ("", 9600)
+    s = load_settings({**BASE, "GSM_PORT": " /dev/ttyS1 ", "GSM_BAUD": "19200"})
+    assert (s.gsm_port, s.gsm_baud) == ("/dev/ttyS1", 19200)

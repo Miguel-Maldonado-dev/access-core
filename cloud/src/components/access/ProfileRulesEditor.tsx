@@ -33,6 +33,7 @@ interface RuleState {
   outputs: boolean[];
   cards: boolean[];
   pins: boolean[];
+  qrs: boolean[];
   rf: boolean;
   remote: boolean;
   call: boolean;
@@ -45,6 +46,7 @@ const NUEVA: RuleState = {
   outputs: Array(OUTPUT_COUNT).fill(false),
   cards: Array(READER_COUNT).fill(false),
   pins: Array(READER_COUNT).fill(false),
+  qrs: Array(READER_COUNT).fill(false),
   rf: false,
   remote: false,
   call: false,
@@ -59,6 +61,7 @@ const desdeRegla = (r: RuleRow | undefined): RuleState | null =>
         outputs: fromMask(r.output_mask, OUTPUT_COUNT),
         cards: fromMask(r.card_reader_mask, READER_COUNT),
         pins: fromMask(r.pin_reader_mask, READER_COUNT),
+        qrs: fromMask(r.qr_reader_mask, READER_COUNT),
         rf: r.allow_rf,
         remote: r.allow_remote,
         call: r.allow_call,
@@ -72,7 +75,7 @@ const alternar = (lista: boolean[], i: number) => lista.map((v, j) => (j === i ?
 
 /**
  * Editor de reglas de un perfil: una columna por panel. Cada columna elige salidas (S1–S4,
- * con su alias como texto emergente), lectores de Tarjeta y de PIN, control RF, apertura remota, llamada, días y
+ * con su alias como texto emergente), lectores de Tarjeta, de PIN y de QR, control RF, apertura remota, llamada, días y
  * horario, o "Sin acceso en este panel" (se borra la regla al guardar).
  */
 export default function ProfileRulesEditor({ panels, rules, outputs, onSave }: Props) {
@@ -100,6 +103,7 @@ export default function ProfileRulesEditor({ panels, rules, outputs, onSave }: P
             output_mask: toMask(s.outputs),
             card_reader_mask: toMask(s.cards),
             pin_reader_mask: toMask(s.pins),
+            qr_reader_mask: toMask(s.qrs),
             allow_rf: s.rf,
             allow_remote: s.remote,
             allow_call: s.call,
@@ -176,6 +180,7 @@ export default function ProfileRulesEditor({ panels, rules, outputs, onSave }: P
                           </th>
                           <th scope="col" className="px-3 text-center font-medium">Tarjeta</th>
                           <th scope="col" className="px-3 text-center font-medium">PIN</th>
+                          <th scope="col" className="px-3 text-center font-medium">QR</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -196,6 +201,14 @@ export default function ProfileRulesEditor({ panels, rules, outputs, onSave }: P
                                 aria-label={`PIN ${readerLabel(i)} en ${p.panel_code}`}
                                 checked={s.pins[i]}
                                 onChange={() => cambiar(p.id, { pins: alternar(s.pins, i) })}
+                              />
+                            </td>
+                            <td className="px-3 text-center">
+                              <input
+                                type="checkbox"
+                                aria-label={`QR ${readerLabel(i)} en ${p.panel_code}`}
+                                checked={s.qrs[i]}
+                                onChange={() => cambiar(p.id, { qrs: alternar(s.qrs, i) })}
                               />
                             </td>
                           </tr>

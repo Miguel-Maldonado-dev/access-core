@@ -53,6 +53,7 @@ const pTelefono = param("phoneId", "Id del teléfono.");
 const pControl = param("controlId", "Id del control.");
 const pPerfil = param("profileId", "Id del perfil.");
 const pSalida = param("outputId", "Id de la salida.");
+const pQr = param("qrId", "Id del QR.");
 
 interface Op {
   resumen: string;
@@ -61,7 +62,7 @@ interface Op {
   params?: Obj[];
   body?: Obj;
   ok: Obj;
-  status?: "200" | "201";
+  status?: "200" | "201" | "204";
   /** Admite `Idempotency-Key` (escrituras salvo los PIN). */
   idem?: boolean;
   errores?: Obj;
@@ -73,8 +74,8 @@ function op(o: Op): Obj {
   const params = [...(o.params ?? []), ...(o.idem ? [idemKey] : [])];
   const respuestas: Obj = {
     [status]: {
-      description: status === "201" ? "Creado." : "Correcto.",
-      content: jsonDe(o.ok),
+      description: status === "201" ? "Creado." : status === "204" ? "Sin contenido." : "Correcto.",
+      ...(status === "204" ? {} : { content: jsonDe(o.ok) }),
       ...(o.idem
         ? {
             headers: {
@@ -323,8 +324,8 @@ const paths: Record<string, Obj> = {
         {
           name: "origen",
           in: "query",
-          description: "Origen del evento: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 4 remota, 5 prueba, 6 llamada.",
-          schema: { type: "string", enum: ["0", "1", "2", "3", "4", "5", "6"] },
+          description: "Origen del evento: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 4 remota, 5 prueba, 6 llamada, 7 QR.",
+          schema: { type: "string", enum: ["0", "1", "2", "3", "4", "5", "6", "7"] },
         },
         { name: "pagina", in: "query", description: "Número de página (desde 1).", schema: { type: "string", pattern: "^[1-9]\\d*$" } },
       ],
@@ -505,6 +506,60 @@ const paths: Record<string, Obj> = {
       idem: true,
     }),
   },
+  "/installations/{installationId}/qr-codes": {
+    get: op({
+      resumen: "Lista los códigos QR",
+      descripcion:
+        "QR no revocados de la instalación con el nombre del anfitrión, más nuevos primero. Incluye los vencidos hasta que se borran (30 días después de vencer). Filtra con `holder_id` y `status`.",
+      tag: "Códigos QR",
+      params: [
+        pInstalacion,
+        { name: "holder_id", in: "query", required: false, description: "Solo los QR de ese anfitrión.", schema: uuid },
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          description: "`pending` (aún no empieza), `active` (vigente) o `expired` (vencido).",
+          schema: { type: "string", enum: ["pending", "active", "expired"] },
+        },
+      ],
+      ok: lista(ref("QrCode")),
+    }),
+    post: op({
+      resumen: "Crea un código QR",
+      descripcion:
+        "Genera un `code` aleatorio en el rango del dígito de QR de la instalación. La respuesta trae solo el número: la imagen la genera quien llama (contenido del QR: el número en decimal, texto plano). Las fechas llevan zona horaria (ISO 8601); sin zona, 400.",
+      tag: "Códigos QR",
+      params: [pInstalacion],
+      body: ref("QrCodeCreate"),
+      ok: escritura(ref("QrCode")),
+      status: "201",
+      idem: true,
+      errores: {
+        422: respuestaError(
+          "`unprocessable_entity` \"Se alcanzó el máximo de QR vigentes de la instalación.\" o \"La vigencia debe terminar después de empezar.\", o `idempotency_mismatch`: la `Idempotency-Key` ya se usó con otro cuerpo.",
+        ),
+        503: respuestaError("`service_unavailable` \"No se pudo generar un código de QR único.\" (rango casi lleno); se puede reintentar."),
+      },
+    }),
+  },
+  "/installations/{installationId}/qr-codes/{qrId}": {
+    get: op({
+      resumen: "Lee un código QR",
+      tag: "Códigos QR",
+      params: [pInstalacion, pQr],
+      ok: lectura(ref("QrCode")),
+    }),
+    delete: op({
+      resumen: "Revoca un código QR",
+      descripcion: "Borrado lógico: el QR deja de abrir en cuanto el panel sincroniza. Responde 204 sin cuerpo. Un QR no se edita: para cambiarlo se revoca y se crea otro.",
+      tag: "Códigos QR",
+      params: [pInstalacion, pQr],
+      ok: {},
+      status: "204",
+      idem: true,
+    }),
+  },
   "/installations/{installationId}/controls": {
     get: op({
       resumen: "Lista los controles",
@@ -637,6 +692,12 @@ const camposRegla = {
   allow_rf: { type: "boolean" },
   allow_remote: { type: "boolean", description: "Permite la apertura remota de las salidas de la regla." },
   allow_call: { type: "boolean", description: "Permite abrir las salidas de la regla llamando desde un teléfono del titular." },
+  qr_reader_mask: {
+    type: "integer",
+    minimum: 0,
+    maximum: 15,
+    description: "Máscara de lectores L1 a L4 donde valen los QR de los titulares del perfil.",
+  },
   weekday_mask: { type: "integer", minimum: 0, maximum: 127, description: "Días de la semana; bit 0 = lunes." },
   start_minute: { type: "integer", minimum: 0, maximum: 1439, description: "Minuto del día en que empieza el horario." },
   end_minute: { type: "integer", minimum: 0, maximum: 1439, description: "Minuto del día en que termina el horario." },
@@ -680,6 +741,7 @@ export const openapi: object = {
     "Titulares",
     "Tarjetas",
     "Teléfonos",
+    "Códigos QR",
     "Controles",
     "Perfiles",
   ].map((name) => ({ name })),
@@ -803,15 +865,15 @@ export const openapi: object = {
           allowed: { type: "boolean" },
           source: {
             type: "integer",
-            enum: [0, 1, 2, 3, 4, 5, 6],
-            description: "Origen: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 4 remota, 5 prueba, 6 llamada.",
+            enum: [0, 1, 2, 3, 4, 5, 6, 7],
+            description: "Origen: 0 tarjeta, 1 control RF, 2 botón de salida, 3 PIN, 4 remota, 5 prueba, 6 llamada, 7 QR.",
           },
           reason: {
             type: "integer",
             minimum: 0,
-            maximum: 13,
+            maximum: 17,
             description:
-              "Motivo: 0 permitido, 1 tarjeta desconocida, 2 sin salida, 3 sin permiso, 4 error UART, 5 control desconocido, 6 botón sin salida, 7 botón de salida, 8 PIN desconocido, 9 PIN no permitido, 10 PIN bloqueado, 11 titular desconocido, 12 teléfono desconocido, 13 límite de llamadas. En el origen 6, `credential_label` es el número que llamó (completo, o `Oculto`) y `device_id` la tecla del menú (1 a 4) si la hubo.",
+              "Motivo: 0 permitido, 1 tarjeta desconocida, 2 sin salida, 3 sin permiso, 4 error UART, 5 control desconocido, 6 botón sin salida, 7 botón de salida, 8 PIN desconocido, 9 PIN no permitido, 10 PIN bloqueado, 11 titular desconocido, 12 teléfono desconocido, 13 límite de llamadas, 14 QR desconocido, 15 QR fuera de vigencia, 16 QR ya usado en este lector, 17 método no permitido en este lector. En el origen 7, `code` es el número del QR. En el origen 6, `credential_label` es el número que llamó (completo, o `Oculto`) y `device_id` la tecla del menú (1 a 4) si la hubo.",
           },
           holder_id: uuidNulo,
           holder_name: { type: ["string", "null"] },
@@ -892,6 +954,40 @@ export const openapi: object = {
           holder_id: uuid,
           holder_name: { type: "string" },
           description: { type: "string" },
+        },
+      },
+      QrCode: {
+        type: "object",
+        required: ["id", "holder_id", "holder_name", "code", "label", "valid_from", "valid_until", "max_uses", "status", "created_at", "origin"],
+        properties: {
+          id: uuid,
+          holder_id: { ...uuid, description: "Anfitrión: el QR abre con sus permisos." },
+          holder_name: { type: "string" },
+          code: {
+            type: "integer",
+            minimum: 0,
+            maximum: CODIGO_MAX,
+            description: "Número del QR en decimal (empieza con el dígito de QR de la instalación). Es lo único que lleva la imagen; la API no devuelve imagen.",
+          },
+          label: { type: "string", maxLength: 60 },
+          valid_from: { type: "string", format: "date-time", description: "Inicio de la vigencia, en UTC." },
+          valid_until: { type: "string", format: "date-time", description: "Fin de la vigencia, en UTC." },
+          max_uses: { type: "integer", minimum: 1, maximum: 100, description: "Lecturas válidas en cada lector con QR." },
+          status: { type: "string", enum: ["pending", "active", "expired"] },
+          created_at: { type: "string", format: "date-time" },
+          origin: { type: "string", description: "`cloud` o `panel:<código>`." },
+        },
+      },
+      QrCodeCreate: {
+        type: "object",
+        required: ["holder_id", "valid_from", "valid_until"],
+        additionalProperties: false,
+        properties: {
+          holder_id: uuid,
+          label: { type: "string", maxLength: 60, default: "" },
+          valid_from: { type: "string", format: "date-time", description: "ISO 8601 con zona, p. ej. `2026-12-01T09:00:00-06:00`." },
+          valid_until: { type: "string", format: "date-time", description: "ISO 8601 con zona; posterior a `valid_from`." },
+          max_uses: { type: "integer", minimum: 1, maximum: 100, default: 1 },
         },
       },
       TelefonoCrear: {
@@ -985,7 +1081,7 @@ export const openapi: object = {
       // `allow_remote` es opcional al escribir (se conserva el actual) para no romper a los clientes de 2A.
       ReglaEntrada: {
         ...reglaEntrada,
-        required: requeridosRegla.filter((c) => c !== "allow_remote" && c !== "allow_call"),
+        required: requeridosRegla.filter((c) => c !== "allow_remote" && c !== "allow_call" && c !== "qr_reader_mask"),
         properties: {
           ...camposRegla,
           allow_remote: {
@@ -995,6 +1091,12 @@ export const openapi: object = {
           allow_call: {
             type: "boolean",
             description: "Permite abrir llamando. Si se omite, se conserva el valor actual (false en una regla nueva).",
+          },
+          qr_reader_mask: {
+            type: "integer",
+            minimum: 0,
+            maximum: 15,
+            description: "Lectores con QR. Si se omite, se conserva el valor actual (0 en una regla nueva).",
           },
         },
       },

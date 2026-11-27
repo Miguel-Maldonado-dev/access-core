@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS permissions (permission_id INTEGER PRIMARY KEY CHECK(
   allow_rf INTEGER NOT NULL DEFAULT 0 CHECK(allow_rf IN (0,1)),
   uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local',
   allow_remote INTEGER NOT NULL DEFAULT 0 CHECK(allow_remote IN (0,1)),
-  allow_call INTEGER NOT NULL DEFAULT 0 CHECK(allow_call IN (0,1)));
+  allow_call INTEGER NOT NULL DEFAULT 0 CHECK(allow_call IN (0,1)),
+  qr_reader_mask INTEGER NOT NULL DEFAULT 0 CHECK(qr_reader_mask BETWEEN 0 AND 15));
 CREATE TABLE IF NOT EXISTS holder_permissions (
   holder_id INTEGER NOT NULL REFERENCES holders(holder_id) ON DELETE CASCADE,
   permission_id INTEGER NOT NULL REFERENCES permissions(permission_id) ON DELETE CASCADE,
@@ -56,6 +57,25 @@ CREATE TABLE IF NOT EXISTS call_settings (id INTEGER PRIMARY KEY CHECK(id = 1),
   default_output INTEGER CHECK(default_output IS NULL OR default_output BETWEEN 0 AND 3),
   call_limit_per_minute INTEGER NOT NULL DEFAULT 3 CHECK(call_limit_per_minute BETWEEN 1 AND 20),
   uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local');
+CREATE TABLE IF NOT EXISTS qr_codes (qr_id INTEGER PRIMARY KEY,
+  holder_id INTEGER NOT NULL REFERENCES holders(holder_id) ON DELETE CASCADE,
+  code INTEGER NOT NULL UNIQUE CHECK(code BETWEEN 0 AND 4294967295),
+  label TEXT NOT NULL DEFAULT '',
+  valid_from INTEGER NOT NULL, valid_until INTEGER NOT NULL,
+  max_uses INTEGER NOT NULL DEFAULT 1 CHECK(max_uses BETWEEN 1 AND 100),
+  created_at INTEGER NOT NULL,
+  uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local',
+  CHECK(valid_until > valid_from));
+CREATE INDEX IF NOT EXISTS qr_codes_valid_until_idx ON qr_codes(valid_until);
+CREATE TABLE IF NOT EXISTS qr_uses (
+  qr_id INTEGER NOT NULL REFERENCES qr_codes(qr_id) ON DELETE CASCADE,
+  reader INTEGER NOT NULL CHECK(reader BETWEEN 0 AND 3),
+  count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(qr_id, reader));
+CREATE TABLE IF NOT EXISTS qr_settings (id INTEGER PRIMARY KEY CHECK(id = 1),
+  digit INTEGER NOT NULL DEFAULT 9 CHECK(digit BETWEEN 1 AND 9),
+  max_active INTEGER NOT NULL DEFAULT 1000 CHECK(max_active BETWEEN 1 AND 100000),
+  uuid TEXT, updated_at INTEGER, origin TEXT);
 CREATE TABLE IF NOT EXISTS access_logs (log_id INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp INTEGER NOT NULL, allowed INTEGER NOT NULL, source INTEGER NOT NULL,
   holder_id INTEGER REFERENCES holders(holder_id) ON DELETE SET NULL, holder_name TEXT, holder_kind TEXT,
@@ -135,6 +155,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
             )
         conn.execute("INSERT OR IGNORE INTO call_settings(id, uuid, updated_at) VALUES (1, ?, ?)",
                      (str(uuid.uuid4()), stamp))
+        conn.execute("INSERT OR IGNORE INTO qr_settings(id) VALUES (1)")
         for statement in TRIGGER_STATEMENTS:
             conn.execute(statement)
         conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)

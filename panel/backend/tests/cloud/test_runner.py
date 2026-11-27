@@ -271,7 +271,7 @@ def test_the_snapshot_includes_every_replicated_table(h):
     h.run_for(runner, 3)
     tables = h.api.snapshots[0]
     assert set(tables) == {"holders", "cards", "controls", "control_buttons", "permissions",
-                           "holder_permissions", "outputs", "phones", "call_settings"}
+                           "holder_permissions", "outputs", "phones", "call_settings", "qr_codes"}
     assert [r["data"]["name"] for r in tables["holders"]] == ["Ana"]
 
 

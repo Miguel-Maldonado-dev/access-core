@@ -45,6 +45,11 @@ describe("format", () => {
     expect(sourceLabel(6)).toBe("Llamada");
     expect(reasonLabel(12)).toBe("Teléfono desconocido");
     expect(reasonLabel(13)).toBe("Límite de llamadas");
+    expect(sourceLabel(7)).toBe("QR");
+    expect(reasonLabel(14)).toBe("QR desconocido");
+    expect(reasonLabel(15)).toBe("QR fuera de vigencia");
+    expect(reasonLabel(16)).toBe("QR ya usado en este lector");
+    expect(reasonLabel(17)).toBe("Método no permitido en este lector");
     expect(outputLabel(3)).toBe("Relay4");
     expect(outputLabel(null)).toBe("-");
     expect(holderKindLabel("persona")).toBe("Persona");
@@ -73,5 +78,10 @@ describe("format", () => {
 
   it("formatea fecha y hora en es-MX", () => {
     expect(formatDateTime("2026-10-10T18:42:10-06:00")).toMatch(/^10\/10\/2026,? 18:42:10$/);
+  });
+
+  it("describe el medio de un QR", () => {
+    expect(mediumLabel(log({ source: 7, credential_label: "Visita de Ana", device_id: 1 }))).toBe("Visita de Ana · Reader2");
+    expect(mediumLabel(log({ source: 7, code: 912345678, device_id: null }))).toBe("QR");
   });
 });

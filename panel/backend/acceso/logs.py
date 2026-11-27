@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
 
+from .constants import QR_RETENTION_DAYS
 from .db import transaction
 
 
@@ -29,8 +30,12 @@ def append_log(
     device_id: Optional[int] = None,
     output_id: Optional[int] = None,
     max_entries: int,
+    qr_use: Optional[Tuple[int, int]] = None,
 ) -> int:
-    """Inserta el log (con copia del titular) y borra los más antiguos que excedan max_entries."""
+    """Inserta el log (con copia del titular) y borra los más antiguos que excedan max_entries.
+
+    Si viene `qr_use=(qr_id, lector)`, suma un uso del QR en la misma transacción.
+    """
     with (nullcontext() if conn.in_transaction else transaction(conn)):
         cur = conn.execute(
             "INSERT INTO access_logs(timestamp, allowed, source, holder_id, holder_name,"
@@ -49,6 +54,10 @@ def append_log(
             " ORDER BY log_id DESC LIMIT 1 OFFSET :max_entries - 1)",
             {"max_entries": max_entries},
         )
+        if qr_use is not None:
+            conn.execute(
+                "INSERT INTO qr_uses(qr_id, reader, count) VALUES (?, ?, 1)"
+                " ON CONFLICT(qr_id, reader) DO UPDATE SET count = count + 1", qr_use)
         return cur.lastrowid
 
 
@@ -129,4 +138,19 @@ def delete_logs_until(conn: sqlite3.Connection, until_ts: int) -> int:
     """Borra los logs con timestamp <= until_ts (inclusive) y devuelve cuántos."""
     with (nullcontext() if conn.in_transaction else transaction(conn)):
         cur = conn.execute("DELETE FROM access_logs WHERE timestamp <= ?", (until_ts,))
+        return cur.rowcount
+
+
+def purge_expired_qr(conn: sqlite3.Connection, now: float, days: int = QR_RETENTION_DAYS) -> int:
+    """Borra los QR vencidos hace más de `days` días (y sus usos, por cascada).
+
+    Va con la guarda de sincronización (`applying`): cada panel y la nube purgan por su cuenta,
+    sin dejar lápida. Sin reloj válido no borra.
+    """
+    from .cloud.mapping import applying  # import diferido: el agente importa este módulo
+    if datetime.fromtimestamp(now).year < _MIN_CLOCK_YEAR:
+        return 0
+    with applying(conn):
+        cur = conn.execute("DELETE FROM qr_codes WHERE valid_until < ?",
+                           (int(now - days * 86400),))
         return cur.rowcount

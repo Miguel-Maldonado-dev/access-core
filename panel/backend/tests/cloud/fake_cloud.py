@@ -21,7 +21,7 @@ from acceso.cloud.checksum import table_checksum
 BASE = "https://nube.example.com"
 PREFIX = "/api/device/v1"
 TABLES = ("holders", "cards", "controls", "control_buttons", "permissions",
-          "holder_permissions", "outputs", "phones", "call_settings")
+          "holder_permissions", "outputs", "phones", "call_settings", "qr_codes", "qr_settings")
 
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _ISO_MS_Z = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
@@ -41,6 +41,7 @@ def _nullable(check):
 
 _uuid = lambda v: isinstance(v, str) and bool(_UUID.match(v))  # noqa: E731
 _bool = lambda v: isinstance(v, bool)  # noqa: E731
+_iso = lambda v: isinstance(v, str) and bool(_ISO_MS_Z.match(v))  # noqa: E731
 _mask = _int(0, 15)
 _code = _int(0, 4294967295)
 _minute = _int(0, 1439)
@@ -59,7 +60,7 @@ DATA_SCHEMAS = {
                         "output_id": _nullable(_int(0, 3))},
     "permissions": {"permission_id": _int(0, 31), "name": _text, "output_mask": _mask,
                     "card_reader_mask": _mask, "pin_reader_mask": _mask, "allow_rf": _bool,
-                    "allow_remote": _bool, "allow_call": _bool, "weekday_mask": _int(0, 127), "start_minute": _minute, "end_minute": _minute},
+                    "allow_remote": _bool, "allow_call": _bool, "qr_reader_mask": _mask, "weekday_mask": _int(0, 127), "start_minute": _minute, "end_minute": _minute},
     "holder_permissions": {"holder_id": _uuid, "permission_id": _int(0, 31)},
     "outputs": {"output_id": _int(0, 3), "alias": _text, "duration_ms": _int(0, 65535),
                 "reader_mask": _mask, "enabled": _bool},
@@ -68,6 +69,9 @@ DATA_SCHEMAS = {
     "call_settings": {"enabled": _bool, "mode": lambda v: v in ("single", "menu"), "output_id": _int(0, 3),
                       "menu_mask": _mask, "default_output": _nullable(_int(0, 3)),
                       "call_limit_per_minute": _int(1, 20)},
+    "qr_codes": {"holder_id": _uuid, "code": _code, "label": lambda v: _text(v) and len(v) <= 60,
+                 "valid_from": _iso, "valid_until": _iso, "max_uses": _int(1, 100), "created_at": _iso},
+    "qr_settings": {"digit": _int(1, 9), "max_active": _int(1, 100000)},
 }
 
 LOG_SCHEMA = {

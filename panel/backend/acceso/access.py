@@ -1,18 +1,22 @@
 """Autorización de tarjetas, controles RF y botones de salida."""
 import logging
 import sqlite3
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .constants import (
-    EXIT_BUTTON_OUTPUTS, PIN_FAILURE_WINDOW_S, PIN_LOCKOUT_S, PIN_MAX_FAILURES, REASON_ALLOWED, REASON_BUTTON_NO_OUTPUT, REASON_EXIT_BUTTON,
-    REASON_NO_OUTPUT, REASON_NO_PERMISSION, REASON_PIN_LOCKED, REASON_PIN_NOT_ALLOWED, REASON_UART_ERROR,
+    EXIT_BUTTON_OUTPUTS, PIN_FAILURE_WINDOW_S, PIN_LOCKOUT_S, PIN_MAX_FAILURES, QR_DEBOUNCE_S, REASON_ALLOWED,
+    REASON_BUTTON_NO_OUTPUT, REASON_EXIT_BUTTON, REASON_METHOD_NOT_ALLOWED,
+    REASON_NO_OUTPUT, REASON_NO_PERMISSION, REASON_PIN_LOCKED, REASON_PIN_NOT_ALLOWED, REASON_QR_EXPIRED,
+    REASON_QR_UNKNOWN, REASON_QR_USED, REASON_UART_ERROR,
     REASON_UNKNOWN_CARD, REASON_UNKNOWN_CONTROL, REASON_UNKNOWN_PIN, SOURCE_CARD,
-    SOURCE_EXIT_BUTTON, SOURCE_PIN, SOURCE_RF,
+    SOURCE_EXIT_BUTTON, SOURCE_PIN, SOURCE_QR, SOURCE_RF,
 )
 from .logs import HolderRef, append_log
+from .qr import get_qr_settings, looks_like_qr
 from .protocol import CardRead, Event, ExitButton, PinRead, RfRead, build_relay_command
 from .rf_listen import RfListener
 
@@ -60,6 +64,7 @@ class Decision:
     control_id: Optional[int] = None
     button: Optional[int] = None
     credential_label: Optional[str] = None
+    qr_id: Optional[int] = None
 
     @property
     def allowed(self) -> bool:
@@ -77,26 +82,79 @@ class AccessOutcome:
 METHOD_CARD, METHOD_PIN, METHOD_RF = "card", "pin", "rf"
 METHOD_REMOTE = "remote"
 METHOD_CALL = "call"
+METHOD_QR = "qr"
 
 
-def permission_allows(conn: sqlite3.Connection, holder_id: int, output_id: int,
-                      method: str, reader: Optional[int], now: datetime) -> bool:
-    """Algún permiso del titular cubre método, salida, día y horario.
+class QrDebounce:
+    """Rebote en memoria: un lector de QR repite la lectura mientras el código sigue a la vista."""
 
-    card: el bit del lector debe estar en card_reader_mask; pin: en pin_reader_mask;
-    rf: el permiso debe tener allow_rf=1 y el lector no aplica (reader=None);
-    remote: igual, con allow_remote=1; call: igual, con allow_call=1.
-    """
-    minute = now.hour * 60 + now.minute
-    day = 1 << now.weekday()
-    rows = conn.execute(
-        "SELECT p.output_mask, p.card_reader_mask, p.pin_reader_mask, p.allow_rf, p.allow_remote, p.allow_call,"
-        " p.weekday_mask, p.start_minute, p.end_minute"
+    def __init__(self) -> None:
+        self._seen: Dict[Tuple[int, int], float] = {}
+
+    def seen(self, code: int, reader: int, now: float) -> bool:
+        """Verdadero si hubo otra lectura aceptada del mismo código y lector hace < QR_DEBOUNCE_S.
+
+        Una lectura rebotada no renueva la ventana: la cuenta parte de la primera.
+        """
+        for key in [k for k, t in self._seen.items() if now - t >= QR_DEBOUNCE_S or t > now]:
+            del self._seen[key]
+        key = (code, reader)
+        if key in self._seen:
+            return True
+        self._seen[key] = now
+        return False
+
+
+def _method_ok(p: sqlite3.Row, method: str, reader: Optional[int]) -> bool:
+    if method == METHOD_RF:
+        return p["allow_rf"] == 1
+    if method == METHOD_REMOTE:
+        return p["allow_remote"] == 1
+    if method == METHOD_CALL:
+        return p["allow_call"] == 1
+    if reader is None:
+        return False
+    if method == METHOD_PIN:
+        return bool(p["pin_reader_mask"] & (1 << reader))
+    if method == METHOD_CARD:
+        return bool(p["card_reader_mask"] & (1 << reader))
+    if method == METHOD_QR:
+        return bool(p["qr_reader_mask"] & (1 << reader))
+    return False
+
+
+def _permission_rows(conn: sqlite3.Connection, holder_id: int) -> List[sqlite3.Row]:
+    return conn.execute(
+        "SELECT p.output_mask, p.card_reader_mask, p.pin_reader_mask, p.qr_reader_mask, p.allow_rf,"
+        " p.allow_remote, p.allow_call, p.weekday_mask, p.start_minute, p.end_minute"
         " FROM permissions p JOIN holder_permissions hp ON hp.permission_id = p.permission_id"
         " WHERE hp.holder_id = ?",
         (holder_id,),
-    )
-    for p in rows:
+    ).fetchall()
+
+
+def method_enabled(conn: sqlite3.Connection, holder_id: int, method: str,
+                   reader: Optional[int]) -> bool:
+    """Algún permiso del titular habilita el método (y el lector), sin mirar salida ni horario."""
+    return any(_method_ok(p, method, reader) for p in _permission_rows(conn, holder_id))
+
+
+def permission_check(conn: sqlite3.Connection, holder_id: int, output_id: int,
+                     method: str, reader: Optional[int], now: datetime) -> int:
+    """REASON_ALLOWED si algún permiso cubre método, salida, día y horario.
+
+    Si ningún permiso habilita el método en ese lector devuelve REASON_METHOD_NOT_ALLOWED (17);
+    si lo habilita pero no cubre salida, día u horario, REASON_NO_PERMISSION (3).
+    card/pin/qr: el bit del lector debe estar en su máscara; rf: allow_rf=1; remote: allow_remote=1;
+    call: allow_call=1 (rf, remote y call no usan lector: reader=None).
+    """
+    minute = now.hour * 60 + now.minute
+    day = 1 << now.weekday()
+    enabled = False
+    for p in _permission_rows(conn, holder_id):
+        if not _method_ok(p, method, reader):
+            continue
+        enabled = True
         start, end = p["start_minute"], p["end_minute"]
         if start == end:
             time_ok = True
@@ -104,22 +162,14 @@ def permission_allows(conn: sqlite3.Connection, holder_id: int, output_id: int,
             time_ok = start <= minute < end
         else:
             time_ok = minute >= start or minute < end
-        if method == METHOD_RF:
-            method_ok = p["allow_rf"] == 1
-        elif method == METHOD_REMOTE:
-            method_ok = p["allow_remote"] == 1
-        elif method == METHOD_CALL:
-            method_ok = p["allow_call"] == 1
-        elif method == METHOD_PIN:
-            method_ok = reader is not None and bool(p["pin_reader_mask"] & (1 << reader))
-        elif method == METHOD_CARD:
-            method_ok = reader is not None and bool(p["card_reader_mask"] & (1 << reader))
-        else:
-            method_ok = False
-        if (method_ok and p["output_mask"] & (1 << output_id)
-                and p["weekday_mask"] & day and time_ok):
-            return True
-    return False
+        if p["output_mask"] & (1 << output_id) and p["weekday_mask"] & day and time_ok:
+            return REASON_ALLOWED
+    return REASON_NO_PERMISSION if enabled else REASON_METHOD_NOT_ALLOWED
+
+
+def permission_allows(conn: sqlite3.Connection, holder_id: int, output_id: int,
+                      method: str, reader: Optional[int], now: datetime) -> bool:
+    return permission_check(conn, holder_id, output_id, method, reader, now) == REASON_ALLOWED
 
 
 def _holder(conn: sqlite3.Connection, holder_id: int) -> HolderRef:
@@ -145,11 +195,35 @@ def authorize_card(conn: sqlite3.Connection, code: int, reader: int, now: dateti
     if out is None:
         return Decision(REASON_NO_OUTPUT, holder, credential_label=label)
     output = OutputRef(out["output_id"], out["duration_ms"])
-    reason = (REASON_ALLOWED
-              if permission_allows(conn, holder.holder_id, output.output_id, METHOD_CARD,
-                                   reader, now)
-              else REASON_NO_PERMISSION)
+    reason = permission_check(conn, holder.holder_id, output.output_id, METHOD_CARD, reader, now)
     return Decision(reason, holder, output, credential_label=label)
+
+
+def authorize_qr(conn: sqlite3.Connection, qr: sqlite3.Row, reader: int, now: datetime) -> Decision:
+    """Decide un QR registrado. Orden: método no habilitado (17), vigencia (15), usos agotados en
+    el lector (16), sin salida (2), día/horario/salida (3); si no, abre."""
+    holder = _holder(conn, qr["holder_id"])
+    label = qr["label"] or None
+    common = dict(holder=holder, credential_label=label, qr_id=qr["qr_id"])
+    if not method_enabled(conn, holder.holder_id, METHOD_QR, reader):
+        return Decision(REASON_METHOD_NOT_ALLOWED, **common)
+    ts = int(now.timestamp())
+    if not qr["valid_from"] <= ts < qr["valid_until"]:
+        return Decision(REASON_QR_EXPIRED, **common)
+    used = conn.execute("SELECT count FROM qr_uses WHERE qr_id = ? AND reader = ?",
+                        (qr["qr_id"], reader)).fetchone()
+    if used is not None and used["count"] >= qr["max_uses"]:
+        return Decision(REASON_QR_USED, **common)
+    out = conn.execute(
+        "SELECT output_id, duration_ms FROM outputs WHERE enabled = 1"
+        " AND (reader_mask & ?) != 0 ORDER BY output_id LIMIT 1",
+        (1 << reader,),
+    ).fetchone()
+    if out is None:
+        return Decision(REASON_NO_OUTPUT, **common)
+    output = OutputRef(out["output_id"], out["duration_ms"])
+    reason = permission_check(conn, holder.holder_id, output.output_id, METHOD_QR, reader, now)
+    return Decision(reason, output=output, **common)
 
 
 def authorize_pin(conn: sqlite3.Connection, pin: str, reader: int, now: datetime) -> Decision:
@@ -202,7 +276,9 @@ def authorize_rf(conn: sqlite3.Connection, code: int, now: datetime) -> Decision
 def handle_event(conn: sqlite3.Connection, event: Event, send: Callable[[bytes], None], *,
                  now: Optional[datetime] = None, max_entries: int,
                  pin_lockout: Optional[PinLockout] = None,
-                 rf_listener: Optional[RfListener] = None) -> AccessOutcome:
+                 rf_listener: Optional[RfListener] = None,
+                 qr_debounce: Optional[QrDebounce] = None,
+                 clock: Callable[[], float] = time.monotonic) -> AccessOutcome:
     now = now or datetime.now()
     timestamp = int(now.timestamp())
     if isinstance(event, ExitButton):
@@ -214,8 +290,22 @@ def handle_event(conn: sqlite3.Connection, event: Event, send: Callable[[bytes],
 
     code: Optional[int] = None
     if isinstance(event, CardRead):
-        decision = authorize_card(conn, event.code, event.reader, now)
-        source, device_id, code = SOURCE_CARD, event.reader, event.code
+        qr = conn.execute("SELECT * FROM qr_codes WHERE code = ?", (event.code,)).fetchone()
+        if qr is not None:
+            if qr_debounce is not None and qr_debounce.seen(event.code, event.reader, clock()):
+                return AccessOutcome(False, REASON_QR_USED, None, None)
+            decision = authorize_qr(conn, qr, event.reader, now)
+            source = SOURCE_QR
+        elif conn.execute("SELECT 1 FROM cards WHERE card_code = ?", (event.code,)).fetchone():
+            decision = authorize_card(conn, event.code, event.reader, now)
+            source = SOURCE_CARD
+        elif looks_like_qr(event.code, get_qr_settings(conn).digit):
+            decision = Decision(REASON_QR_UNKNOWN)
+            source = SOURCE_QR
+        else:
+            decision = authorize_card(conn, event.code, event.reader, now)
+            source = SOURCE_CARD
+        device_id, code = event.reader, event.code
     elif isinstance(event, PinRead):
         if pin_lockout is not None and pin_lockout.is_blocked(event.reader, now):
             decision = Decision(REASON_PIN_LOCKED, credential_label=PIN_LABEL)
@@ -243,10 +333,12 @@ def handle_event(conn: sqlite3.Connection, event: Event, send: Callable[[bytes],
             send(command)
         except OSError:
             reason, command = REASON_UART_ERROR, None
+    qr_use = ((decision.qr_id, event.reader)
+              if reason == REASON_ALLOWED and decision.qr_id is not None else None)
     log_id = append_log(
         conn, timestamp=timestamp, allowed=reason == REASON_ALLOWED, source=source,
         reason=reason, holder=decision.holder, credential_label=decision.credential_label,
         control_id=decision.control_id, code=code, device_id=device_id,
         output_id=decision.output.output_id if decision.output else None,
-        max_entries=max_entries)
+        max_entries=max_entries, qr_use=qr_use)
     return AccessOutcome(reason == REASON_ALLOWED, reason, command, log_id)

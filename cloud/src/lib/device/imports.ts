@@ -76,6 +76,8 @@ export interface CloudState {
   holder_profiles: { id: string; holder_id: string; profile_id: string }[];
   /** Teléfonos vivos (opcional en las pruebas puras: sin ellos, ninguno). */
   phones?: { id: string; number: string }[];
+  /** QR vivos (opcional en las pruebas puras: sin ellos, ninguno). */
+  qr_codes?: { id: string; code: number }[];
 }
 
 export interface ImportCardSummary {
@@ -177,6 +179,8 @@ interface ImportPlan {
   phones: { id: string; holder_id: string; number: string; description: string }[];
   /** Configuración de llamadas del panel, con `output_id` (la traduce `import_rows`). */
   call_settings: ContractRow<"call_settings">["data"] | null;
+  /** QR del panel (un panel v8 no los tiene). */
+  qr_codes: ({ id: string } & ContractRow<"qr_codes">["data"])[];
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +206,7 @@ function primeroRepetido<T>(valores: Iterable<T>): T | undefined {
  */
 export function snapshotProblem(t: SnapshotTables): string | null {
   for (const tabla of TABLES) {
+    if (tabla === "qr_settings") continue; // nunca se sube
     const id = primeroRepetido<string>((t[tabla] ?? []).map((f) => f.id));
     if (id !== undefined) return `Identificador repetido en ${tabla}: ${id}.`;
   }
@@ -244,6 +249,14 @@ export function snapshotProblem(t: SnapshotTables): string | null {
   }
   const numero = primeroRepetido((t.phones ?? []).map((f) => f.data.number));
   if (numero !== undefined) return `Número de teléfono repetido: ${numero}.`;
+  for (const q of t.qr_codes ?? []) {
+    if (!titulares.has(q.data.holder_id)) return `El QR ${q.id} apunta a un titular que no está en el snapshot.`;
+  }
+  const qr = primeroRepetido((t.qr_codes ?? []).map((q) => q.data.code));
+  if (qr !== undefined) return `Código de QR repetido: ${qr}.`;
+  const codigosTarjeta = new Set(t.cards.map((k) => k.data.card_code));
+  const qrTarjeta = (t.qr_codes ?? []).find((q) => codigosTarjeta.has(q.data.code));
+  if (qrTarjeta) return `El código de QR ${qrTarjeta.data.code} es de una tarjeta.`;
   return null;
 }
 
@@ -583,6 +596,8 @@ const planTelefono = (f: ContractRow<"phones">, holderId: string) => ({
 /** La configuración de llamadas del snapshot (un panel v7 no la tiene). */
 const planLlamadas = (snap: StoredSnapshot) => snap.call_settings?.[0]?.data ?? null;
 
+const planQr = (q: ContractRow<"qr_codes">, holderId: string) => ({ id: q.id, ...q.data, holder_id: holderId });
+
 /**
  * Importación directa (instalación vacía): todo, con `local_permission_id = permission_id`,
  * y cada botón vinculado a este panel.
@@ -605,6 +620,7 @@ function directPlan(snap: StoredSnapshot): ImportPlan {
     outputs: snap.outputs.map(planSalida),
     phones: (snap.phones ?? []).map((f) => planTelefono(f, f.data.holder_id)),
     call_settings: planLlamadas(snap),
+    qr_codes: (snap.qr_codes ?? []).map((q) => planQr(q, q.data.holder_id)),
   };
 }
 
@@ -644,6 +660,7 @@ function confirmPlan(nube: CloudState, snap: StoredSnapshot, seleccion: readonly
     outputs: snap.outputs.map(planSalida),
     phones: [],
     call_settings: planLlamadas(snap),
+    qr_codes: [],
   };
 
   // Un control nuevo cuyo UUID es un control vivo de la instalación (de otro titular)
@@ -735,6 +752,22 @@ function confirmPlan(nube: CloudState, snap: StoredSnapshot, seleccion: readonly
     plan.phones.push(planTelefono({ ...f, id: telefonosNube.has(f.id) ? randomUUID() : f.id }, titular));
   }
 
+  // [decisión de Claude] QR, como los teléfonos: los de cada titular que queda en la nube, salvo
+  // los que repiten el código de un QR vivo o de una tarjeta (de la nube o del plan); un UUID
+  // que la nube ya usa recibe uno nuevo.
+  const codigosOcupados = new Set<number>([
+    ...(nube.qr_codes ?? []).map((q) => q.code),
+    ...nube.cards.map((k) => k.card_code),
+    ...plan.cards.map((k) => k.card_code),
+  ]);
+  const qrNube = new Set((nube.qr_codes ?? []).map((q) => q.id));
+  for (const q of snap.qr_codes ?? []) {
+    const titular = titularesNuevos.has(q.data.holder_id) ? q.data.holder_id : titularDe.get(q.data.holder_id);
+    if (titular === undefined || codigosOcupados.has(q.data.code)) continue;
+    codigosOcupados.add(q.data.code);
+    plan.qr_codes.push(planQr({ ...q, id: qrNube.has(q.id) ? randomUUID() : q.id }, titular));
+  }
+
   return { plan, imported, ignored };
 }
 
@@ -766,7 +799,8 @@ async function leerVivas<T extends { id: string }>(
 }
 
 async function loadCloudState(admin: SupabaseClient, installationId: string): Promise<CloudState> {
-  const [holders, cards, controls, control_buttons, access_profiles, holder_profiles, phones] = await Promise.all([
+  const [holders, cards, controls, control_buttons, access_profiles, holder_profiles, phones, qr_codes] =
+    await Promise.all([
     leerVivas<CloudState["holders"][number]>(admin, "holders", installationId, "id, kind, name, pin_lookup"),
     leerVivas<CloudState["cards"][number]>(admin, "cards", installationId, "id, card_code, holder_id"),
     leerVivas<CloudState["controls"][number]>(admin, "controls", installationId, "id, holder_id"),
@@ -779,8 +813,9 @@ async function loadCloudState(admin: SupabaseClient, installationId: string): Pr
     leerVivas<CloudState["access_profiles"][number]>(admin, "access_profiles", installationId, "id, local_permission_id"),
     leerVivas<CloudState["holder_profiles"][number]>(admin, "holder_profiles", installationId, "id, holder_id, profile_id"),
     leerVivas<NonNullable<CloudState["phones"]>[number]>(admin, "phones", installationId, "id, number"),
+    leerVivas<NonNullable<CloudState["qr_codes"]>[number]>(admin, "qr_codes", installationId, "id, code"),
   ]);
-  return { holders, cards, controls, control_buttons, access_profiles, holder_profiles, phones };
+  return { holders, cards, controls, control_buttons, access_profiles, holder_profiles, phones, qr_codes };
 }
 
 /** Llama una función de importación de 0004 (devuelven un estado en texto). */
@@ -811,7 +846,16 @@ export async function stageSnapshot(panel: Panel, tables: SnapshotTables): Promi
   const admin = createAdminSupabase();
   const snapshot = protectSnapshot(panel.installation_id, tables);
 
-  const directa = await llamar(admin, "import_panel_snapshot", { p_panel_id: panel.id, p_plan: directPlan(snapshot) });
+  let directa: string;
+  try {
+    directa = await llamar(admin, "import_panel_snapshot", { p_panel_id: panel.id, p_plan: directPlan(snapshot) });
+  } catch (e) {
+    // Reglas de QR de la base (tope de vigentes, código reservado): error del snapshot, no 500.
+    if ((e as { code?: string } | null)?.code === "PT422") {
+      throw new DeviceApiError(400, "invalid_snapshot", `El snapshot no es coherente: ${(e as { message: string }).message}`);
+    }
+    throw e;
+  }
   if (directa === "imported") return "active";
   if (directa === "not_staging") throw notStaging();
 

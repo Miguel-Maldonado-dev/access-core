@@ -116,8 +116,8 @@ describe("documento OpenAPI", () => {
     expect(esquemas.Regla.required).toContain("allow_remote");
     expect(esquemas.ReglaEntrada.required).not.toContain("allow_remote");
     expect(esquemas.ReglaEntrada.properties.allow_remote).toBeDefined();
-    expect(esquemas.Log.properties.source.enum).toEqual([0, 1, 2, 3, 4, 5, 6]);
-    expect(esquemas.Log.properties.reason.maximum).toBe(13);
+    expect(esquemas.Log.properties.source.enum).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(esquemas.Log.properties.reason.maximum).toBe(17);
     const params = doc.paths["/installations/{installationId}/logs"].get as unknown as { parameters: { name?: string; schema?: { enum?: string[] } }[] };
     const origen = params.parameters.find((p) => p.name === "origen");
     expect(origen?.schema?.enum).toEqual(SOURCE_OPTIONS.map(String));
@@ -134,7 +134,24 @@ describe("documento OpenAPI", () => {
     expect(esquemas.ReglaEntrada.required).not.toContain("allow_call");
     expect(esquemas.ReglaEntrada.properties.allow_call).toBeDefined();
     expect(esquemas.Log.properties.source.enum).toContain(6);
-    expect(esquemas.Log.properties.reason.maximum).toBe(13);
+    expect(esquemas.Log.properties.reason.maximum).toBe(17);
+  });
+
+  it("openapi incluye /qr-codes (sin PATCH ni PUT), qr_reader_mask y el origen 7", () => {
+    const esquemas = (doc as unknown as { components: { schemas: Record<string, { required: string[]; properties: Record<string, { enum?: number[]; maximum?: number; description?: string }> }> } }).components.schemas;
+    const lista = doc.paths["/installations/{installationId}/qr-codes"];
+    const uno = doc.paths["/installations/{installationId}/qr-codes/{qrId}"];
+    expect(Object.keys(lista).sort()).toEqual(["get", "post"]);
+    expect(Object.keys(uno).sort()).toEqual(["delete", "get"]);
+    expect(uno.delete.responses["204"]).toBeDefined();
+    expect(lista.post.responses["422"]).toBeDefined();
+    expect(esquemas.QrCode.properties.code).toBeDefined();
+    expect(esquemas.QrCode.properties).not.toHaveProperty("image");
+    expect(esquemas.QrCodeCreate.required).toEqual(["holder_id", "valid_from", "valid_until"]);
+    expect(esquemas.Regla.required).toContain("qr_reader_mask");
+    expect(esquemas.ReglaEntrada.required).not.toContain("qr_reader_mask");
+    expect(esquemas.Log.properties.source.enum).toContain(7);
+    expect(esquemas.Log.properties.reason.description).toContain("17 método no permitido en este lector");
   });
 
   it("PUT y DELETE de PIN no declaran Idempotency-Key", () => {

@@ -21,6 +21,7 @@ export interface Permission {
   output_mask: number;
   card_reader_mask: number;
   pin_reader_mask: number;
+  qr_reader_mask: number;
   weekday_mask: number;
   start_minute: number;
   end_minute: number;
@@ -132,4 +133,26 @@ export interface GsmStatus {
   connected: boolean;
   registered: boolean | null;
   signal: number | null;
+}
+
+export type QrStatus = "pending" | "active" | "expired";
+
+export interface QrCode {
+  qr_id: number;
+  holder_id: number;
+  holder_name: string;
+  code: number;
+  label: string;
+  valid_from: string;
+  valid_until: string;
+  max_uses: number;
+  status: QrStatus;
+  /** Lecturas válidas por lector (clave 0–3). */
+  uses: Record<string, number>;
+}
+
+export interface QrSettings {
+  digit: number;
+  max_active: number;
+  editable: boolean;
 }

@@ -1,5 +1,6 @@
 """Modelos pydantic de la API."""
 import re
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator, model_validator
@@ -7,6 +8,7 @@ from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator, m
 from acceso.phones import parse_phone_input
 from acceso.constants import (
     CALL_MODES, CONTROL_BUTTONS, HOLDER_KINDS, MAX_CODE, OUTPUT_ALIAS_MAX, PIN_MAX_DIGITS, PIN_MIN_DIGITS,
+    QR_LABEL_MAX, QR_MAX_ACTIVE_LIMIT, QR_MAX_USES,
 )
 
 
@@ -69,6 +71,7 @@ class PermissionBody(BaseModel):
     allow_rf: StrictBool = False
     allow_remote: StrictBool = False
     allow_call: StrictBool = False
+    qr_reader_mask: StrictInt = Field(default=0, ge=0, le=15)
 
     @model_validator(mode="before")
     @classmethod
@@ -179,3 +182,51 @@ class CallSettingsIn(BaseModel):
         if v is not None and not 1 <= v <= 20:
             raise ValueError("Debe ser un número entre 1 y 20.")
         return v
+
+
+def _iso_seconds(v) -> int:
+    """ISO 8601 con zona -> segundos UTC. Sin zona o con otro formato: error en español."""
+    if not isinstance(v, str):
+        raise ValueError("La fecha debe ser una cadena ISO 8601 con zona horaria.")
+    text = v.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        raise ValueError("La fecha no es válida: usa el formato ISO 8601 con zona horaria.")
+    if parsed.tzinfo is None:
+        raise ValueError("La fecha debe incluir la zona horaria (por ejemplo -06:00 o Z).")
+    return int(parsed.astimezone(timezone.utc).timestamp())
+
+
+class QrCreate(BaseModel):
+    holder_id: int
+    label: str = ""
+    valid_from: int
+    valid_until: int
+    max_uses: StrictInt = Field(default=1, ge=1, le=QR_MAX_USES)
+
+    @field_validator("valid_from", "valid_until", mode="before")
+    @classmethod
+    def _dates(cls, v):
+        return _iso_seconds(v)
+
+    @field_validator("label")
+    @classmethod
+    def _label(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) > QR_LABEL_MAX:
+            raise ValueError("La etiqueta no puede pasar de %d caracteres." % QR_LABEL_MAX)
+        return v
+
+    @model_validator(mode="after")
+    def _order(self):
+        if self.valid_until <= self.valid_from:
+            raise ValueError("La vigencia debe terminar después de empezar.")
+        return self
+
+
+class QrSettingsIn(BaseModel):
+    digit: StrictInt = Field(ge=1, le=9)
+    max_active: StrictInt = Field(ge=1, le=QR_MAX_ACTIVE_LIMIT)

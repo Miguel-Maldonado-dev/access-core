@@ -27,13 +27,16 @@ export interface RuleInput {
   allow_remote: boolean;
   /** Permite abrir llamando desde un teléfono del titular. Si se omite al guardar, se conserva el actual. */
   allow_call?: boolean;
+  /** Lectores (bits 0–3) donde vale un QR del titular. Si se omite al guardar, se conserva el actual. */
+  qr_reader_mask?: number;
   weekday_mask: number;
   start_minute: number;
   end_minute: number;
 }
 
-export interface RuleRow extends Omit<RuleInput, "allow_call"> {
+export interface RuleRow extends Omit<RuleInput, "allow_call" | "qr_reader_mask"> {
   allow_call: boolean;
+  qr_reader_mask: number;
   id: string;
   profile_id: string;
   panel_id: string;

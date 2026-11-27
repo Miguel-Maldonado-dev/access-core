@@ -7,12 +7,12 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional, Protocol
 
-from .access import PinLockout, handle_event
+from .access import PinLockout, QrDebounce, handle_event
 from .config import ConfigError, Settings, load_settings
 from .constants import RECONNECT_SECONDS
 from .daemon_socket import DaemonSocketServer
 from .db import connect
-from .logs import purge_old_logs
+from .logs import purge_expired_qr, purge_old_logs
 from .migrate import MigrationError, migrate
 from .output_test import OutputTester, RelayLink
 from .protocol import FrameParser, InvalidFrame
@@ -57,6 +57,7 @@ def _serve(settings: Settings, conn, port: SerialPort, stop: threading.Event,
     socket) escribe por el mismo candado que las aperturas.
     """
     parser = FrameParser()
+    qr_debounce = QrDebounce()
     relay = relay or RelayLink()
     relay.set(_make_send(port))
     try:
@@ -71,7 +72,8 @@ def _serve(settings: Settings, conn, port: SerialPort, stop: threading.Event,
                                 item.raw[1] if len(item.raw) > 1 else 0, len(item.raw))
                     continue
                 handle_event(conn, item, relay.send, max_entries=settings.log_max_entries,
-                             pin_lockout=pin_lockout, rf_listener=rf_listener)
+                             pin_lockout=pin_lockout, rf_listener=rf_listener,
+                             qr_debounce=qr_debounce)
     finally:
         relay.set(None)
 
@@ -106,6 +108,9 @@ def _retention_loop(settings: Settings, stop: threading.Event, purge: Callable[.
                 deleted = purge(conn, time.time())
                 if deleted:
                     log.info("Retención: %d logs antiguos borrados", deleted)
+                expired = purge_expired_qr(conn, time.time())
+                if expired:
+                    log.info("Retención: %d QR vencidos borrados", expired)
             except Exception:
                 # El hilo nunca debe morir: se registra y se reintenta en el siguiente ciclo.
                 log.exception("No se pudo purgar los logs antiguos")

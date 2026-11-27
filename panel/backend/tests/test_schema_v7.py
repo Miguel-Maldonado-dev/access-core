@@ -40,8 +40,8 @@ def _scenario(conn):
 
 
 def test_schema_version_is_7(conn):
-    assert SCHEMA_VERSION == 8
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert SCHEMA_VERSION == 9
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
 
 
 def test_permissions_have_allow_remote_off_by_default(conn):
@@ -113,7 +113,7 @@ def test_sync_guard_has_single_row_off(conn):
 def test_triggers_exist_for_every_replicated_table(conn):
     triggers = {r["name"]: r["tbl_name"] for r in conn.execute(
         "SELECT name, tbl_name FROM sqlite_master WHERE type='trigger'")}
-    assert len(triggers) == 27
+    assert len(triggers) == 30
     for table in REPLICATED:
         assert sorted(n for n, t in triggers.items() if t == table) == sorted(
             "%s_sync_%s" % (table, suffix) for suffix in ("ins", "upd", "del"))
@@ -200,7 +200,7 @@ def test_create_schema_is_idempotent_for_sync_objects(conn):
     from acceso.schema import create_schema
     create_schema(conn)
     assert conn.execute("SELECT COUNT(*) FROM sync_guard").fetchone()[0] == 1
-    assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'").fetchone()[0] == 27
+    assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'").fetchone()[0] == 30
     assert _outbox(conn) == []
 
 

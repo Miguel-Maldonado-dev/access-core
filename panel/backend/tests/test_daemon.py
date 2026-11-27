@@ -369,3 +369,20 @@ def test_socket_gsm_status(settings, db, sock_dir):
     stop.set()
     thread.join(3)
     assert not thread.is_alive() and opened == []
+
+
+def test_daemon_retention_purges_expired_qr(settings, db):
+    holder_id = add_holder(db)
+    old = int(time.time()) - 40 * 86400
+    db.execute(
+        "INSERT INTO qr_codes(holder_id, code, valid_from, valid_until, created_at, uuid,"
+        " updated_at, origin) VALUES (?, 912345678, ?, ?, ?, 'u1', 1, 'local')",
+        (holder_id, old - 100, old, old))
+    stop, thread = start_daemon(settings, open_serial=lambda p, b: FakeSerial(),
+                                purge=lambda conn, now: 0, purge_interval_s=3600)
+    deadline = time.time() + 3
+    while time.time() < deadline and db.execute("SELECT COUNT(*) FROM qr_codes").fetchone()[0]:
+        time.sleep(0.05)
+    stop.set()
+    thread.join(2)
+    assert db.execute("SELECT COUNT(*) FROM qr_codes").fetchone()[0] == 0

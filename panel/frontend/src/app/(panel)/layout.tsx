@@ -11,6 +11,7 @@ import { CALLS_CHANGED_EVENT } from "@/lib/calls";
 const SECTIONS = [
   { href: "/titulares/", label: "Titulares" },
   { href: "/tarjetas/", label: "Tarjetas" },
+  { href: "/qr/", label: "QR" },
   { href: "/telefonos/", label: "Teléfonos", needsCalls: true },
   { href: "/controles/", label: "Controles" },
   { href: "/permisos/", label: "Permisos" },

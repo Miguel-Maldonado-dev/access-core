@@ -42,7 +42,7 @@ export interface ProfileRow {
 }
 
 const REGLA_COLUMNAS =
-  "id, profile_id, panel_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, allow_remote, allow_call, weekday_mask, start_minute, end_minute";
+  "id, profile_id, panel_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, allow_remote, allow_call, qr_reader_mask, weekday_mask, start_minute, end_minute";
 const CAMPOS_REGLA = [
   "output_mask",
   "card_reader_mask",
@@ -50,6 +50,7 @@ const CAMPOS_REGLA = [
   "allow_rf",
   "allow_remote",
   "allow_call",
+  "qr_reader_mask",
   "weekday_mask",
   "start_minute",
   "end_minute",
@@ -68,6 +69,7 @@ const reglaEsquema = z.strictObject({
   allow_rf: z.boolean(),
   allow_remote: z.boolean(),
   allow_call: z.boolean().optional(),
+  qr_reader_mask: entero(0, 15).optional(),
   weekday_mask: entero(0, 127),
   start_minute: entero(0, 1439),
   end_minute: entero(0, 1439),
@@ -350,8 +352,15 @@ export async function saveProfileRulesAs(
 
   for (const [panelId, pedida] of pedidos) {
     const actual = porPanel.get(panelId);
-    // `allow_call` omitido conserva el valor guardado (false en una regla nueva).
-    const regla = pedida === null ? null : { ...pedida, allow_call: pedida.allow_call ?? actual?.allow_call ?? false };
+    // `allow_call` y `qr_reader_mask` omitidos conservan el valor guardado (false y 0 en una regla nueva).
+    const regla =
+      pedida === null
+        ? null
+        : {
+            ...pedida,
+            allow_call: pedida.allow_call ?? actual?.allow_call ?? false,
+            qr_reader_mask: pedida.qr_reader_mask ?? actual?.qr_reader_mask ?? 0,
+          };
     if (regla === null) {
       if (!actual) continue;
       const { error } = await cliente

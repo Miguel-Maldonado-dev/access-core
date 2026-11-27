@@ -43,6 +43,7 @@ const regla = (p: Partial<RuleRow> = {}): RuleRow => ({
   allow_rf: true,
   allow_remote: false,
   allow_call: false,
+  qr_reader_mask: 0,
   weekday_mask: 0b0011111,
   start_minute: 8 * 60,
   end_minute: 18 * 60 + 30,
@@ -175,6 +176,7 @@ describe("ProfilesManager", () => {
               allow_rf: false,
               allow_remote: true,
               allow_call: false,
+              qr_reader_mask: 0,
               weekday_mask: 0b0111111,
               start_minute: 480,
               end_minute: 20 * 60 + 15,
@@ -183,6 +185,21 @@ describe("ProfilesManager", () => {
           { panel_id: "pb", rule: null },
         ],
       ]);
+    });
+
+    it("las casillas QR por lector envían qr_reader_mask y respetan el valor guardado", async () => {
+      const { onSaveRules } = montar([perfil({ rules: [regla({ qr_reader_mask: 0b0100 })] })]);
+      editar();
+      const colA = await screen.findByRole("region", { name: "Regla en PNL-AAAA-AAAA" });
+      expect((within(colA).getByLabelText("QR L3 en PNL-AAAA-AAAA") as HTMLInputElement).checked).toBe(true);
+      expect((within(colA).getByLabelText("QR L1 en PNL-AAAA-AAAA") as HTMLInputElement).checked).toBe(false);
+      fireEvent.click(within(colA).getByLabelText("QR L1 en PNL-AAAA-AAAA"));
+      fireEvent.click(within(colA).getByLabelText("QR L3 en PNL-AAAA-AAAA"));
+      fireEvent.click(within(colA).getByLabelText("QR L4 en PNL-AAAA-AAAA"));
+      fireEvent.click(screen.getByRole("button", { name: "Guardar reglas" }));
+      await waitFor(() => expect(onSaveRules).toHaveBeenCalled());
+      const reglaA = (onSaveRules.mock.calls[0] as unknown as [string, { panel_id: string; rule: { qr_reader_mask: number } }[]])[1][0];
+      expect(reglaA.rule.qr_reader_mask).toBe(0b1001);
     });
 
     it("la casilla «Permitir llamada» envía allow_call y respeta el valor guardado", async () => {
@@ -222,6 +239,7 @@ describe("ProfilesManager", () => {
               allow_rf: false,
               allow_remote: false,
               allow_call: false,
+              qr_reader_mask: 0,
               weekday_mask: 127,
               start_minute: 0,
               end_minute: 0,

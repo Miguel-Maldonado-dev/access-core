@@ -8,6 +8,7 @@ const TABS = [
   { segment: "paneles", label: "Paneles" },
   { segment: "titulares", label: "Titulares" },
   { segment: "tarjetas", label: "Tarjetas" },
+  { segment: "qr", label: "QR" },
   { segment: "telefonos", label: "Teléfonos" },
   { segment: "controles", label: "Controles" },
   { segment: "perfiles", label: "Perfiles" },

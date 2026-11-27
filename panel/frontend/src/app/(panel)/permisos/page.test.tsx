@@ -3,8 +3,8 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import PermissionsPage from "./page";
 
 const perms = vi.hoisted(() => [
-  { permission_id: 0, name: "Acceso total", output_mask: 15, card_reader_mask: 5, pin_reader_mask: 0, weekday_mask: 127, start_minute: 0, end_minute: 0, allow_rf: true, allow_remote: false, allow_call: true },
-  { permission_id: 1, name: "Solo PIN", output_mask: 1, card_reader_mask: 0, pin_reader_mask: 10, weekday_mask: 31, start_minute: 0, end_minute: 0, allow_rf: false, allow_remote: true, allow_call: false },
+  { permission_id: 0, name: "Acceso total", output_mask: 15, card_reader_mask: 5, pin_reader_mask: 0, qr_reader_mask: 0, weekday_mask: 127, start_minute: 0, end_minute: 0, allow_rf: true, allow_remote: false, allow_call: true },
+  { permission_id: 1, name: "Solo PIN", output_mask: 1, card_reader_mask: 0, pin_reader_mask: 10, qr_reader_mask: 2, weekday_mask: 31, start_minute: 0, end_minute: 0, allow_rf: false, allow_remote: true, allow_call: false },
 ]);
 const cloud = vi.hoisted(() => ({ state: "unlinked" }));
 vi.mock("@/lib/api", () => ({
@@ -19,28 +19,26 @@ afterEach(() => {
 });
 
 describe("PermissionsPage", () => {
-  it("muestra Salidas, Tarjeta, PIN, RF y Remota abreviados por permiso", async () => {
+  it("muestra Salidas, Lectores (T·P·Q), RF y Remota abreviados por permiso", async () => {
     render(<PermissionsPage />);
     const headers = (await screen.findAllByRole("columnheader")).map((h) => h.textContent);
-    expect(headers).toEqual(expect.arrayContaining(["Tarjeta", "PIN", "RF", "Llam.", "Remota"]));
+    expect(headers).toEqual(expect.arrayContaining(["Salidas", "Lectores", "RF", "Llam.", "Remota"]));
+    expect(headers).not.toContain("Tarjeta");
     expect(headers.indexOf("Llam.")).toBe(headers.indexOf("RF") + 1);
     expect(headers.indexOf("Remota")).toBe(headers.indexOf("Llam.") + 1);
-    expect(headers).not.toContain("Lectores");
     const col = (name: string) => headers.indexOf(name);
     const first = within((await screen.findByText("Acceso total")).closest("tr")!).getAllByRole("cell");
     expect(first[col("Salidas")]).toHaveTextContent("S1, S2, S3, S4");
     expect(first[col("Salidas")]).toHaveAttribute("title", "Relay1, Relay2, Relay3, Relay4");
-    expect(first[col("Tarjeta")]).toHaveTextContent("L1, L3");
-    expect(first[col("Tarjeta")]).toHaveAttribute("title", "Reader1, Reader3");
-    expect(first[col("PIN")]).toHaveTextContent("—");
+    expect(first[col("Lectores")]).toHaveTextContent("L1 T, L3 T");
+    expect(first[col("Lectores")]).toHaveAttribute("title", "Reader1 (Tarjeta), Reader3 (Tarjeta)");
     expect(first[col("RF")]).toHaveTextContent("Sí");
     expect(first[col("Llam.")]).toHaveTextContent("Sí");
     expect(first[col("Remota")]).toHaveTextContent("—");
     const second = within(screen.getByText("Solo PIN").closest("tr")!).getAllByRole("cell");
     expect(second[col("Salidas")]).toHaveTextContent("S1");
-    expect(second[col("Tarjeta")]).toHaveTextContent("—");
-    expect(second[col("PIN")]).toHaveTextContent("L2, L4");
-    expect(second[col("PIN")]).toHaveAttribute("title", "Reader2, Reader4");
+    expect(second[col("Lectores")]).toHaveTextContent("L2 P·Q, L4 P");
+    expect(second[col("Lectores")]).toHaveAttribute("title", "Reader2 (PIN, QR), Reader4 (PIN)");
     expect(second[col("RF")]).toHaveTextContent("—");
     expect(second[col("Llam.")]).toHaveTextContent("—");
     expect(second[col("Remota")]).toHaveTextContent("Sí");

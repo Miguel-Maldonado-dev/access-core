@@ -46,6 +46,10 @@ const REASONS: Record<number, string> = {
   11: "Titular desconocido",
   12: "Teléfono desconocido",
   13: "Límite de llamadas",
+  14: "QR desconocido",
+  15: "QR fuera de vigencia",
+  16: "QR ya usado en este lector",
+  17: "Método no permitido en este lector",
 };
 
 // Copiado de panel/frontend/src/lib/format.ts
@@ -57,9 +61,10 @@ const SOURCES: Record<number, string> = {
   4: "Remota",
   5: "Prueba",
   6: "Llamada",
+  7: "QR",
 };
 
-export const SOURCE_OPTIONS = [0, 1, 2, 3, 4, 5, 6] as const;
+export const SOURCE_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7] as const;
 
 export const reasonLabel = (reason: number) => REASONS[reason] ?? `Motivo ${reason}`;
 export const sourceLabel = (source: number) => SOURCES[source] ?? `Origen ${source}`;
@@ -100,6 +105,11 @@ export function mediumLabel(log: MediumInput): string {
   if (log.source === 6) {
     const numero = log.credential_label ?? "Llamada";
     return device === null ? numero : `${numero} · tecla ${device}`;
+  }
+  // QR: la etiqueta del QR (o "QR") y el lector, como en el panel local.
+  if (log.source === 7) {
+    const etiqueta = log.credential_label ?? "QR";
+    return device === null ? etiqueta : `${etiqueta} · ${readerLabel(device)}`;
   }
   return device === null ? "Botón de salida" : `Botón de salida ${device + 1}`;
 }

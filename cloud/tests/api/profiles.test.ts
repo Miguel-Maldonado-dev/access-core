@@ -186,6 +186,16 @@ describe("API pública: perfiles", () => {
     expect(
       (await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ allow_call: "si" }) }] })).res.status,
     ).toBe(400);
+    // `qr_reader_mask`: nueva regla en 0; explícito se guarda; omitido lo conserva; fuera de rango, 400.
+    expect(reglas.json.data.rules.every((r: { qr_reader_mask: number }) => r.qr_reader_mask === 0)).toBe(true);
+    const conQr = await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ qr_reader_mask: 5 }) }] });
+    expect(conQr.res.status).toBe(200);
+    expect(conQr.json.data.rules.find((r: { panel_id: string }) => r.panel_id === panel1).qr_reader_mask).toBe(5);
+    const sinQr = await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ output_mask: 7 }) }] });
+    expect(sinQr.json.data.rules.find((r: { panel_id: string }) => r.panel_id === panel1)).toMatchObject({ qr_reader_mask: 5, output_mask: 7 });
+    expect(
+      (await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel1, rule: regla({ qr_reader_mask: 16 }) }] })).res.status,
+    ).toBe(400);
     expect(reglas.json.revision).toBeGreaterThan(json.revision);
 
     const quitar = await llamar(guardarReglas as Metodo, { id, body: [{ panel_id: panel2, rule: null }] });

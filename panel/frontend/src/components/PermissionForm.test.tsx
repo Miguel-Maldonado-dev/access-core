@@ -57,14 +57,14 @@ describe("PermissionForm", () => {
     fireEvent.change(screen.getByLabelText("Hasta"), { target: { value: "18:00" } });
     await user.click(screen.getByRole("button", { name: "Guardar" }));
     expect(onSubmit).toHaveBeenCalledWith({
-      permission_id: 3, name: "Oficina", output_mask: 3, card_reader_mask: 1, pin_reader_mask: 5,
+      permission_id: 3, name: "Oficina", output_mask: 3, card_reader_mask: 1, pin_reader_mask: 5, qr_reader_mask: 0,
       weekday_mask: 31, start_minute: 480, end_minute: 1080, allow_rf: true, allow_remote: true, allow_call: true,
     });
   });
 
   it("refleja el permiso editado", () => {
     const p = {
-      permission_id: 1, name: "x", output_mask: 1, card_reader_mask: 2, pin_reader_mask: 8,
+      permission_id: 1, name: "x", output_mask: 1, card_reader_mask: 2, pin_reader_mask: 8, qr_reader_mask: 4,
       weekday_mask: 1, start_minute: 0, end_minute: 0, allow_rf: true, allow_remote: true, allow_call: true,
     };
     render(<PermissionForm permission={p} onSubmit={vi.fn()} />);
@@ -72,6 +72,8 @@ describe("PermissionForm", () => {
     expect(screen.getByLabelText("Tarjeta Reader1")).not.toBeChecked();
     expect(screen.getByLabelText("PIN Reader4")).toBeChecked();
     expect(screen.getByLabelText("PIN Reader2")).not.toBeChecked();
+    expect(screen.getByLabelText("QR Reader3")).toBeChecked();
+    expect(screen.getByLabelText("QR Reader1")).not.toBeChecked();
     expect(screen.getByLabelText("Permitir control RF")).toBeChecked();
     expect(screen.getByLabelText("Permitir apertura remota")).toBeChecked();
     expect(screen.getByLabelText("Permitir llamada")).toBeChecked();
@@ -84,5 +86,16 @@ describe("PermissionForm", () => {
     await user.type(screen.getByLabelText("Nombre"), "Visitas");
     await user.click(screen.getByRole("button", { name: "Guardar" }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ allow_remote: false, allow_call: false }));
+  });
+
+  it("envía qr_reader_mask con Reader2 marcado", async () => {
+    const onSubmit = vi.fn();
+    const user = userEvent.setup();
+    render(<PermissionForm onSubmit={onSubmit} />);
+    expect(screen.getByRole("columnheader", { name: "QR" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Nombre"), "Visitas");
+    await user.click(screen.getByLabelText("QR Reader2"));
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ qr_reader_mask: 2, card_reader_mask: 0, pin_reader_mask: 0 }));
   });
 });

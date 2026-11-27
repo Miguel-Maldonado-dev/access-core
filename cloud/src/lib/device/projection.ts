@@ -13,6 +13,8 @@ import type {
   OutputData,
   PermissionData,
   PhoneData,
+  QrCodeData,
+  QrSettingsData,
   TableData,
   TableName,
 } from "@/lib/device/contract";
@@ -30,6 +32,9 @@ import type {
  * - phones → igual, solo a un panel v8 con su módulo de llamadas activado (`panelGetsPhones`);
  * - panel_call_settings de ESE panel → call_settings (`output_id` = `output_index`), solo a
  *   un panel v8; `permissions.allow_call` también solo va a un panel v8.
+ * - qr_codes → igual (fechas ISO con `.000Z`), solo a un panel v9;
+ * - installations (dígito y tope de QR) → qr_settings (`id` = id de la instalación), solo a
+ *   un panel v9; `permissions.qr_reader_mask` también solo va a un panel v9.
  * Toda lectura filtra por la instalación del panel (y por el panel en outputs y reglas).
  */
 
@@ -45,7 +50,9 @@ export type SourceTable =
   | "holder_profiles"
   | "outputs"
   | "phones"
-  | "panel_call_settings";
+  | "panel_call_settings"
+  | "qr_codes"
+  | "installations";
 
 // Filas de la nube: solo las columnas que se proyectan (nunca pin_lookup).
 export interface HolderRow {
@@ -94,6 +101,7 @@ export interface RuleRow {
   allow_rf: boolean;
   allow_remote: boolean;
   allow_call: boolean;
+  qr_reader_mask: number;
   weekday_mask: number;
   start_minute: number;
   end_minute: number;
@@ -118,6 +126,22 @@ export interface PhoneRow {
   number: string;
   description: string;
 }
+export interface QrCodeRow {
+  id: string;
+  holder_id: string;
+  code: number;
+  label: string;
+  valid_from: string;
+  valid_until: string;
+  created_at: string;
+  max_uses: number;
+}
+/** Ajustes de QR de la instalación (`id` = id de la instalación). */
+export interface InstallationQrRow {
+  id: string;
+  qr_digit: number;
+  qr_max_active: number;
+}
 export interface CallSettingsRow {
   id: string;
   enabled: boolean;
@@ -137,11 +161,14 @@ export const SOURCE_COLUMNS: Readonly<Record<SourceTable, string>> = {
   control_button_panels: "id, button_id, output_index",
   access_profiles: "id, name, local_permission_id",
   profile_panel_rules:
-    "id, profile_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, allow_remote, allow_call, weekday_mask, start_minute, end_minute",
+    "id, profile_id, output_mask, card_reader_mask, pin_reader_mask, allow_rf, allow_remote, allow_call, qr_reader_mask, weekday_mask, start_minute, end_minute",
   holder_profiles: "id, holder_id, profile_id",
   outputs: "id, output_index, alias, duration_ms, reader_mask, enabled",
   phones: "id, holder_id, number, description",
   panel_call_settings: "id, enabled, mode, output_index, menu_mask, default_output, call_limit_per_minute",
+  qr_codes: "id, holder_id, code, label, valid_from, valid_until, created_at, max_uses",
+  // Se lee por `id` (no tiene `installation_id`): ver `fetchQrSettings`.
+  installations: "id, qr_digit, qr_max_active",
 };
 
 /** Tablas de origen con filas por panel (se filtran también por `panel_id`). */
@@ -191,11 +218,18 @@ export function projectControlButton(row: ControlButtonRow, outputIndex: number 
  * máscaras en 0 y `allow_rf` y `allow_remote` en false: el perfil no da acceso en ese panel.
  * `allow_remote` se proyecta siempre (entra en la suma de verificación del panel);
  * `allow_call` solo con `withAllowCall` (panel v8): un panel v7 no lo tiene en su suma.
+ * `qr_reader_mask` solo con `withQrReaderMask` (panel v9).
  */
 export function projectPermission(
   profile: Pick<ProfileRow, "name" | "local_permission_id">,
-  ruleForPanel: Omit<RuleRow, "id" | "profile_id" | "allow_call"> & { allow_call?: boolean } | null,
+  ruleForPanel:
+    | (Omit<RuleRow, "id" | "profile_id" | "allow_call" | "qr_reader_mask"> & {
+        allow_call?: boolean;
+        qr_reader_mask?: number;
+      })
+    | null,
   withAllowCall = true,
+  withQrReaderMask = false,
 ): PermissionData {
   const data: PermissionData = {
     permission_id: profile.local_permission_id,
@@ -210,16 +244,17 @@ export function projectPermission(
     end_minute: ruleForPanel?.end_minute ?? 0,
   };
   if (withAllowCall) data.allow_call = ruleForPanel?.allow_call ?? false;
+  if (withQrReaderMask) data.qr_reader_mask = ruleForPanel?.qr_reader_mask ?? 0;
   return data;
 }
 
-/** Proyección de un permiso para ESE panel (con `allow_call` solo si es v8). */
+/** Proyección de un permiso para ESE panel (`allow_call` desde v8, `qr_reader_mask` desde v9). */
 export function projectPermissionFor(
   panel: Panel,
   profile: Pick<ProfileRow, "name" | "local_permission_id">,
   ruleForPanel: RuleRow | null,
 ): PermissionData {
-  return projectPermission(profile, ruleForPanel, panel.schema >= 8);
+  return projectPermission(profile, ruleForPanel, panel.schema >= 8, panel.schema >= 9);
 }
 
 export function projectHolderPermission(row: HolderProfileRow, localPermissionId: number): HolderPermissionData {
@@ -249,6 +284,25 @@ export function projectCallSettings(row: CallSettingsRow): CallSettingsData {
     default_output: row.default_output,
     call_limit_per_minute: row.call_limit_per_minute,
   };
+}
+
+/** Fecha de Postgres → ISO-8601 UTC con milisegundos (`...T08:00:00.000Z`), como el panel. */
+const isoUtc = (fecha: string) => new Date(fecha).toISOString();
+
+export function projectQrCode(row: QrCodeRow): QrCodeData {
+  return {
+    holder_id: row.holder_id,
+    code: row.code,
+    label: row.label,
+    valid_from: isoUtc(row.valid_from),
+    valid_until: isoUtc(row.valid_until),
+    created_at: isoUtc(row.created_at),
+    max_uses: row.max_uses,
+  };
+}
+
+export function projectQrSettings(row: InstallationQrRow): QrSettingsData {
+  return { digit: row.qr_digit, max_active: row.qr_max_active };
 }
 
 /** El panel recibe teléfonos: es v8 y su módulo de llamadas está activado. */
@@ -502,6 +556,17 @@ export async function loadCallSettings(admin: SupabaseClient, panel: Panel): Pro
   return fetchCallSettings(admin, panel);
 }
 
+/** Los ajustes de QR de la instalación del panel. */
+export async function fetchQrSettings(admin: SupabaseClient, panel: Panel): Promise<InstallationQrRow> {
+  const { data, error } = await admin
+    .from("installations")
+    .select(SOURCE_COLUMNS.installations)
+    .eq("id", panel.installation_id)
+    .single<InstallationQrRow>();
+  if (error) throw error;
+  return data;
+}
+
 /** Perfil leído con `SOURCE_COLUMNS` (sin `deleted_at`). */
 type PerfilVivo = Omit<ProfileRow, "deleted_at">;
 
@@ -576,6 +641,14 @@ export async function liveRow(
       const fila = await loadCallSettings(admin, panel);
       return fila && projectCallSettings(fila);
     }
+    case "qr_codes": {
+      if (panel.schema < 9) return null;
+      const fila = await fetchSourceRow<QrCodeRow>(admin, panel, "qr_codes", id);
+      return fila && projectQrCode(fila);
+    }
+    case "qr_settings":
+      // La fila de la instalación, sin importar el id (el panel tiene una sola).
+      return panel.schema < 9 ? null : projectQrSettings(await fetchQrSettings(admin, panel));
   }
 }
 
@@ -651,6 +724,16 @@ export async function liveRows(admin: SupabaseClient, panel: Panel, table: Table
     case "call_settings": {
       const fila = panel.schema >= 8 ? await loadCallSettings(admin, panel) : null;
       filas = fila ? [{ id: fila.id, data: projectCallSettings(fila) }] : [];
+      break;
+    }
+    case "qr_codes":
+      filas = panel.schema >= 9
+        ? (await fetchSourceRows<QrCodeRow>(admin, panel, "qr_codes")).map((r) => ({ id: r.id, data: projectQrCode(r) }))
+        : [];
+      break;
+    case "qr_settings": {
+      const fila = panel.schema >= 9 ? await fetchQrSettings(admin, panel) : null;
+      filas = fila ? [{ id: fila.id, data: projectQrSettings(fila) }] : [];
       break;
     }
   }

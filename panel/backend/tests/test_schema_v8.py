@@ -20,16 +20,16 @@ def holder(conn):
 
 
 def test_v8_tables(conn):
-    assert SCHEMA_VERSION == 8
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert SCHEMA_VERSION == 9
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
     row = conn.execute("SELECT enabled, mode, output_id, menu_mask, default_output,"
                        " call_limit_per_minute FROM call_settings WHERE id=1").fetchone()
     assert tuple(row) == (0, "single", 0, 0, None, 3)
     cols = [r[1] for r in conn.execute("PRAGMA table_info(permissions)")]
-    assert cols[-1] == "allow_call"
+    assert "allow_call" in cols
     assert conn.execute("SELECT allow_call FROM permissions").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'").fetchone()[0] == 27
+    assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'").fetchone()[0] == 30
 
 
 def test_phone_insert_fires_outbox(conn, holder):

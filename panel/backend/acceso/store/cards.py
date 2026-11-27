@@ -4,6 +4,7 @@ import uuid
 from typing import List, Optional
 
 from acceso.db import now_ms, transaction
+from acceso.qr import get_qr_settings, looks_like_qr
 from acceso.store.errors import Conflict, Invalid, NotFound
 
 _SELECT = (
@@ -33,9 +34,17 @@ def _check_holder(conn: sqlite3.Connection, holder_id: int) -> None:
         raise Invalid("El titular %s no existe." % holder_id)
 
 
+def _check_not_qr(conn: sqlite3.Connection, card_code: int) -> None:
+    if looks_like_qr(card_code, get_qr_settings(conn).digit) or conn.execute(
+        "SELECT 1 FROM qr_codes WHERE code = ?", (card_code,)
+    ).fetchone() is not None:
+        raise Invalid("Ese código está reservado para QR.")
+
+
 def create_card(conn: sqlite3.Connection, card_code: int, holder_id: int, description: str) -> None:
     with transaction(conn):
         _check_holder(conn, holder_id)
+        _check_not_qr(conn, card_code)
         owner = conn.execute(
             "SELECT h.name FROM cards c JOIN holders h ON h.holder_id = c.holder_id"
             " WHERE c.card_code = ?",

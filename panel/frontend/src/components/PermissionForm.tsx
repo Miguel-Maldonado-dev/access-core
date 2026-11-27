@@ -48,6 +48,7 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
   const [outputs, setOutputs] = useState(fromMask(permission?.output_mask ?? 0, 4));
   const [cardReaders, setCardReaders] = useState(fromMask(permission?.card_reader_mask ?? 0, 4));
   const [pinReaders, setPinReaders] = useState(fromMask(permission?.pin_reader_mask ?? 0, 4));
+  const [qrReaders, setQrReaders] = useState(fromMask(permission?.qr_reader_mask ?? 0, 4));
   const [days, setDays] = useState(fromMask(permission?.weekday_mask ?? 0, 7));
   const [start, setStart] = useState(minutesToHHMM(permission?.start_minute ?? 0));
   const [end, setEnd] = useState(minutesToHHMM(permission?.end_minute ?? 0));
@@ -83,6 +84,7 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
       output_mask: toMask(outputs),
       card_reader_mask: toMask(cardReaders),
       pin_reader_mask: toMask(pinReaders),
+      qr_reader_mask: toMask(qrReaders),
       weekday_mask: toMask(days),
       start_minute: startMinute,
       end_minute: endMinute,
@@ -126,6 +128,7 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
               </th>
               <th scope="col" className="px-3 text-center font-medium">Tarjeta</th>
               <th scope="col" className="px-3 text-center font-medium">PIN</th>
+              <th scope="col" className="px-3 text-center font-medium">QR</th>
             </tr>
           </thead>
           <tbody>
@@ -146,6 +149,14 @@ export default function PermissionForm({ permission, onSubmit, onCancel }: Props
                     aria-label={`PIN ${reader}`}
                     checked={pinReaders[i]}
                     onChange={() => setPinReaders(pinReaders.map((v, j) => (j === i ? !v : v)))}
+                  />
+                </td>
+                <td className="px-3 text-center">
+                  <input
+                    type="checkbox"
+                    aria-label={`QR ${reader}`}
+                    checked={qrReaders[i]}
+                    onChange={() => setQrReaders(qrReaders.map((v, j) => (j === i ? !v : v)))}
                   />
                 </td>
               </tr>

@@ -29,14 +29,22 @@ export const TABLES = [
   "outputs",
   "phones",
   "call_settings",
+  "qr_codes",
+  "qr_settings",
 ] as const;
 
 /** Tablas que solo conoce un panel con el esquema local 8 o mayor (`X-Acc-Schema: 8`). */
 export const SCHEMA8_TABLES: ReadonlySet<TableName> = new Set(["phones", "call_settings"]);
 
+/**
+ * Tablas que solo conoce un panel con el esquema local 9 o mayor (`X-Acc-Schema: 9`).
+ * `qr_settings` es una sola fila (`id` = id de la instalación) que solo baja de la nube.
+ */
+export const SCHEMA9_TABLES: ReadonlySet<TableName> = new Set(["qr_codes", "qr_settings"]);
+
 /** Tablas que recibe un panel con ese esquema local. */
 export function tablesForSchema(schema: number): TableName[] {
-  return TABLES.filter((t) => schema >= 8 || !SCHEMA8_TABLES.has(t));
+  return TABLES.filter((t) => (schema >= 8 || !SCHEMA8_TABLES.has(t)) && (schema >= 9 || !SCHEMA9_TABLES.has(t)));
 }
 
 export type TableName = (typeof TABLES)[number];
@@ -100,6 +108,8 @@ export const dataSchemas = {
     allow_remote: z.boolean().optional(),
     // Opcional: un panel v7 no lo envía (la nube conserva su valor). Solo se proyecta a paneles v8.
     allow_call: z.boolean().optional(),
+    // Opcional: un panel v8 no lo envía (la nube conserva su valor). Solo se proyecta a paneles v9.
+    qr_reader_mask: mascara4.optional(),
     weekday_mask: entero(0, 127),
     start_minute: minutoDelDia,
     end_minute: minutoDelDia,
@@ -136,6 +146,20 @@ export const dataSchemas = {
       message: "La salida predeterminada debe estar entre las salidas del menú.",
       path: ["default_output"],
     }),
+  // Las fechas viajan como ISO-8601 UTC truncadas a segundos (`...T08:00:00.000Z`).
+  qr_codes: z.strictObject({
+    holder_id: uuidSchema,
+    code: codigo32,
+    label: texto.max(60),
+    valid_from: z.iso.datetime({ offset: true }),
+    valid_until: z.iso.datetime({ offset: true }),
+    created_at: z.iso.datetime({ offset: true }),
+    max_uses: entero(1, 100),
+  }),
+  qr_settings: z.strictObject({
+    digit: entero(1, 9),
+    max_active: entero(1, 100000),
+  }),
 } satisfies Record<TableName, z.ZodType>;
 
 export type TableData = { [T in TableName]: z.infer<(typeof dataSchemas)[T]> };
@@ -148,6 +172,8 @@ export type HolderPermissionData = TableData["holder_permissions"];
 export type OutputData = TableData["outputs"];
 export type PhoneData = TableData["phones"];
 export type CallSettingsData = TableData["call_settings"];
+export type QrCodeData = TableData["qr_codes"];
+export type QrSettingsData = TableData["qr_settings"];
 
 /** Un registro de una tabla en la forma del contrato (snapshot, `current`, checksum). */
 export interface ContractRow<T extends TableName = TableName> {
@@ -176,7 +202,7 @@ export interface PullResponse {
 export interface ChecksumsResponse {
   revision: number;
   confirm_deletions: boolean;
-  /** Solo las tablas que conoce el panel (sin `phones` ni `call_settings` para un panel v7). */
+  /** Solo las tablas que conoce el panel (ver `tablesForSchema`). */
   tables: Partial<Record<TableName, string>>;
 }
 
@@ -217,6 +243,8 @@ export const pushItemSchema = z.discriminatedUnion("op", [
     upsertSchema("outputs"),
     upsertSchema("phones"),
     upsertSchema("call_settings"),
+    upsertSchema("qr_codes"),
+    upsertSchema("qr_settings"),
   ]),
   z.object({
     change_id: changeIdSchema,
@@ -288,6 +316,8 @@ export const importSnapshotRequestSchema = z.object({
     // Un panel v7 no las envía.
     phones: filasDe("phones").default([]),
     call_settings: z.array(z.object({ id: uuidSchema, data: dataSchemas.call_settings })).max(1).default([]),
+    // Un panel v8 no los envía. `qr_settings` nunca se sube: el panel adopta la de la nube.
+    qr_codes: filasDe("qr_codes").default([]),
   }),
 });
 
@@ -295,9 +325,12 @@ export const importSnapshotRequestSchema = z.object({
  * Las tablas del snapshot de un panel (`POST /import-snapshot`). `phones` y
  * `call_settings` faltan en un snapshot guardado antes de v8 (la ruta las completa con `[]`).
  */
-export type SnapshotTables = { [T in Exclude<TableName, "phones" | "call_settings">]: ContractRow<T>[] } & {
+export type SnapshotTables = {
+  [T in Exclude<TableName, "phones" | "call_settings" | "qr_codes" | "qr_settings">]: ContractRow<T>[];
+} & {
   phones?: ContractRow<"phones">[];
   call_settings?: ContractRow<"call_settings">[];
+  qr_codes?: ContractRow<"qr_codes">[];
 };
 
 /**

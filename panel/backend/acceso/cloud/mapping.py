@@ -13,8 +13,10 @@ import sqlite3
 import uuid as uuidlib
 from collections import OrderedDict
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 
+from acceso.cloud.commands import parse_iso_utc
 from acceso.cloud.identity import set_state
 from acceso.constants import REPLICATED_TABLES
 from acceso.db import now_ms
@@ -23,12 +25,16 @@ log = logging.getLogger("acceso.cloud")
 
 # Las altas van de padres a hijos y después los borrados de hijos a padres (ver _Applier).
 # `outputs` y `call_settings` no se borran: las 4 salidas son fijas y la configuración de llamadas
-# es una sola fila.
-DELETE_ORDER = ("control_buttons", "cards", "phones", "holder_permissions", "controls", "holders",
-                "permissions")
-UPSERT_ORDER = ("holders", "phones", "permissions", "outputs", "controls", "cards", "control_buttons",
-                "holder_permissions", "call_settings")
-_NEVER_DELETED = ("outputs", "call_settings")
+# es una sola fila. `qr_settings` (una fila, sin bandeja) solo baja de la nube: nunca se sube ni
+# se borra.
+DELETE_ORDER = ("control_buttons", "cards", "phones", "qr_codes", "holder_permissions", "controls",
+                "holders", "permissions")
+UPSERT_ORDER = ("holders", "phones", "qr_codes", "permissions", "outputs", "controls", "cards",
+                "control_buttons", "holder_permissions", "call_settings", "qr_settings")
+_NEVER_DELETED = ("outputs", "call_settings", "qr_settings")
+# Tablas que la nube manda al panel: las replicadas y `qr_settings` (fuera de la bandeja).
+SETTINGS_TABLES = ("qr_settings",)
+PULLED_TABLES = REPLICATED_TABLES + SETTINGS_TABLES
 
 # Columnas de `data` por tabla, como `dataSchemas` de cloud/src/lib/device/contract.ts.
 FIELDS = {
@@ -37,13 +43,18 @@ FIELDS = {
     "controls": ("holder_id", "description"),
     "control_buttons": ("control_id", "button", "rf_code", "output_id"),
     "permissions": ("permission_id", "name", "output_mask", "card_reader_mask", "pin_reader_mask",
-                    "allow_rf", "allow_remote", "allow_call", "weekday_mask", "start_minute", "end_minute"),
+                    "qr_reader_mask", "allow_rf", "allow_remote", "allow_call", "weekday_mask",
+                    "start_minute", "end_minute"),
     "holder_permissions": ("holder_id", "permission_id"),
     "outputs": ("output_id", "alias", "duration_ms", "reader_mask", "enabled"),
     "phones": ("holder_id", "number", "description"),
     "call_settings": ("enabled", "mode", "output_id", "menu_mask", "default_output",
                       "call_limit_per_minute"),
+    "qr_codes": ("holder_id", "code", "label", "valid_from", "valid_until", "max_uses", "created_at"),
+    "qr_settings": ("digit", "max_active"),
 }
+# Fechas guardadas en segundos UTC que viajan como ISO-8601 con milisegundos (`...T08:00:00.000Z`).
+_DATES = {"qr_codes": ("valid_from", "valid_until", "created_at")}
 
 # Cada registro vivo en la forma del contrato (`id` = uuid). Las referencias se traducen a UUID.
 _SELECT = {
@@ -56,7 +67,7 @@ _SELECT = {
     "control_buttons": "SELECT b.uuid AS id, k.uuid AS control_id, b.button, b.rf_code, b.output_id"
                        " FROM control_buttons b JOIN controls k ON k.control_id = b.control_id",
     "permissions": "SELECT p.uuid AS id, p.permission_id, p.name, p.output_mask, p.card_reader_mask,"
-                   " p.pin_reader_mask, p.allow_rf, p.allow_remote, p.allow_call, p.weekday_mask, p.start_minute,"
+                   " p.pin_reader_mask, p.qr_reader_mask, p.allow_rf, p.allow_remote, p.allow_call, p.weekday_mask, p.start_minute,"
                    " p.end_minute"
                    " FROM permissions p",
     "holder_permissions": "SELECT hp.uuid AS id, h.uuid AS holder_id, hp.permission_id"
@@ -67,12 +78,17 @@ _SELECT = {
               " FROM phones f JOIN holders h ON h.holder_id = f.holder_id",
     "call_settings": "SELECT s.uuid AS id, s.enabled, s.mode, s.output_id, s.menu_mask, s.default_output,"
                      " s.call_limit_per_minute FROM call_settings s",
+    "qr_codes": "SELECT q.uuid AS id, h.uuid AS holder_id, q.code, q.label, q.valid_from, q.valid_until,"
+                " q.max_uses, q.created_at FROM qr_codes q JOIN holders h ON h.holder_id = q.holder_id",
+    # Sin UUID la fila aún no viene de la nube: no se compara ni se envía.
+    "qr_settings": "SELECT z.uuid AS id, z.digit, z.max_active FROM qr_settings z WHERE z.uuid IS NOT NULL",
 }
 _ALIAS = {"holders": "h", "cards": "c", "controls": "k", "control_buttons": "b", "permissions": "p",
-          "holder_permissions": "hp", "outputs": "o", "phones": "f", "call_settings": "s"}
+          "holder_permissions": "hp", "outputs": "o", "phones": "f", "call_settings": "s",
+          "qr_codes": "q", "qr_settings": "z"}
 _BOOLEANS = ("allow_rf", "allow_remote", "allow_call", "enabled")
 # Campos que una nube anterior puede no enviar, con su valor por omisión. Al subir siempre se envían.
-_OPTIONAL = {"permissions": {"allow_remote": False, "allow_call": False}}
+_OPTIONAL = {"permissions": {"allow_remote": False, "allow_call": False, "qr_reader_mask": 0}}
 
 
 class MissingParent(Exception):
@@ -98,21 +114,40 @@ def _data(row: sqlite3.Row, table: str) -> Dict[str, Any]:
     for key in _BOOLEANS:
         if key in data:
             data[key] = bool(data[key])
+    for key in _DATES.get(table, ()):
+        data[key] = iso_seconds(data[key])
     return data
+
+
+def iso_seconds(seconds: int) -> str:
+    """Segundos desde la época -> ISO-8601 UTC con milisegundos (siempre `.000Z`)."""
+    return datetime.fromtimestamp(int(seconds), timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _seconds(table: str, value: Any) -> int:
+    """ISO-8601 con zona de la nube -> segundos UTC (sin fracción)."""
+    moment = parse_iso_utc(value)
+    if moment is None:
+        raise InvalidChange("La nube envió una fecha inválida en %s." % table)
+    return int(moment // 1)
 
 
 def row_to_data(conn: sqlite3.Connection, table: str, uuid: str) -> Optional[Dict[str, Any]]:
     """`data` del contrato del registro con ese UUID; None si ya no existe."""
-    row = conn.execute(_SELECT[table] + " WHERE %s.uuid = ?" % _ALIAS[table], (uuid,)).fetchone()
+    where = " AND " if " WHERE " in _SELECT[table] else " WHERE "
+    row = conn.execute(_SELECT[table] + where + "%s.uuid = ?" % _ALIAS[table], (uuid,)).fetchone()
     return None if row is None else _data(row, table)
 
 
-def snapshot_tables(conn: sqlite3.Connection) -> Dict[str, List[Dict[str, Any]]]:
-    """Todas las tablas replicadas como `{tabla: [{id, data}]}`, ordenadas por id."""
+def snapshot_tables(conn: sqlite3.Connection, *, include_settings: bool = True
+                    ) -> Dict[str, List[Dict[str, Any]]]:
+    """Todas las tablas que se comparan con la nube como `{tabla: [{id, data}]}`, ordenadas por id.
+    La importación pasa `include_settings=False`: `qr_settings` nunca se sube, se adopta la de la nube."""
+    tables = PULLED_TABLES if include_settings else REPLICATED_TABLES
     return {
         table: [{"id": row["id"], "data": _data(row, table)}
                 for row in conn.execute(_SELECT[table] + " ORDER BY id")]
-        for table in REPLICATED_TABLES
+        for table in tables
     }
 
 
@@ -130,7 +165,10 @@ def _fields(table: str, data: Any) -> Dict[str, Any]:
     if not isinstance(data, Mapping) or any(key not in data and key not in optional
                                             for key in FIELDS[table]):
         raise InvalidChange("La nube envió un cambio incompleto de %s." % table)
-    return {key: data[key] if key in data else optional[key] for key in FIELDS[table]}
+    fields = {key: data[key] if key in data else optional[key] for key in FIELDS[table]}
+    for key in _DATES.get(table, ()):
+        fields[key] = _seconds(table, fields[key])
+    return fields
 
 
 def _exists(conn: sqlite3.Connection, table: str, uuid: str) -> Optional[sqlite3.Row]:
@@ -174,7 +212,7 @@ def _upsert_permission(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], s
     _release(conn, "permissions", "permission_id = ?", (pid,), uuid, resolve)
     conn.execute("DELETE FROM permissions WHERE permission_id = ? AND uuid <> ?", (pid, uuid))
     values = (pid, d["name"], d["output_mask"], d["card_reader_mask"], d["pin_reader_mask"],
-              1 if d["allow_rf"] else 0, 1 if d["allow_remote"] else 0, 1 if d["allow_call"] else 0,
+              d["qr_reader_mask"], 1 if d["allow_rf"] else 0, 1 if d["allow_remote"] else 0, 1 if d["allow_call"] else 0,
               d["weekday_mask"],
               d["start_minute"], d["end_minute"], stamp)
     current = _exists(conn, "permissions", uuid)
@@ -184,12 +222,13 @@ def _upsert_permission(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], s
             conn.execute("UPDATE holder_permissions SET permission_id = ? WHERE permission_id = ?",
                          (pid, current["permission_id"]))
         conn.execute("UPDATE permissions SET permission_id=?, name=?, output_mask=?, card_reader_mask=?,"
-                     " pin_reader_mask=?, allow_rf=?, allow_remote=?, allow_call=?, weekday_mask=?, start_minute=?, end_minute=?,"
+                     " pin_reader_mask=?, qr_reader_mask=?, allow_rf=?, allow_remote=?, allow_call=?, weekday_mask=?, start_minute=?, end_minute=?,"
                      " updated_at=?, origin='cloud' WHERE uuid=?", values + (uuid,))
     else:
         conn.execute("INSERT INTO permissions(permission_id, name, output_mask, card_reader_mask,"
-                     " pin_reader_mask, allow_rf, allow_remote, allow_call, weekday_mask, start_minute, end_minute,"
-                     " updated_at, origin, uuid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?)", values + (uuid,))
+                     " pin_reader_mask, qr_reader_mask, allow_rf, allow_remote, allow_call, weekday_mask, start_minute,"
+                     " end_minute, updated_at, origin, uuid)"
+                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?)", values + (uuid,))
 
 
 def _upsert_output(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], stamp: int,
@@ -304,6 +343,35 @@ def _upsert_call_settings(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any]
                      " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cloud', 1)", values)
 
 
+def _upsert_qr_code(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], stamp: int,
+                    resolve: Optional[Resolver]) -> None:
+    """Como `_upsert_card`: un `code` ocupado por otro QR se libera. Un cambio conserva `qr_id`,
+    así que sus usos (`qr_uses`) siguen contando."""
+    holder_id = _local_id(conn, "holders", "holder_id", d["holder_id"])
+    _release(conn, "qr_codes", "code = ?", (d["code"],), uuid, resolve)
+    conn.execute("DELETE FROM qr_codes WHERE code = ? AND uuid <> ?", (d["code"], uuid))
+    values = (holder_id, d["code"], d["label"], d["valid_from"], d["valid_until"], d["max_uses"],
+              d["created_at"], stamp)
+    if _exists(conn, "qr_codes", uuid):
+        conn.execute("UPDATE qr_codes SET holder_id=?, code=?, label=?, valid_from=?, valid_until=?,"
+                     " max_uses=?, created_at=?, updated_at=?, origin='cloud' WHERE uuid=?", values + (uuid,))
+    else:
+        conn.execute("INSERT INTO qr_codes(holder_id, code, label, valid_from, valid_until, max_uses,"
+                     " created_at, updated_at, origin, uuid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?)",
+                     values + (uuid,))
+
+
+def _upsert_qr_settings(conn: sqlite3.Connection, uuid: str, d: Dict[str, Any], stamp: int,
+                        resolve: Optional[Resolver]) -> None:
+    """Siempre la fila `id = 1` con los valores y el UUID de la nube (no tiene bandeja: la nube manda)."""
+    values = (d["digit"], d["max_active"], uuid, stamp)
+    cur = conn.execute("UPDATE qr_settings SET digit=?, max_active=?, uuid=?, updated_at=?, origin='cloud'"
+                       " WHERE id=1", values)
+    if cur.rowcount == 0:
+        conn.execute("INSERT INTO qr_settings(digit, max_active, uuid, updated_at, origin, id)"
+                     " VALUES (?, ?, ?, ?, 'cloud', 1)", values)
+
+
 _UPSERT = {
     "holders": _upsert_holder,
     "permissions": _upsert_permission,
@@ -314,6 +382,8 @@ _UPSERT = {
     "holder_permissions": _upsert_holder_permission,
     "phones": _upsert_phone,
     "call_settings": _upsert_call_settings,
+    "qr_codes": _upsert_qr_code,
+    "qr_settings": _upsert_qr_settings,
 }
 
 
@@ -329,8 +399,8 @@ def apply_upsert(conn: sqlite3.Connection, table: str, uuid: str, data: Mapping[
 
 def apply_delete(conn: sqlite3.Connection, table: str, uuid: str) -> None:
     """Borrado real (con sus cascadas). Un UUID que no existe no hace nada; outputs y call_settings
-    no se borran."""
-    if table not in REPLICATED_TABLES:
+    no se borran (tampoco qr_settings)."""
+    if table not in PULLED_TABLES:
         raise InvalidChange(_unknown_table(table))
     if table not in _NEVER_DELETED:
         conn.execute("DELETE FROM %s WHERE uuid = ?" % table, (uuid,))
@@ -365,7 +435,8 @@ def applying(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 # Hijos que un borrado arrastra en cascada: (tabla padre, su llave) -> [(tabla hija, columna)].
 _CHILDREN = {
     "holders": ("holder_id", (("cards", "holder_id"), ("controls", "holder_id"),
-                              ("holder_permissions", "holder_id"), ("phones", "holder_id"))),
+                              ("holder_permissions", "holder_id"), ("phones", "holder_id"),
+                              ("qr_codes", "holder_id"))),
     "controls": ("control_id", (("control_buttons", "control_id"),)),
     "permissions": ("permission_id", (("holder_permissions", "permission_id"),)),
 }
@@ -396,7 +467,7 @@ class _Applier:
         self.force_deletes = force_deletes
         self.todo = collapse(changes)
         for (table, _), change in self.todo.items():
-            if table not in REPLICATED_TABLES:
+            if table not in PULLED_TABLES:
                 raise InvalidChange(_unknown_table(table))
             if change["op"] not in ("upsert", "delete"):
                 raise InvalidChange("La nube envió una operación desconocida en %s." % table)

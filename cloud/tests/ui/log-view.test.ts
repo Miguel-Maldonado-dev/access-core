@@ -34,7 +34,8 @@ describe("parseLogFilters", () => {
   it("acepta los orígenes Remota (4) y Prueba (5)", () => {
     expect(parseLogFilters({ origen: "5" }).source).toBe(5);
     expect(parseLogFilters({ origen: "4" }).source).toBe(4);
-    expect(parseLogFilters({ origen: "7" }).source).toBeUndefined();
+    expect(parseLogFilters({ origen: "7" }).source).toBe(7);
+    expect(parseLogFilters({ origen: "8" }).source).toBeUndefined();
   });
 
   it("toma el primer valor si el parámetro se repite", () => {
@@ -113,6 +114,17 @@ describe("etiquetas", () => {
     expect(reasonLabel(12)).toBe("Teléfono desconocido");
     expect(reasonLabel(13)).toBe("Límite de llamadas");
     expect(parseLogFilters({ origen: "6" }).source).toBe(6);
+  });
+
+  it("traduce el origen 7 y los motivos 14 a 17, y el medio QR", () => {
+    expect(sourceLabel(7)).toBe("QR");
+    expect(reasonLabel(14)).toBe("QR desconocido");
+    expect(reasonLabel(15)).toBe("QR fuera de vigencia");
+    expect(reasonLabel(16)).toBe("QR ya usado en este lector");
+    expect(reasonLabel(17)).toBe("Método no permitido en este lector");
+    const base = { credential_label: null, control_id: null, device_id: null, reason: 0 };
+    expect(mediumLabel({ ...base, source: 7 })).toBe("QR");
+    expect(mediumLabel({ ...base, source: 7, credential_label: "Visita", device_id: 1 })).toBe("Visita · L2");
   });
 
   it("la página es de 50", () => {

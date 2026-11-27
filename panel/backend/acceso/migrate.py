@@ -1,7 +1,7 @@
-"""Migración de la base v2 (Tkinter), v3, v4, v5, v6 y v7 al esquema v8 del panel web.
+"""Migración de la base v2 (Tkinter), v3, v4, v5, v6, v7 y v8 al esquema v9 del panel web.
 
 v2, v3 y v4 se convierten primero a v5 (con el esquema v5 congelado en _SCHEMA_SQL_V5), v5 pasa a
-v6 (con el esquema v6 congelado en _SCHEMA_SQL_V6), v6 pasa a v7 y v7 a v8, cada paso en su transacción; el
+v6 (con el esquema v6 congelado en _SCHEMA_SQL_V6), v6 pasa a v7, v7 a v8 y v8 a v9, cada paso en su transacción; el
 respaldo es siempre el de la versión de origen.
 """
 import fcntl
@@ -152,6 +152,36 @@ _V8_STATEMENTS = (
   uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local')""",
 )
 
+V8_VERSION = 8
+
+# Tablas replicadas del esquema v8 (congeladas; v9 agrega qr_codes).
+_V8_REPLICATED = _V6_REPLICATED + ("phones", "call_settings")
+
+# v8 -> v9: qr_reader_mask (misma definición que SCHEMA_SQL) y tablas de códigos QR.
+_V9_STATEMENTS = (
+    "ALTER TABLE permissions ADD COLUMN qr_reader_mask INTEGER NOT NULL DEFAULT 0"
+    " CHECK(qr_reader_mask BETWEEN 0 AND 15)",
+    """CREATE TABLE IF NOT EXISTS qr_codes (qr_id INTEGER PRIMARY KEY,
+  holder_id INTEGER NOT NULL REFERENCES holders(holder_id) ON DELETE CASCADE,
+  code INTEGER NOT NULL UNIQUE CHECK(code BETWEEN 0 AND 4294967295),
+  label TEXT NOT NULL DEFAULT '',
+  valid_from INTEGER NOT NULL, valid_until INTEGER NOT NULL,
+  max_uses INTEGER NOT NULL DEFAULT 1 CHECK(max_uses BETWEEN 1 AND 100),
+  created_at INTEGER NOT NULL,
+  uuid TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT 'local',
+  CHECK(valid_until > valid_from))""",
+    "CREATE INDEX IF NOT EXISTS qr_codes_valid_until_idx ON qr_codes(valid_until)",
+    """CREATE TABLE IF NOT EXISTS qr_uses (
+  qr_id INTEGER NOT NULL REFERENCES qr_codes(qr_id) ON DELETE CASCADE,
+  reader INTEGER NOT NULL CHECK(reader BETWEEN 0 AND 3),
+  count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(qr_id, reader))""",
+    """CREATE TABLE IF NOT EXISTS qr_settings (id INTEGER PRIMARY KEY CHECK(id = 1),
+  digit INTEGER NOT NULL DEFAULT 9 CHECK(digit BETWEEN 1 AND 9),
+  max_active INTEGER NOT NULL DEFAULT 1000 CHECK(max_active BETWEEN 1 AND 100000),
+  uuid TEXT, updated_at INTEGER, origin TEXT)""",
+)
+
 _COPY_SQL = (
     "INSERT INTO holders_v3(holder_id, kind, name, department, address, notes)"
     " SELECT user_id, 'persona', name, department, address, '' FROM users",
@@ -250,7 +280,7 @@ def _detect_version(conn: sqlite3.Connection) -> int:
     user_version = conn.execute("PRAGMA user_version").fetchone()[0]
     if user_version == SCHEMA_VERSION:
         return SCHEMA_VERSION
-    if user_version in (3, 4, LAST_LEGACY_VERSION, V6_VERSION, V7_VERSION) and "holders" in tables:
+    if user_version in (3, 4, LAST_LEGACY_VERSION, V6_VERSION, V7_VERSION, V8_VERSION) and "holders" in tables:
         return user_version
     if "users" in tables:
         columns = [r[1] for r in conn.execute("PRAGMA table_info(users)")]
@@ -427,6 +457,22 @@ def _convert_v7(conn: sqlite3.Connection) -> None:
                      (str(uuid.uuid4()), now_ms()))
         for statement in _sync_triggers(("phones", "call_settings")):
             conn.execute(statement)
+        conn.execute("PRAGMA user_version=%d" % V8_VERSION)
+
+
+def _convert_v8(conn: sqlite3.Connection) -> None:
+    """v8 -> v9: permissions.qr_reader_mask (0), qr_codes, qr_uses y qr_settings (fila 1).
+
+    La fila de qr_settings se inserta antes de los triggers de qr_codes; qr_settings y qr_uses no
+    llevan triggers. Los permisos existentes conservan uuid y updated_at (ALTER no dispara
+    triggers) y la bandeja no recibe filas nuevas.
+    """
+    with transaction(conn):
+        for statement in _V9_STATEMENTS:
+            conn.execute(statement)
+        conn.execute("INSERT OR IGNORE INTO qr_settings(id) VALUES (1)")
+        for statement in _sync_triggers(("qr_codes",)):
+            conn.execute(statement)
         conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
 
 
@@ -445,7 +491,7 @@ def migrate(db_path: Path) -> MigrationResult:
                 create_schema(conn)
                 return MigrationResult(0, SCHEMA_VERSION, None)
             # v2 se convierte directo a las tablas v5 y v3 y v4 agregan lo que falta y reconstruyen
-            # permissions; después, todas pasan de v5 a v6 y de v6 a v7 y de v7 a v8. El respaldo es el de la
+            # permissions; después, todas pasan de v5 a v6 y de v6 a v7, de v7 a v8 y de v8 a v9. El respaldo es el de la
             # versión de origen. Si falla un paso, la base queda en la última versión alcanzada y el
             # siguiente arranque lo reintenta.
             reached = version
@@ -461,8 +507,11 @@ def migrate(db_path: Path) -> MigrationResult:
                 if version <= V6_VERSION:
                     reached = V6_VERSION
                     _convert_v6(conn)
-                reached = V7_VERSION
-                _convert_v7(conn)
+                if version <= V7_VERSION:
+                    reached = V7_VERSION
+                    _convert_v7(conn)
+                reached = V8_VERSION
+                _convert_v8(conn)
             except (sqlite3.Error, OSError) as exc:
                 raise MigrationError(
                     "No se pudo migrar la base (sigue en v%d): %s" % (reached, exc)) from exc

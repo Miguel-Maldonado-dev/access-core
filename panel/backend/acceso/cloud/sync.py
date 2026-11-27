@@ -22,9 +22,9 @@ from acceso.cloud.checksum import table_checksum
 from acceso.cloud.commands import parse_iso_utc
 from acceso.cloud.identity import get_state, set_state
 from acceso.cloud.mapping import (
-    apply_batch, apply_changes, applying, collapse, row_to_data, snapshot_tables,
+    PULLED_TABLES, apply_batch, apply_changes, applying, collapse, row_to_data, snapshot_tables,
 )
-from acceso.constants import REPLICATED_TABLES, SOURCE_PIN
+from acceso.constants import SOURCE_PIN
 from acceso.db import connect, now_ms, transaction
 from acceso.logs import delete_logs_until
 from acceso.migrate import MAX_DATED_BACKUPS
@@ -342,7 +342,7 @@ class SyncEngine:
         confirm = bool(sums.get("confirm_deletions"))
         with self._connect() as conn:
             local = snapshot_tables(conn)
-            differing = [t for t in REPLICATED_TABLES if table_checksum(local[t]) != remote_sums.get(t)]
+            differing = [t for t in PULLED_TABLES if table_checksum(local[t]) != remote_sums.get(t)]
             remote = self._snapshots(differing)
 
             def replace() -> None:
@@ -371,7 +371,8 @@ class SyncEngine:
         except (KeyError, TypeError, ValueError):
             raise _invalid("Respuesta de checksums incompleta") from None
         with self._connect() as conn:
-            remote = self._snapshots(REPLICATED_TABLES)
+            # `qr_settings` entra con los valores de la nube (nunca se sube).
+            remote = self._snapshots(PULLED_TABLES)
             # Después de descargar y una sola vez por adopción: un reintento cada RETRY_S no debe
             # escribir una copia completa de la base en la SD.
             if get_state(conn, ADOPT_BACKUP_KEY) != "1":

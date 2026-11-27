@@ -31,6 +31,8 @@ import {
   projectOutput,
   projectPermissionFor,
   projectPhone,
+  projectQrCode,
+  projectQrSettings,
   type ButtonLinkRow,
   type CallSettingsRow,
   type CardRow,
@@ -41,6 +43,8 @@ import {
   type OutputRow,
   type PermissionContext,
   type PhoneRow,
+  type InstallationQrRow,
+  type QrCodeRow,
   type RuleRow,
   type SourceTable,
 } from "@/lib/device/projection";
@@ -72,8 +76,15 @@ const ORIGENES_PULL_V7: readonly SourceTable[] = [
 /** Tablas de origen que consulta el pull de un panel v8: también teléfonos y llamadas. */
 const ORIGENES_PULL: readonly SourceTable[] = [...ORIGENES_PULL_V7, "phones", "panel_call_settings"];
 
-/** Los orígenes del pull para ese panel (un panel v7 no conoce teléfonos ni llamadas). */
-const origenesPull = (panel: Panel) => (panel.schema >= 8 ? ORIGENES_PULL : ORIGENES_PULL_V7);
+/**
+ * Tablas de origen que consulta el pull de un panel v9: también los QR y los ajustes de QR de
+ * la instalación (`installations`, leída por `qr_settings_revision`).
+ */
+const ORIGENES_PULL_V9: readonly SourceTable[] = [...ORIGENES_PULL, "qr_codes", "installations"];
+
+/** Los orígenes del pull para ese panel (v7: sin teléfonos ni llamadas; v8: sin QR). */
+const origenesPull = (panel: Panel) =>
+  panel.schema >= 9 ? ORIGENES_PULL_V9 : panel.schema >= 8 ? ORIGENES_PULL : ORIGENES_PULL_V7;
 
 /** Orígenes que se proyectan a `permissions` (por perfil) o necesitan los perfiles. */
 const ORIGENES_DE_PERFILES: ReadonlySet<SourceTable> = new Set([
@@ -120,6 +131,8 @@ const TABLA_LOCAL: Partial<Record<SourceTable, TableName>> = {
   holder_profiles: "holder_permissions",
   outputs: "outputs",
   phones: "phones",
+  qr_codes: "qr_codes",
+  installations: "qr_settings",
 };
 
 function isConfirmDeletionsActive(until: string | null, now = Date.now()): boolean {
@@ -192,6 +205,26 @@ async function registrarPull(admin: SupabaseClient, panelId: string, since: numb
   return isConfirmDeletionsActive(data.confirm_deletions_until);
 }
 
+/**
+ * Los ajustes de QR de la instalación como un cambio crudo con `revision` =
+ * `qr_settings_revision`, si cumple `cumple` (nunca están borrados).
+ */
+async function leerAjustesQr(
+  admin: SupabaseClient,
+  panel: Panel,
+  cumple: (revision: number) => boolean,
+): Promise<FilaCruda[]> {
+  const { data, error } = await admin
+    .from("installations")
+    .select(`${SOURCE_COLUMNS.installations}, qr_settings_revision`)
+    .eq("id", panel.installation_id)
+    .single<InstallationQrRow & { qr_settings_revision: number }>();
+  if (error) throw error;
+  const { qr_settings_revision: revision, ...resto } = data;
+  if (!cumple(revision)) return [];
+  return [{ origen: "installations", fila: { ...resto, revision, deleted_at: null } }];
+}
+
 /** Hasta `cuantas` filas de un origen con since < revision ≤ R, por revisión. */
 async function leerCambiosDeOrigen(
   admin: SupabaseClient,
@@ -201,6 +234,7 @@ async function leerCambiosDeOrigen(
   R: number,
   cuantas: number,
 ): Promise<FilaCruda[]> {
+  if (origen === "installations") return leerAjustesQr(admin, panel, (r) => r > since && r <= R);
   let consulta = admin
     .from(origen)
     .select(`${SOURCE_COLUMNS[origen]}, deleted_at, revision${COLUMNAS_EXTRA[origen] ?? ""}`)
@@ -223,6 +257,7 @@ async function leerGrupoDeOrigen(
   origen: SourceTable,
   rev: number,
 ): Promise<FilaCruda[]> {
+  if (origen === "installations") return leerAjustesQr(admin, panel, (r) => r === rev);
   const filas = await fetchAll<FilaCruda["fila"]>((desde, hasta) => {
     let consulta = admin
       .from(origen)
@@ -264,6 +299,16 @@ function proyectarCambio(
       return { table: "outputs", op: "upsert", id, revision, data: projectOutput(fila as unknown as OutputRow) };
     case "phones":
       return { table: "phones", op: "upsert", id, revision, data: projectPhone(fila as unknown as PhoneRow) };
+    case "qr_codes":
+      return { table: "qr_codes", op: "upsert", id, revision, data: projectQrCode(fila as unknown as QrCodeRow) };
+    case "installations":
+      return {
+        table: "qr_settings",
+        op: "upsert",
+        id,
+        revision,
+        data: projectQrSettings(fila as unknown as InstallationQrRow),
+      };
     default:
       throw new Error(`Origen sin proyección: ${origen}.`);
   }
@@ -379,6 +424,9 @@ async function proyectarAjustesDeLlamadas(
  *   todos los teléfonos (ver `proyectarAjustesDeLlamadas`); un cambio de `phones` solo se
  *   emite si el módulo de llamadas del panel está activado (`panelGetsPhones`). Un panel v7
  *   no recibe teléfonos, `call_settings` ni `permissions.allow_call`.
+ * - Panel v9: también `qr_codes` y, cuando cambian el dígito o el tope de QR de la
+ *   instalación, `qr_settings` (`id` = instalación, revisión = `qr_settings_revision`). Un
+ *   panel v8 no recibe QR, `qr_settings` ni `permissions.qr_reader_mask`.
  * - Cada página trae `logs_cleared_at` (ISO o nulo) de la instalación.
  * - Guarda `panels.synced_revision = since` y `last_sync_at`.
  * - Si `0 < since < installations.purged_revision` responde `revision = since - 1` sin

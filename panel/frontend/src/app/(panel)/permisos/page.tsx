@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import PermissionForm, { type PermissionPayload } from "@/components/PermissionForm";
 import { apiFetch } from "@/lib/api";
 import { outputLabel } from "@/lib/format";
-import { fromMask } from "@/lib/masks";
+import { fromMask, readerMethods, readerMethodsTitle } from "@/lib/masks";
 import { minutesToHHMM } from "@/lib/time";
 import type { CloudStatus, Permission } from "@/lib/types";
 
@@ -18,8 +18,6 @@ const DAY_SHORT = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 function message(err: unknown): string {
   return err instanceof Error ? err.message : "Ocurrió un error inesperado.";
 }
-
-const readerLabel = (i: number) => `Reader${i + 1}`;
 
 // Short names (S1, L2…) keep the table narrow; the full names stay in the tooltip.
 function MaskCell({ mask, prefix, fullName, empty }: {
@@ -137,8 +135,7 @@ export default function PermissionsPage() {
               <th className="px-4 py-2 text-right font-medium">Número</th>
               <th className="px-4 py-2 font-medium">Nombre</th>
               <th className="px-4 py-2 font-medium">Salidas</th>
-              <th className="px-4 py-2 font-medium">Tarjeta</th>
-              <th className="px-4 py-2 font-medium">PIN</th>
+              <th className="px-4 py-2 font-medium">Lectores</th>
               <th className="px-4 py-2 font-medium">RF</th>
               <th className="px-4 py-2 font-medium">Llam.</th>
               <th className="px-4 py-2 font-medium">Remota</th>
@@ -153,8 +150,12 @@ export default function PermissionsPage() {
                 <td className="px-4 py-2 text-right tabular-nums">{p.permission_id}</td>
                 <td className="px-4 py-2 font-medium">{p.name}</td>
                 <MaskCell mask={p.output_mask} prefix="S" fullName={outputLabel} empty="-" />
-                <MaskCell mask={p.card_reader_mask} prefix="L" fullName={readerLabel} empty="—" />
-                <MaskCell mask={p.pin_reader_mask} prefix="L" fullName={readerLabel} empty="—" />
+                <td
+                  className="px-4 py-2 whitespace-nowrap"
+                  title={readerMethodsTitle(p.card_reader_mask, p.pin_reader_mask, p.qr_reader_mask) || undefined}
+                >
+                  {readerMethods(p.card_reader_mask, p.pin_reader_mask, p.qr_reader_mask) || "—"}
+                </td>
                 <td className="px-4 py-2">{p.allow_rf ? "Sí" : "—"}</td>
                 <td className="px-4 py-2">{p.allow_call ? "Sí" : "—"}</td>
                 <td className="px-4 py-2">{p.allow_remote ? "Sí" : "—"}</td>
@@ -172,7 +173,7 @@ export default function PermissionsPage() {
             ))}
             {loaded && permissions.length === 0 && (
               <tr>
-                <td colSpan={11} className="px-4 py-6 text-center text-muted">
+                <td colSpan={10} className="px-4 py-6 text-center text-muted">
                   Aún no hay permisos. Crea el primero con Nuevo permiso.
                 </td>
               </tr>
@@ -180,7 +181,7 @@ export default function PermissionsPage() {
           </tbody>
         </table>
       </div>
-      <p className="-mt-3 text-xs text-muted">S1–S4 = salidas (Relay1–Relay4) · L1–L4 = lectores (Reader1–Reader4)</p>
+      <p className="-mt-3 text-xs text-muted">S1–S4 = salidas (Relay1–Relay4) · L1–L4 = lectores (Reader1–Reader4) · T = tarjeta, P = PIN, Q = QR</p>
     </div>
   );
 }

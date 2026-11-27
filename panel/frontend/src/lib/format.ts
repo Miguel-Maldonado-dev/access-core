@@ -15,6 +15,10 @@ const REASONS: Record<number, string> = {
   11: "Titular desconocido",
   12: "Teléfono desconocido",
   13: "Límite de llamadas",
+  14: "QR desconocido",
+  15: "QR fuera de vigencia",
+  16: "QR ya usado en este lector",
+  17: "Método no permitido en este lector",
 };
 
 const SOURCES: Record<number, string> = {
@@ -25,6 +29,7 @@ const SOURCES: Record<number, string> = {
   4: "Remota",
   5: "Prueba",
   6: "Llamada",
+  7: "QR",
 };
 
 export function reasonLabel(reason: number): string {
@@ -62,6 +67,10 @@ export function mediumLabel(log: LogItem): string {
   if (log.source === 6) {
     const number = log.credential_label ?? "Llamada";
     return device === null ? number : `${number} · tecla ${device}`;
+  }
+  if (log.source === 7) {
+    const label = log.credential_label ?? "QR";
+    return device === null ? label : `${label} · Reader${device + 1}`;
   }
   return device === null ? "Botón de salida" : `Botón de salida ${device + 1}`;
 }

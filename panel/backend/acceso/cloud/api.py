@@ -86,7 +86,8 @@ class CloudApi:
         self._authorization = "Device %s.%s" % (panel_code, token)
 
     def _send(self, method: str, path: str, *, auth: bool, **kwargs: Any) -> httpx.Response:
-        # La nube solo envía teléfonos, llamadas y `allow_call` a paneles que declaran el esquema 8.
+        # La nube solo envía teléfonos y llamadas (esquema 8) y QR, su ajuste y `qr_reader_mask`
+        # (esquema 9) a paneles que declaran ese esquema.
         headers = {"X-Acc-Schema": str(SCHEMA_VERSION)}  # type: Dict[str, str]
         if auth:
             if self._authorization is None:

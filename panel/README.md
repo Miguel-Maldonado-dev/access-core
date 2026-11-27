@@ -195,6 +195,28 @@ Con los servicios detenidos (`sudo systemctl stop acceso-daemon`; el daemon es d
 4. Llama otra vez y contesta con `ATA`; con `AT+DDET=1` antes, cada tecla del celular debe dar `+DTMF: 1` … `+DTMF: 4` (modo "Varias salidas"). Si no llegan, el operador o el firmware del módulo no pasan DTMF: usa "Una salida".
 5. Sal de picocom, `sudo systemctl start acceso-daemon`, activa el módulo en **Llamadas**, registra tu número en **Teléfonos** con un permiso con "Permitir llamada" y llama: el relevador abre y el log aparece con el origen "Llamada".
 
+## Códigos QR
+
+Accesos temporales para visitas y paquetería, con un lector **ZK-QR-500** conectado como cualquier lector Wiegand (D0/D1 de uno de los cuatro lectores). El lector lee un QR de texto plano con el número decimal y lo manda íntegro por Wiegand 34, igual que una tarjeta: el firmware y el protocolo UART no cambian. Esquema v9: `qr_codes`, `qr_uses` (solo local), `qr_settings` y `permissions.qr_reader_mask`.
+
+- **Casillas por lector:** en **Permisos**, cada lector (L1–L4) tiene tres casillas: **Tarjeta**, **PIN** y **QR**. Un lector que solo marca QR rechaza tarjetas con el motivo 17 "Método no permitido en este lector" (un PIN sin permiso sigue registrando el motivo 9). Los permisos existentes nacen con QR apagado: hay que marcarlo a propósito.
+- **Anfitrión:** cada QR pertenece a un titular y abre solo si el permiso del titular cubre el lector, la salida, el día y el horario.
+- **Dígito de QR:** todo código empieza con un dígito D (1–9, 9 por omisión; se cambia en la página **QR**). Con D = 1, 2 o 3 tiene 10 dígitos; con D = 4, de `4000000000` a `4294967295`; con D = 5 a 9, 9 dígitos. Lo demás es aleatorio. Una tarjeta nueva no puede usar un código de ese rango.
+- **Usos por lector:** `max_uses` (1–100) cuenta las lecturas válidas **en cada lector**: un QR de 1 uso abre una vez en la entrada y una vez en la salida. Los contadores están en `qr_uses` y no se sincronizan. La misma lectura en 3 s se ignora.
+- **Página QR:** alta (anfitrión, etiqueta, vigencia en hora de México, usos), lista, revocar y ver/descargar la imagen. Un QR no se edita: se revoca y se crea otro. Los vencidos hace más de 30 días se borran. Si el panel está vinculado, los QR de la nube bajan con la sincronización y los creados aquí suben.
+- **Logs:** origen **QR** (7), con el código en decimal. Motivos: **QR desconocido** (14), **QR fuera de vigencia** (15), **QR ya usado en este lector** (16) y **Método no permitido en este lector** (17; también lo registra una tarjeta en un lector sin la casilla Tarjeta; un PIN sin permiso sigue en 9).
+- **Hora correcta:** la vigencia se compara con el reloj del panel, así que debe estar sincronizado por NTP (`timedatectl`; `install.sh` lo habilita).
+- **Riesgo:** el QR se puede fotografiar y reenviar; dentro de su vigencia y usos abre para quien lo presente, como una tarjeta prestada. Usa vigencias cortas y pocos usos.
+- **Actualizar a v9:** al arrancar, los servicios dejan `<base>_backup_v8.sqlite`. **Para volver a un paquete v8** detén `acceso-daemon`, `acceso-web` y `acceso-cloud`, borra `<base>-wal` y `<base>-shm`, restaura `<base>_backup_v8.sqlite` y reinstala el paquete anterior (se pierden los cambios posteriores). Actualiza **primero la nube** (migración `qr_codes` y Vercel) y después la placa. Un panel v8 con la nube nueva ignora los QR; no se revierte la nube con paneles v9.
+
+### Prueba manual en la placa
+
+1. Conecta el ZK-QR-500 a un lector Wiegand libre y alimenta el lector según su hoja de datos.
+2. Confirma el reloj con `timedatectl`. En **Permisos**, marca **QR** en ese lector para un titular con permiso en una salida.
+3. En **QR**, crea un QR de 1 uso para ese titular, muéstralo al lector: el relevador abre y el log sale con el origen "QR".
+4. Muéstralo otra vez en el mismo lector: se rechaza con "QR ya usado en este lector" (16). Con un QR vencido: "QR fuera de vigencia" (15). Con un QR inventado del mismo formato: "QR desconocido" (14).
+5. Quita **Tarjeta** de ese lector y pasa una tarjeta: se rechaza con el motivo 17.
+
 ## Servicio `acceso-cloud` (plataforma en la nube)
 
 `acceso-cloud` es un servicio systemd aparte, que `install.sh` instala y arranca junto con `acceso-daemon` y `acceso-web`. Sincroniza la base del panel con la plataforma en la nube (`cloud/` del repositorio): se registra, se vincula a una instalación, sube los cambios que haces en el panel, baja los que se hacen en la nube y sube los logs de acceso. Escucha avisos por MQTT para sincronizar al instante y, si el broker no responde, sigue sincronizando por HTTPS cada 5 minutos. **El panel nunca depende de la nube para abrir**: el daemon y la autorización local no cambian, y con `acceso-cloud` detenido o sin internet todo funciona igual.
@@ -259,3 +281,4 @@ timedatectl                        # zona America/Mexico_City y reloj sincroniza
 - [ ] 9. Reiniciar la placa: los tres servicios (`acceso-daemon`, `acceso-web` y `acceso-cloud`) arrancan solos.
 - [ ] 10. Salidas → **Probar**: el relevador abre y el log aparece con el origen "Prueba".
 - [ ] 11. Si hay SIM808: la prueba manual de "Apertura por llamada" (CLIP, `ATH`, `ATA`, DTMF) y una llamada real que abre con el origen "Llamada".
+- [ ] 12. Si hay ZK-QR-500: la prueba manual de "Códigos QR" (abre con el origen "QR", segunda lectura rechazada) con el reloj sincronizado.

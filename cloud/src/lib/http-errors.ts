@@ -13,8 +13,10 @@ export const CODIGO_POR_ESTADO: Readonly<Record<number, string>> = {
   404: "not_found",
   409: "conflict",
   410: "gone",
+  422: "unprocessable_entity",
   429: "too_many_requests",
   502: "bad_gateway",
+  503: "service_unavailable",
 };
 
 /** Resumen apto para `console.error`: solo nombre, código y mensaje. */

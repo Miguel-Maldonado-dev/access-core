@@ -117,6 +117,8 @@ export async function createCardAs(
       throw new HttpError(409, `La tarjeta ${cod.data} ya está registrada.`);
     }
     if (isMissingParent(error)) throw new HttpError(409, HOLDER_GONE);
+    // Código en el rango de QR de la instalación o de un QR vivo.
+    if (error.code === "PT422") throw new HttpError(422, error.message);
     throw error;
   }
   return data;
@@ -144,6 +146,8 @@ export async function updateCardAs(
     .select("id");
   if (error) {
     if (isMissingParent(error)) throw new HttpError(409, HOLDER_GONE);
+    // Código reservado para QR (la base lo valida si cambia el código).
+    if (error.code === "PT422") throw new HttpError(422, error.message);
     throw error;
   }
   if (data.length === 0) throw noExiste;

@@ -53,7 +53,9 @@ Todos los errores tienen la forma `{"code": "...", "message": "<texto en españo
 | 404 | `not_found` | El recurso no existe o es de otro tenant |
 | 409 | `conflict` | Dato repetido (tarjeta, PIN), choque de concurrencia, o la petición original con la misma `Idempotency-Key` sigue en curso |
 | 422 | `idempotency_mismatch` | `Idempotency-Key` ya usada con otro cuerpo |
+| 422 | `unprocessable_entity` | Regla de los QR: se alcanzó el máximo de QR vigentes, o una tarjeta con un código reservado para QR |
 | 429 | `rate_limited` | Más peticiones por minuto que el límite de la llave (120 por omisión; trae `Retry-After`) |
+| 503 | `service_unavailable` | No se pudo generar un código de QR único (se puede reintentar) |
 | 502 | `bad_gateway` | La apertura remota no pudo enviar la orden: EMQX rechazó el mensaje (se puede reintentar) |
 | 500 | `internal_error` | Error interno |
 
@@ -242,7 +244,7 @@ curl -s -X PUT $API/installations/$INST/profiles/<profile-id>/rules \
 
 Las máscaras de salidas y lectores tienen un bit por cada S1 a S4 y L1 a L4 (bit 0 = S1 o L1); `weekday_mask` tiene el bit 0 en lunes.
 
-`allow_remote` (permite la apertura remota) y `allow_call` (permite abrir llamando) son opcionales al escribir: si se omiten, se conserva el valor actual (`false` en una regla nueva); las respuestas siempre los traen. En los logs, el origen `4` es "Remota" y el motivo `11` es "Titular desconocido".
+`allow_remote` (permite la apertura remota), `allow_call` (permite abrir llamando) y `qr_reader_mask` (lectores L1 a L4 donde valen los QR) son opcionales al escribir: si se omiten, se conserva el valor actual (`false` o `0` en una regla nueva); las respuestas siempre los traen. En los logs, el origen `4` es "Remota" y el motivo `11` es "Titular desconocido".
 
 ### Apertura remota
 
@@ -275,7 +277,29 @@ Errores: `400` si el titular no existe en la instalación (o está borrado), `40
 ### Lecturas
 
 - `GET /installations`, `GET /installations/{id}`, `GET .../panels`, `GET .../outputs`.
-- `GET .../logs`: páginas de 50, del más reciente al más viejo. Filtros: `desde`, `hasta` (`AAAA-MM-DD`), `panel`, `titular`, `resultado` (`permitido` o `denegado`), `origen` (`0` tarjeta, `1` control RF, `2` botón, `3` PIN, `4` remota, `5` prueba o `6` llamada) y `pagina`. Responde `{data, page, page_size, total}`. Un filtro inválido da `400`. Los logs de PIN llevan `code: null`. La nube conserva los logs 30 días (un trabajo diario borra los más viejos) y no guarda intentos de controles RF desconocidos (motivo `5`, ya no se registra); si un admin usa "Borrar logs", los anteriores a esa purga tampoco vuelven a subirse.
+- `GET .../logs`: páginas de 50, del más reciente al más viejo. Filtros: `desde`, `hasta` (`AAAA-MM-DD`), `panel`, `titular`, `resultado` (`permitido` o `denegado`), `origen` (`0` tarjeta, `1` control RF, `2` botón, `3` PIN, `4` remota, `5` prueba, `6` llamada o `7` QR) y `pagina`. Responde `{data, page, page_size, total}`. Un filtro inválido da `400`. Los logs de PIN llevan `code: null`. La nube conserva los logs 30 días (un trabajo diario borra los más viejos) y no guarda intentos de controles RF desconocidos (motivo `5`, ya no se registra); si un admin usa "Borrar logs", los anteriores a esa purga tampoco vuelven a subirse.
+
+## Códigos QR
+
+Un QR es un acceso temporal a nombre de un titular (el **anfitrión**): abre con los permisos de su perfil (salidas, días y horario) y solo en los lectores que la regla marque en `qr_reader_mask`.
+
+```bash
+curl -s -X POST $API/installations/$INST/qr-codes \
+  -H "Authorization: Bearer $KEY" -H "Idempotency-Key: qr-0001" \
+  -H "Content-Type: application/json" \
+  -d "{\"holder_id\":\"$HOLDER\",\"label\":\"Visita Juan\",\"valid_from\":\"2026-12-01T09:00:00-06:00\",\"valid_until\":\"2026-12-01T18:00:00-06:00\",\"max_uses\":1}"
+# → 201 {"data":{"id":"…","code":912345678,"valid_from":"2026-12-01T15:00:00.000Z","valid_until":"2026-12-02T00:00:00.000Z","max_uses":1,"status":"pending",…},"revision":61}
+```
+
+- **Formato y dígito:** `code` es un número decimal que empieza con el **dígito de QR** de la instalación (D, de 1 a 9; 9 por omisión, lo cambia el admin en la interfaz web). Con D = 1, 2 o 3 tiene 10 dígitos; con D = 4, de `4000000000` a `4294967295`; con D = 5 a 9, 9 dígitos. El resto es aleatorio (generador criptográfico). Una tarjeta no puede usar un código de ese rango (`422 "Ese código está reservado para QR."`). Cambiar D no invalida los QR ya emitidos.
+- **Solo el número:** la API devuelve `code`, nunca una imagen. Tu aplicación genera la imagen del QR con el número en decimal como texto plano.
+- **Vigencia con zona horaria:** `valid_from` y `valid_until` son ISO 8601 **con zona** (`Z` o `-06:00`); sin zona, `400 "Las fechas deben llevar zona horaria (ISO 8601)."`; si `valid_until` no es posterior a `valid_from`, `422 "La vigencia debe terminar después de empezar."`. Se guardan a segundos y las respuestas los devuelven en UTC. `status` es `pending` (aún no empieza), `active` o `expired`. El panel necesita la hora correcta (NTP).
+- **Usos por lector:** `max_uses` (1 a 100, 1 por omisión) cuenta las lecturas válidas **en cada lector** con QR: un QR de 1 uso abre una vez en la entrada y una vez en la salida. Cada panel cuenta sus lectores sin red.
+- **Tope:** la instalación admite un máximo de QR vigentes (1000 por omisión, lo cambia el admin); al pasarlo, `422 "Se alcanzó el máximo de QR vigentes de la instalación."`. Si no se encuentra un código libre, `503` (se puede reintentar).
+- **Sin edición:** no hay `PATCH` ni `PUT` (405). Para cambiar vigencia, usos o etiqueta, revoca con `DELETE .../qr-codes/{id}` (`204` sin cuerpo) y crea otro. La revocación llega al panel cuando sincroniza.
+- **Lecturas:** `GET .../qr-codes` (filtros `holder_id` y `status`) y `GET .../qr-codes/{id}`. Los QR vencidos se borran 30 días después de vencer.
+- **Riesgo:** la imagen del QR se puede fotografiar y reenviar. Dentro de su vigencia y usos abre para quien la presente, como una tarjeta prestada: usa vigencias cortas y pocos usos.
+- En los logs, el origen `7` es "QR" (`code` es el número del QR) y los motivos `14` a `17` son "QR desconocido", "QR fuera de vigencia", "QR ya usado en este lector" y "Método no permitido en este lector".
 
 ## Pendiente
 

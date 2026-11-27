@@ -43,6 +43,7 @@ describe("/docs/api", () => {
     expect(doc.info.title).toBe("API pública de Access Core");
     expect(doc.info.description).toContain("## Crear una llave");
     expect(doc.info.description).toContain("## Lotes");
+    expect(doc.info.description).toContain("## Códigos QR");
     expect(doc.info.description.startsWith("# ")).toBe(false);
     expect(doc.info.description.length).toBeGreaterThan(md.length * 0.9);
     expect(doc.paths).toEqual((openapi as { paths: object }).paths);

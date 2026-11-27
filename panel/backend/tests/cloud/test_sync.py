@@ -6,7 +6,7 @@ import re
 import sqlite3
 import stat
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -19,7 +19,7 @@ from acceso.cloud.checksum import table_checksum
 from acceso.cloud.identity import get_state, set_state
 from acceso.cloud.mapping import InvalidChange, _fields, apply_batch, snapshot_tables
 from acceso.cloud.sync import SyncBlocked, SyncEngine
-from acceso.constants import REASON_ALLOWED, REASON_NO_PERMISSION
+from acceso.constants import REASON_ALLOWED, REASON_METHOD_NOT_ALLOWED, REASON_NO_PERMISSION
 from acceso.protocol import CardRead
 from acceso.store import cards, controls, holders
 from acceso.store.controls import ButtonData
@@ -402,7 +402,7 @@ def test_a_permission_with_zero_masks_is_applied_and_the_daemon_denies_the_card(
     assert read_card().reason == REASON_ALLOWED
     permission_uuid = uuid_of(conn, "permissions", "permission_id=0")
     zero = {"permission_id": 0, "name": "Acceso total", "output_mask": 0, "card_reader_mask": 0,
-            "pin_reader_mask": 0, "allow_rf": False, "allow_remote": False, "allow_call": False, "weekday_mask": 0,
+            "pin_reader_mask": 0, "qr_reader_mask": 0, "allow_rf": False, "allow_remote": False, "allow_call": False, "weekday_mask": 0,
             "start_minute": 0, "end_minute": 0}
     cloud.put("permissions", permission_uuid, zero)
 
@@ -412,14 +412,15 @@ def test_a_permission_with_zero_masks_is_applied_and_the_daemon_denies_the_card(
                        " WHERE permission_id=0").fetchone()
     assert tuple(row) == (0, 0, 0)
     outcome = read_card()
-    assert not outcome.allowed and outcome.reason == REASON_NO_PERMISSION
+    assert not outcome.allowed and outcome.reason == REASON_METHOD_NOT_ALLOWED
 
 
 # --- allow_remote (esquema v7) ----------------------------------------------------------------
 
 def _permission(**changes):
     data = {"permission_id": 0, "name": "Acceso total", "output_mask": 15, "card_reader_mask": 15,
-            "pin_reader_mask": 0, "allow_rf": False, "allow_remote": False, "allow_call": False, "weekday_mask": 127,
+            "pin_reader_mask": 0, "qr_reader_mask": 0, "allow_rf": False, "allow_remote": False, "allow_call": False,
+            "weekday_mask": 127,
             "start_minute": 0, "end_minute": 0}
     data.update(changes)
     return data
@@ -646,7 +647,7 @@ def test_adopt_cloud_backs_up_keeps_local_outputs_empties_the_outbox_and_saves_r
     cloud.put("holders", cloud_holder, holder_data("Nube", pin="9999"))
     cloud.put("cards", str(uuid.uuid4()), {"card_code": 2, "holder_id": cloud_holder, "description": ""})
     cloud.put("permissions", cloud_perm, {"permission_id": 0, "name": "Todo", "output_mask": 15,
-                                          "card_reader_mask": 15, "pin_reader_mask": 0, "allow_rf": True,
+                                          "card_reader_mask": 15, "pin_reader_mask": 0, "qr_reader_mask": 0, "allow_rf": True,
                                           "allow_remote": False, "allow_call": False,
                                           "weekday_mask": 127, "start_minute": 0, "end_minute": 0})
     cloud.put("holder_permissions", str(uuid.uuid4()), {"holder_id": cloud_holder, "permission_id": 0})
@@ -1484,15 +1485,6 @@ def test_adopt_cloud_takes_call_settings_uuid_and_keeps_local_values(conn, db_pa
     assert ("call_settings", cloud_uuid) in [(e["table_name"], e["row_uuid"]) for e in outbox(conn)]
 
 
-def test_requests_send_schema_header(conn, db_path, cloud):
-    mark_synced(conn, cloud)
-    engine = engine_for(db_path, cloud)
-    engine.pull()
-    engine.reconcile()
-
-    assert cloud.headers and all(h.get("x-acc-schema") == "8" for h in cloud.headers)
-
-
 def test_pull_call_settings_with_other_uuid_keeps_a_pending_local_edit_and_uploads_it(conn, db_path, cloud):
     mark_synced(conn, cloud)
     local_uuid = uuid_of(conn, "call_settings", "id=1")
@@ -1527,3 +1519,218 @@ def test_pull_call_settings_moves_only_its_own_outbox_entries(conn, db_path, clo
 
     assert get_settings(conn)["call_limit_per_minute"] == 9
     assert {(e["table_name"], e["row_uuid"]) for e in outbox(conn)} == {("holders", local_uuid)}
+
+
+# --- códigos QR (qr_codes, qr_settings, qr_reader_mask, X-Acc-Schema: 9) ----------------------
+
+from acceso.store import qr_codes as qr_store  # noqa: E402
+
+QR_FROM = 1_800_000_000          # 2027-01-15T08:00:00Z
+QR_UNTIL = QR_FROM + 86_400
+
+
+def _iso(seconds):
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _qr(holder_uuid, **changes):
+    data = {"holder_id": holder_uuid, "code": 912345678, "label": "Visita",
+            "valid_from": _iso(QR_FROM), "valid_until": _iso(QR_UNTIL), "max_uses": 2,
+            "created_at": _iso(QR_FROM - 60)}
+    data.update(changes)
+    return data
+
+
+def _qr_row(conn, row_uuid):
+    row = conn.execute("SELECT qr_id, holder_id, code, label, valid_from, valid_until, max_uses, created_at,"
+                       " origin FROM qr_codes WHERE uuid=?", (row_uuid,)).fetchone()
+    return None if row is None else dict(row)
+
+
+def test_pull_applies_qr_upsert_and_delete(conn, db_path, cloud):
+    holder_id = new_holder(conn)
+    mark_synced(conn, cloud)
+    holder_uuid = uuid_of(conn, "holders", "holder_id=?", (holder_id,))
+    qr_uuid = str(uuid.uuid4())
+    cloud.put("qr_codes", qr_uuid, _qr(holder_uuid))
+
+    engine = engine_for(db_path, cloud)
+    engine.pull()
+
+    row = _qr_row(conn, qr_uuid)
+    assert {k: row[k] for k in ("holder_id", "code", "label", "valid_from", "valid_until", "max_uses",
+                                "created_at", "origin")} == {
+        "holder_id": holder_id, "code": 912345678, "label": "Visita", "valid_from": QR_FROM,
+        "valid_until": QR_UNTIL, "max_uses": 2, "created_at": QR_FROM - 60, "origin": "cloud"}
+    assert outbox(conn) == []
+
+    # Un cambio conserva los usos; el borrado se los lleva.
+    conn.execute("INSERT INTO qr_uses(qr_id, reader, count) VALUES (?, 0, 1)", (row["qr_id"],))
+    conn.commit()
+    cloud.put("qr_codes", qr_uuid, _qr(holder_uuid, label="Otra"))
+    engine.pull()
+    assert _qr_row(conn, qr_uuid)["label"] == "Otra"
+    assert conn.execute("SELECT count FROM qr_uses WHERE qr_id=?", (row["qr_id"],)).fetchone()[0] == 1
+
+    cloud.remove("qr_codes", qr_uuid)
+    engine.pull()
+    assert conn.execute("SELECT COUNT(*) FROM qr_codes").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM qr_uses").fetchone()[0] == 0
+    assert outbox(conn) == []
+
+
+def test_pull_qr_code_takes_a_code_used_by_another_local_qr(conn, db_path, cloud):
+    holder_id = new_holder(conn)
+    mark_synced(conn, cloud)
+    holder_uuid = uuid_of(conn, "holders", "holder_id=?", (holder_id,))
+    edit_under_guard(conn, "INSERT INTO qr_codes(holder_id, code, valid_from, valid_until, created_at, uuid,"
+                           " updated_at) VALUES (?, 912345678, 1, 2, 1, ?, 1)", (holder_id, str(uuid.uuid4())))
+    qr_uuid = str(uuid.uuid4())
+    cloud.put("qr_codes", qr_uuid, _qr(holder_uuid))
+
+    engine_for(db_path, cloud).pull()
+
+    assert [r[0] for r in conn.execute("SELECT uuid FROM qr_codes")] == [qr_uuid]
+
+
+def test_pull_qr_settings_adopts_cloud_uuid(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    installation = str(uuid.uuid4())
+    cloud.put("qr_settings", installation, {"digit": 7, "max_active": 50})
+
+    engine_for(db_path, cloud).pull()
+
+    row = conn.execute("SELECT id, digit, max_active, uuid, origin FROM qr_settings").fetchall()
+    assert [tuple(r) for r in row] == [(1, 7, 50, installation, "cloud")]
+    assert outbox(conn) == []
+
+
+def test_pull_ignores_qr_settings_delete(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    installation = str(uuid.uuid4())
+    cloud.put("qr_settings", installation, {"digit": 7, "max_active": 50})
+    engine = engine_for(db_path, cloud)
+    engine.pull()
+    cloud.remove("qr_settings", installation)
+
+    engine.pull()
+
+    assert tuple(conn.execute("SELECT digit, max_active, uuid FROM qr_settings WHERE id=1").fetchone()) == (
+        7, 50, installation)
+
+
+def test_push_qr_create_and_revoke(conn, db_path, cloud):
+    holder_id = new_holder(conn)
+    mark_synced(conn, cloud)
+    created = qr_store.create_qr(conn, holder_id, "Visita", QR_FROM, QR_UNTIL, 3, QR_FROM - 60)
+    qr_uuid = uuid_of(conn, "qr_codes", "qr_id=?", (created["qr_id"],))
+    holder_uuid = uuid_of(conn, "holders", "holder_id=?", (holder_id,))
+    engine = engine_for(db_path, cloud)
+
+    engine.push()
+
+    assert cloud.live_row("qr_codes", qr_uuid) == {
+        "holder_id": holder_uuid, "code": created["code"], "label": "Visita", "valid_from": _iso(QR_FROM),
+        "valid_until": _iso(QR_UNTIL), "max_uses": 3, "created_at": _iso(QR_FROM - 60)}
+    assert outbox(conn) == []
+
+    qr_store.delete_qr(conn, created["qr_id"])
+    engine.push()
+    assert cloud.live_row("qr_codes", qr_uuid) is None
+    assert outbox(conn) == []
+
+
+def test_push_of_a_permission_sends_qr_reader_mask(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    conn.execute("UPDATE permissions SET qr_reader_mask=5 WHERE permission_id=0")
+    conn.commit()
+
+    engine_for(db_path, cloud).push()
+
+    permission_uuid = uuid_of(conn, "permissions", "permission_id=0")
+    assert cloud.live_row("permissions", permission_uuid)["qr_reader_mask"] == 5
+
+
+def test_pull_of_a_permission_without_qr_reader_mask_applies_it_as_0(conn, db_path, cloud):
+    edit_under_guard(conn, "UPDATE permissions SET qr_reader_mask=3 WHERE permission_id=0")
+    mark_synced(conn, cloud)
+    permission_uuid = uuid_of(conn, "permissions", "permission_id=0")
+    data = _permission(name="Sin QR")
+    cloud.put("permissions", permission_uuid, dict(data, qr_reader_mask=0))
+    cloud.rows["permissions"][permission_uuid]["data"] = data
+
+    engine_for(db_path, cloud).pull()
+
+    assert conn.execute("SELECT qr_reader_mask FROM permissions WHERE permission_id=0").fetchone()[0] == 0
+
+
+def test_reconcile_qr_codes_by_checksum(conn, db_path, cloud):
+    holder_id = new_holder(conn)
+    good = qr_store.create_qr(conn, holder_id, "bien", QR_FROM, QR_UNTIL, 1, QR_FROM)
+    gone = qr_store.create_qr(conn, holder_id, "", QR_FROM, QR_UNTIL, 1, QR_FROM)
+    mark_synced(conn, cloud)
+    edit_under_guard(conn, "UPDATE qr_codes SET label='mal', valid_until=? WHERE qr_id=?",
+                     (QR_UNTIL + 5, good["qr_id"]))
+    edit_under_guard(conn, "DELETE FROM qr_codes WHERE qr_id=?", (gone["qr_id"],))
+    edit_under_guard(conn, "INSERT INTO qr_codes(holder_id, code, valid_from, valid_until, created_at, uuid,"
+                           " updated_at) VALUES (?, 911111111, 1, 2, 1, ?, 1)", (holder_id, str(uuid.uuid4())))
+
+    assert engine_for(db_path, cloud).reconcile() == ["qr_codes"]
+
+    assert sorted((r[0], r[1], r[2]) for r in conn.execute("SELECT code, label, valid_until FROM qr_codes")) == \
+        sorted([(good["code"], "bien", QR_UNTIL), (gone["code"], "", QR_UNTIL)])
+    assert outbox(conn) == []
+
+
+def test_reconcile_qr_settings_takes_cloud_values(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    installation = str(uuid.uuid4())
+    cloud.put("qr_settings", installation, {"digit": 3, "max_active": 10})
+
+    assert engine_for(db_path, cloud).reconcile() == ["qr_settings"]
+
+    assert tuple(conn.execute("SELECT digit, max_active, uuid FROM qr_settings WHERE id=1").fetchone()) == (
+        3, 10, installation)
+    assert engine_for(db_path, cloud).reconcile() == []
+
+
+def test_qr_settings_never_pushed(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    qr_store.update_qr_settings(conn, 8, 20)
+    installation = str(uuid.uuid4())
+    cloud.put("qr_settings", installation, {"digit": 7, "max_active": 50})
+    engine = engine_for(db_path, cloud)
+    engine.pull()
+    edit_under_guard(conn, "UPDATE qr_settings SET digit=5 WHERE id=1")
+
+    engine.push()
+
+    assert outbox(conn) == []
+    assert all(i["table"] != "qr_settings" for batch in cloud.pushed for i in batch)
+
+
+def test_import_snapshot_excludes_qr_settings(conn):
+    edit_under_guard(conn, "UPDATE qr_settings SET uuid=? WHERE id=1", (str(uuid.uuid4()),))
+    assert "qr_settings" not in snapshot_tables(conn, include_settings=False)
+    assert "qr_codes" in snapshot_tables(conn, include_settings=False)
+
+
+def test_adopt_cloud_takes_qr_settings_values(conn, db_path, cloud):
+    qr_store.update_qr_settings(conn, 8, 20)
+    installation = str(uuid.uuid4())
+    cloud.put("qr_settings", installation, {"digit": 7, "max_active": 50})
+
+    engine_for(db_path, cloud).adopt_cloud()
+
+    assert tuple(conn.execute("SELECT digit, max_active, uuid FROM qr_settings WHERE id=1").fetchone()) == (
+        7, 50, installation)
+    assert all(e["table_name"] != "qr_settings" for e in outbox(conn))
+
+
+def test_requests_send_schema_header_9(conn, db_path, cloud):
+    mark_synced(conn, cloud)
+    engine = engine_for(db_path, cloud)
+    engine.pull()
+    engine.reconcile()
+
+    assert cloud.headers and all(h.get("x-acc-schema") == "9" for h in cloud.headers)

@@ -53,7 +53,7 @@ def test_card_reader_not_in_permission(conn):
     set_permission(conn, 0, output_mask=15, card_reader_mask=0b0001)
     sender = Sender()
     outcome = run(conn, CardRead(2, 111), send=sender)
-    assert outcome.reason == 3
+    assert outcome.reason == 17
     assert outcome.command is None and sender.sent == []
 
 
@@ -336,7 +336,7 @@ def test_card_needs_card_mask_even_if_pin_mask_has_reader(conn):
     set_permission(conn, 0, output_mask=15, card_reader_mask=0b0001, pin_reader_mask=0b0100)
     sender = Sender()
     outcome = run(conn, CardRead(2, 111), send=sender)  # lector 2 solo en pin_reader_mask
-    assert outcome.reason == 3 and outcome.command is None and sender.sent == []
+    assert outcome.reason == 17 and outcome.command is None and sender.sent == []
     assert run(conn, CardRead(0, 111)).allowed
 
 

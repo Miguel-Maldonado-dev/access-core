@@ -327,7 +327,8 @@ class Runner:
             return
         self._schedule("import", now, RETRY_S)
         with self._db() as conn:
-            tables = snapshot_tables(conn)
+            # La importación no sube `qr_settings`: el panel adopta la de la nube.
+            tables = snapshot_tables(conn, include_settings=False)
         try:
             status = self._api.import_snapshot(tables)
         except CloudError as exc:

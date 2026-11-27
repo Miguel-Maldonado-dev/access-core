@@ -217,6 +217,13 @@ uint32_t Wiegand34::getCardCode()
 }
 
 
+// Datos de una lectura de 34 bits sin las paridades (bit 33 y bit 0).
+uint32_t Wiegand34::getCode32()
+{
+    return (uint32_t)((getCode() >> 1) & 0xFFFFFFFFUL);
+}
+
+
 // Limpiar para siguiente lectura
 void Wiegand34::reset()
 {

@@ -156,3 +156,51 @@ def test_purge_expired_qr(conn, host):
     assert [r[0] for r in conn.execute("SELECT qr_id FROM qr_codes")] == [keep]
     assert [r[0] for r in conn.execute("SELECT qr_id FROM qr_uses")] == [keep]
     assert conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0] == 0
+
+
+# Compatibilidad de lectores de 34 bits: el firmware manda los 32 bits completos y las tarjetas
+# se dieron de alta con su número impreso (24 bits bajos).
+FULL = 919148043          # 0x36C9160B, lo que manda el ZK-QR-500 con Wiegand 34
+LOW24 = FULL & 0xFFFFFF   # 13178379, número impreso
+
+
+def test_card_with_printed_24_bits_opens_with_full_code(conn, host):
+    add_card(conn, LOW24, host)
+    out = read(conn, 0, code=FULL)
+    log = last_log(conn)
+    assert out.allowed and log["source"] == 0 and log["code"] == LOW24
+
+
+def test_full_code_card_has_priority_over_24_bits(conn, host):
+    other = add_holder(conn, "Beto", "persona")
+    add_card(conn, LOW24, other)
+    add_card(conn, FULL, host)
+    out = read(conn, 0, code=FULL)
+    log = last_log(conn)
+    assert out.allowed and log["code"] == FULL and log["holder_id"] == host
+
+
+def test_qr_full_code_wins_over_24_bit_card(conn, host):
+    # El QR va primero: si el código completo es el de un QR vivo y sus 24 bits bajos son el de una tarjeta,
+    # abre como QR (consume un uso), no como tarjeta.
+    add_card(conn, LOW24, host)
+    add_qr(conn, host, code=FULL)
+    out = read(conn, 0, code=FULL)
+    assert out.allowed and last_log(conn)["source"] == 7 and uses(conn)[0][0] == 1
+
+
+def test_unknown_full_code_without_24_bit_match_is_1(conn, host):
+    code = 0x12C9160B  # fuera del rango de QR
+    out = read(conn, 0, code=code)
+    assert out.reason == 1 and last_log(conn)["code"] == code
+
+
+def test_24_bit_card_in_reader_without_card_is_17(conn, host):
+    add_card(conn, LOW24, host)
+    assert read(conn, 1, code=FULL).reason == 17
+
+
+def test_code_up_to_24_bits_unchanged(conn, host):
+    add_card(conn, LOW24, host)
+    assert read(conn, 0, code=LOW24).allowed
+    assert read(conn, 0, code=LOW24 + 1).reason == 1

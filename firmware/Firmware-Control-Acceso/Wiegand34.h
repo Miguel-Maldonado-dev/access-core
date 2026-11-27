@@ -28,6 +28,10 @@ class Wiegand34
     // (Facility << 16) | Card
     uint32_t getCardCode();
 
+    // Lectura de 34 bits: los 32 bits de datos entre las dos paridades,
+    // (code >> 1) & 0xFFFFFFFF. Solo tiene sentido si getBits() == 34.
+    uint32_t getCode32();
+
     void reset();
 
 

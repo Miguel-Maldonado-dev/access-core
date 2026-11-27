@@ -117,7 +117,12 @@ ReaderID:
 3 = Reader 4
 ```
 
-El código es `uint32_t`, transmitido MSB primero.
+El código es `uint32_t`, transmitido MSB primero. Su contenido depende del tamaño de la lectura:
+
+- **34 bits:** los 32 bits de datos completos entre las dos paridades (`(datos >> 1) & 0xFFFFFFFF`). Así llega íntegro un QR de 9 o 10 dígitos (ZK-QR-500). Una tarjeta de 34 bits puede llegar con el byte alto distinto de 0; el controlador la acepta también por sus 24 bits bajos (el número impreso con el que se dio de alta).
+- **26 bits y otros tamaños:** `(facility << 16) | tarjeta` (24 bits), como antes.
+
+Cambiar este comportamiento exige reprogramar el ATmega; la forma de la trama no cambia.
 
 Ejemplo:
 

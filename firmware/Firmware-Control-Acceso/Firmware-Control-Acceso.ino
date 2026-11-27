@@ -356,7 +356,8 @@ void processReader(uint8_t reader, Wiegand34 &wiegand) {
 
   uint8_t bits = wiegand.getBits();
   uint64_t code = wiegand.getCode();
-  uint32_t card = wiegand.getCardCode();
+  // 34 bits: los 32 bits completos (QR de 9 dígitos); otro tamaño (26 bits): facility + tarjeta.
+  uint32_t card = (bits == 34) ? wiegand.getCode32() : wiegand.getCardCode();
   wiegand.reset();
 
   if (bits % KEYPAD_BURST_BITS == 0 && bits <= KEYPAD_MAX_MERGED_BITS) {

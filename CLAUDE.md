@@ -56,6 +56,8 @@ Formato: `AA CMD … CS 55`, donde `CS` es el XOR de los bytes de CMD hasta el �
 | `0x13` PIN | ATmega → controlador | `AA 13 RR LL D1..D6 CS 55` (`#` envía, `*` borra, máximo 6 dígitos, 10 s de inactividad) |
 | `0x20` relevador | controlador → ATmega | `AA 20 RR T1 T2 CS 55` |
 
+En `0x10`, una lectura de 34 bits lleva los 32 bits de datos completos (`Wiegand34::getCode32()`); la de 26 bits, `(facility << 16) | tarjeta`. El daemon busca QR → tarjeta con el código completo → tarjeta con los 24 bits bajos (número impreso).
+
 Un cambio al protocolo toca el firmware, el documento y el daemon (`panel/backend/acceso`) en el mismo cambio.
 
 ## Panel (`panel/`)

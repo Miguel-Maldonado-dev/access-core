@@ -199,6 +199,24 @@ def authorize_card(conn: sqlite3.Connection, code: int, reader: int, now: dateti
     return Decision(reason, holder, output, credential_label=label)
 
 
+LOW24_MASK = 0xFFFFFF
+
+
+def _registered_card_code(conn: sqlite3.Connection, code: int) -> Optional[int]:
+    """Código de la tarjeta registrada que corresponde a una lectura, o None.
+
+    Primero el código completo; si no existe y la lectura pasa de 24 bits (lector de 34 bits,
+    el firmware manda los 32 bits), los 24 bits bajos: las tarjetas se dan de alta con su
+    número impreso."""
+    candidates = [code]
+    if code > LOW24_MASK:
+        candidates.append(code & LOW24_MASK)
+    for candidate in candidates:
+        if conn.execute("SELECT 1 FROM cards WHERE card_code = ?", (candidate,)).fetchone():
+            return candidate
+    return None
+
+
 def authorize_qr(conn: sqlite3.Connection, qr: sqlite3.Row, reader: int, now: datetime) -> Decision:
     """Decide un QR registrado. Orden: método no habilitado (17), vigencia (15), usos agotados en
     el lector (16), sin salida (2), día/horario/salida (3); si no, abre."""
@@ -291,21 +309,24 @@ def handle_event(conn: sqlite3.Connection, event: Event, send: Callable[[bytes],
     code: Optional[int] = None
     if isinstance(event, CardRead):
         qr = conn.execute("SELECT * FROM qr_codes WHERE code = ?", (event.code,)).fetchone()
+        code = event.code
+        card_code = None if qr is not None else _registered_card_code(conn, event.code)
         if qr is not None:
             if qr_debounce is not None and qr_debounce.seen(event.code, event.reader, clock()):
                 return AccessOutcome(False, REASON_QR_USED, None, None)
             decision = authorize_qr(conn, qr, event.reader, now)
             source = SOURCE_QR
-        elif conn.execute("SELECT 1 FROM cards WHERE card_code = ?", (event.code,)).fetchone():
-            decision = authorize_card(conn, event.code, event.reader, now)
-            source = SOURCE_CARD
+        elif card_code is not None:
+            # Puede ser los 24 bits bajos: el log lleva el código registrado.
+            decision = authorize_card(conn, card_code, event.reader, now)
+            source, code = SOURCE_CARD, card_code
         elif looks_like_qr(event.code, get_qr_settings(conn).digit):
             decision = Decision(REASON_QR_UNKNOWN)
             source = SOURCE_QR
         else:
             decision = authorize_card(conn, event.code, event.reader, now)
             source = SOURCE_CARD
-        device_id, code = event.reader, event.code
+        device_id = event.reader
     elif isinstance(event, PinRead):
         if pin_lockout is not None and pin_lockout.is_blocked(event.reader, now):
             decision = Decision(REASON_PIN_LOCKED, credential_label=PIN_LABEL)
